@@ -26,33 +26,26 @@ Important local docs:
 
 Core feature matrix:
 
-- Model families:
-  - Qwen-family 27B text models with native MTP.
-  - Gemma4-family 31B text models with optional assistant MTP path.
-- Weight quantization:
-  - AWQ Marlin for Qwen-family checkpoints.
-  - GPTQ Marlin for Qwen-family and Gemma4-family checkpoints.
-- KV cache modes:
-  - Default FP16/BF16 KV for baseline compatibility.
-  - `turboquant_4bit_nc` for high-capacity Qwen/Gemma serving.
-  - `int8_per_token_head` for Qwen-family MTP and extended-context experiments.
-- Speculative decoding:
-  - Qwen-family native MTP works with no-eager/CUDAGraph.
-  - Some Qwen-family BF16 draft checkpoints require
-    `VLLM_QWOPUS_MTP_BF16_DRAFT=1`.
-  - Gemma4 MTP is compatibility-tested but not a recommended speed path.
-- Context modes:
-  - Native context baseline: `262144` tokens for Qwen-family 27B models.
-  - Qwen-family AWQ `TQ4NC + noMTP` reaches READY at `262144` with GPU KV cache
-    capacity `992612 tokens`.
-  - YaRN factor 2 / `524288` is experimental and only for capacity/offline
-    routes; it is not the default interactive path.
-- Fast attention and serving fixes:
-  - SM75 FlashQLA / GDN prefill route.
-  - FlashInfer/FA2 TurboQuant prefill on Turing.
-  - INT8 KV continuation/cascade dequant bridge for long-context prefill.
-  - TurboQuant + MTP CUDAGraph safety fixes.
-  - FlashInfer sampler warmup compatibility fix.
+Legend: 🟢 stable/recommended, 🟡 usable with limits or experimental, 🔴 not a
+recommended path.
+
+| Model route | AWQ Marlin | GPTQ Marlin | Native MTP | Assistant MTP | Default KV | `turboquant_4bit_nc` KV | `int8_per_token_head` KV | Native 262K context | YaRN 524K extension | No-eager/CUDAGraph | Fast prefill path |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Qwen-family 27B AWQ | 🟢 | 🔴 | 🟢 | 🔴 | 🟢 | 🟢 | 🟡 | 🟢 | 🟡 | 🟢 | 🟢 FlashQLA + FlashInfer/FA2 |
+| Qwen-family 27B GPTQ | 🔴 | 🟢 | 🟢 | 🔴 | 🟢 | 🟢 | 🟡 | 🟡 | 🟡 | 🟢 | 🟢 FlashQLA + FlashInfer/FA2 |
+| Gemma4-family 31B GPTQ | 🔴 | 🟢 | 🔴 | 🟡 | 🟢 | 🟢 | 🟡 | 🟡 | 🔴 | 🟢 noMTP / 🟡 MTP | 🟢 FlashInfer/FA2 + SDPA512 fallback controls |
+
+Notes:
+
+- Native 262K means model-declared `262144` context. This is the baseline, not
+  an ultra-long-context feature.
+- YaRN 524K means RoPE/YaRN extension beyond native context. It is currently a
+  capacity/offline route, not the default interactive service mode.
+- Some Qwen-family BF16 draft checkpoints require
+  `VLLM_QWOPUS_MTP_BF16_DRAFT=1`.
+- The key local fixes are SM75 FlashQLA/GDN prefill, FlashInfer/FA2 TurboQuant
+  prefill, INT8 KV continuation/cascade dequant, TurboQuant + MTP CUDAGraph
+  safety, and FlashInfer sampler warmup compatibility.
 
 Representative validation evidence:
 
