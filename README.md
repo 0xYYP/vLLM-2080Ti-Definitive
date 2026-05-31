@@ -6,38 +6,50 @@ The definitive vLLM runtime for dual RTX 2080 Ti / SM75 serving.
 This is a hardware-focused fork that preserves the patched source, launch
 profiles, and runtime notes needed to reproduce the working 2080 Ti vLLM stack.
 
+Language: English | [简体中文](README.zh-CN.md)
+
 ## Why RTX 2080 Ti for LLM Inference?
+
+In August 2018, NVIDIA launched the RTX 2080 Ti and moved the enthusiast GPU
+line from GTX into the RTX era. Years later, the card is still remembered as a
+landmark Turing design. With 22GB memory mods, NVLink, high memory bandwidth,
+and enough raw compute to remain relevant, dual 2080 Ti cards turn out to be a
+surprisingly strong local AI inference platform.
+
+| Metric | 2x 2080 Ti 22GB + NVLink | 3090 Ti 24GB baseline | Ratio |
+|---|---:|---:|---:|
+| Physical CUDA core count | 8,704 | 5,376 | 1.62x |
+| SM count | 136 | 84 | 1.62x |
+| Physical Tensor Core count | 1,088 | 336 | 3.24x |
+| Dense Tensor FP16 matrix throughput | 228 TFLOPS | 160 TFLOPS | 1.43x |
+| Total physical memory bandwidth | 1,232 GB/s | 1,008 GB/s | 1.22x |
+| Total VRAM capacity | 44GB | 24GB | 1.83x |
+| Secondary-market price anchor | about $550 with NVLink | about $1,100 | about 0.5x |
 
 The project is built around a simple cost/performance bet: use roughly half the
 secondary-market price of an RTX 3090 Ti to get a dual 22GB RTX 2080 Ti setup
 that can match or exceed it on the physical resources that matter for LLM
 serving, then use vLLM runtime work to turn those resources into real tokens.
 
-The CUDA core row uses a physical, de-watered normalization: 64 FP32 lanes per
-SM. This intentionally avoids mixing Turing's physical CUDA lanes with Ampere's
-marketing CUDA-core count, where each SM exposes two FP32-capable datapaths.
-
-| Metric | 1x RTX 3090 Ti baseline | 2x RTX 2080 Ti 22GB + NVLink | Ratio |
-|---|---:|---:|---:|
-| Physical CUDA core count | 5,376 | 8,704 | 1.62x |
-| SM count | 84 | 136 | 1.62x |
-| Physical Tensor Core count | 336 | 1,088 | 3.24x |
-| Dense Tensor FP16 matrix throughput | 160 TFLOPS | 228 TFLOPS | 1.43x |
-| Total physical memory bandwidth | 1,008 GB/s | 1,232 GB/s | 1.22x |
-| Total VRAM capacity | 24GB | 44GB | 1.83x |
-| Secondary-market price anchor | about CNY 7,000-8,000 | CNY 3,600 with NVLink | about 0.5x |
-
 That is the first value of this fork: take old but strong Turing silicon and
 make it behave like a serious 27B/31B-class inference platform through Marlin,
 FlashQLA/FlashInfer/FA2, TurboQuant/INT8 KV, MTP, and CUDAGraph integration.
 
-Spec references: NVIDIA's
-[Turing architecture whitepaper](https://images.nvidia.com/aem-dam/Solutions/design-visualization/technologies/turing-architecture/NVIDIA-Turing-Architecture-Whitepaper.pdf?ncid=no-ncid)
-for RTX 2080 Ti figures, NVIDIA's
-[RTX 3090 Ti product page](https://www.nvidia.com/en-us/geforce/graphics-cards/30-series/rtx-3090-3090ti/)
-and
-[Ada architecture documentation](https://images.nvidia.com/aem-dam/Solutions/geforce/ada/nvidia-ada-gpu-architecture.pdf?ncid=no-ncid)
-for RTX 3090 Ti figures.
+Core feature matrix:
+
+| Feature | Qwen-family 27B | Gemma4-family 31B |
+|---|---|---|
+| AWQ Marlin | 🟢 recommended weight route | 🔴 not current route |
+| GPTQ Marlin | 🟢 recommended weight route | 🟢 recommended weight route |
+| MTP speculative decoding | 🟢 native speed route | 🟡 external draft works, no speed win |
+| `turboquant_4bit_nc` KV | 🟢 recommended capacity route | 🟢 recommended capacity route |
+| `turboquant_k8v4` KV | 🟡 works, lower-priority KV route | 🔴 not current route |
+| INT8 KV continuation fast path | 🟢 recommended MTP/capacity route | 🔴 not current route |
+| YaRN 524K extension | 🟡 capacity/offline experiment | 🔴 not validated |
+| No-eager/CUDAGraph noMTP | 🟢 recommended graph route | 🟢 recommended graph route |
+| No-eager/CUDAGraph with MTP | 🟢 recommended graph route | 🟡 works, limited speed gain |
+| Fast prefill path | 🟢 FlashQLA + FlashInfer/FA2 | 🟢 FlashInfer/FA2 with SDPA512 controls |
+| Peak MTP=3 single-request PP4096/TG128 | 1841.7 / 101.3 tok/s | 1665.9 / 44.3 tok/s |
 
 Target runtime:
 
@@ -59,66 +71,12 @@ Important local docs:
 - `bench_tools/stable_profile.sh`: named model/profile environment presets.
 - `bench_tools/remote_start_vllm_cu128.sh`: environment-driven launcher template.
 
-Core feature matrix:
+Related project:
 
-Legend: 🟢 supported and recommended with measured speed or capacity benefit and
-no observed quality regression, 🟡 supported but not recommended as the default
-route, 🔴 unsupported or not a current working route.
-
-| Feature | Qwen-family 27B | Gemma4-family 31B |
-|---|---|---|
-| AWQ Marlin | 🟢 recommended weight route | 🔴 not current route |
-| GPTQ Marlin | 🟢 recommended weight route | 🟢 recommended weight route |
-| MTP speculative decoding | 🟢 native speed route | 🟡 external draft works, no speed win |
-| `turboquant_4bit_nc` KV | 🟢 recommended capacity route | 🟢 recommended capacity route |
-| `turboquant_k8v4` KV | 🟡 works, lower-priority KV route | 🔴 not current route |
-| INT8 KV continuation fast path | 🟢 recommended MTP/capacity route | 🔴 not current route |
-| YaRN 524K extension | 🟡 capacity/offline experiment | 🔴 not validated |
-| No-eager/CUDAGraph noMTP | 🟢 recommended graph route | 🟢 recommended graph route |
-| No-eager/CUDAGraph with MTP | 🟢 recommended graph route | 🟡 works, limited speed gain |
-| Fast prefill path | 🟢 FlashQLA + FlashInfer/FA2 | 🟢 FlashInfer/FA2 with SDPA512 controls |
-| Peak MTP=3 single-request PP4096/TG128 | 1841.7 / 101.3 tok/s | 1665.9 / 44.3 tok/s |
-
-Notes:
-
-- Specific checkpoints and weight formats are deployment-profile choices under
-  each model family; they are not separate rows in this feature matrix.
-- Native MTP means the target checkpoint itself contains MTP/draft tensors.
-  External draft MTP is a separate assistant model passed through
-  `SPECULATIVE_CONFIG`.
-- Native 262K means model-declared `262144` context. This is the baseline, not
-  an ultra-long-context feature.
-- YaRN 524K means RoPE/YaRN extension beyond native context. It is currently a
-  capacity/offline route, not the default interactive service mode.
-- A yellow cell can still be validated and usable; it means the route is not
-  the recommended default because another path gives better speed, capacity, or
-  quality for this hardware profile.
-- Qwen-family TurboQuant KV evidence covers both `turboquant_4bit_nc` and
-  `turboquant_k8v4`; `4bit_nc` is the current preferred high-capacity route.
-- The peak row is recorded historical MTP=3 single-request PP4096/TG128
-  evidence. It is not aggregate throughput, not concurrent-request throughput,
-  and not a guarantee that the current stable profile reproduces the same
-  number.
-- Some Qwen-family BF16 draft checkpoints require a launch compatibility flag
-  so the draft model does not inherit the target quantization config.
-- The key local fixes are SM75 FlashQLA/GDN prefill, FlashInfer/FA2 TurboQuant
-  prefill, INT8 KV continuation/cascade dequant for long-context capacity,
-  TurboQuant + MTP CUDAGraph safety, and FlashInfer sampler warmup
-  compatibility.
-
-Representative validation evidence:
-
-- Qwen-family 27B AWQ `MTP3 + TQ4NC`, PP4096/TG128:
-  `1736.42 / 77.65 tok/s`, with stable JSON/tool-style generation.
-- Qwen-family 27B AWQ `noMTP + TQ4NC`, native context:
-  READY at `262144`, max concurrency `3.79x` for 262K requests.
-- Qwen-family 27B AWQ `turboquant_k8v4`, native context:
-  READY at `262144`, reported KV cache `520461` tokens in startup probing.
-- Qwen-family 27B GPTQ `INT8 KV + YaRN 524K`:
-  32K prefill `1494.20 tok/s`; 520K prefill completed at `497.86 tok/s`
-  in capacity smoke testing.
-
-Throughput is always written as `prefill / decode tok/s`.
+- [2080Ti-LLM-Toolbox](https://github.com/weicj/2080Ti-LLM-Toolbox): companion
+  toolbox for dual 2080 Ti model routes, benchmark summaries, model notes, and
+  operational guidance. This repository focuses on the patched vLLM runtime
+  itself.
 
 ## Upstream vLLM README
 
