@@ -1,4 +1,4 @@
-# VLLM-2080ti Fork Notes
+# vLLM 2080 Ti Definitive Edition Fork Notes
 
 Created on 2026-05-31 from the stable dual RTX 2080 Ti runtime work.
 
@@ -34,7 +34,7 @@ Current branch policy:
 
 External repository policy:
 
-- GitHub repository name: `VLLM-2080ti`.
+- GitHub repository name: `vllm-2080ti-definitive`.
 - Create the remote only after deciding public vs private visibility.
 - Use placeholders for model paths and report paths in public docs; keep large
   weights, benchmark results, machine-local caches, hostnames, service names,

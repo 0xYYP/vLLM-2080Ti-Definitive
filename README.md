@@ -1,16 +1,18 @@
 <!-- markdownlint-disable MD001 MD041 -->
-# VLLM-2080ti
+# vLLM 2080 Ti Definitive Edition
 
-This is a hardware-focused vLLM fork for a dual RTX 2080 Ti runtime.
+The definitive vLLM runtime for dual RTX 2080 Ti / SM75 serving.
+
+This is a hardware-focused fork that preserves the patched source, launch
+profiles, and runtime notes needed to reproduce the working 2080 Ti vLLM stack.
 
 Target runtime:
 
 - GPU: dual RTX 2080 Ti, SM75, tensor parallel size 2
 - CUDA/PyTorch: CUDA 12.8, `torch 2.11.0+cu128`
 - Base vLLM: `0.21.0`
-- Main stable identity: `vllm-sm75-tp2-cu128`
-- Current purpose: preserve the patched source, launch profiles, and runtime
-  notes needed to reproduce the working 2080 Ti vLLM stack.
+- Repository identity: `vllm-2080ti-definitive`
+- Main stable runtime identity: `vllm-sm75-tp2-cu128`
 
 This fork is not a general upstream replacement. It carries local patches for
 SM75/Turing serving, FlashQLA, FlashInfer, TurboQuant KV, INT8 KV continuation,
