@@ -29,14 +29,24 @@ Core feature matrix:
 Legend: 🟢 stable/recommended, 🟡 usable with limits or experimental, 🔴 not a
 recommended path.
 
-| Model route | AWQ Marlin | GPTQ Marlin | Native MTP | Assistant MTP | Default KV | `turboquant_4bit_nc` KV | `int8_per_token_head` KV | Native 262K context | YaRN 524K extension | No-eager/CUDAGraph | Fast prefill path |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| Qwen-family 27B AWQ | 🟢 | 🔴 | 🟢 | 🔴 | 🟢 | 🟢 | 🟡 | 🟢 | 🟡 | 🟢 | 🟢 FlashQLA + FlashInfer/FA2 |
-| Qwen-family 27B GPTQ | 🔴 | 🟢 | 🟢 | 🔴 | 🟢 | 🟢 | 🟡 | 🟡 | 🟡 | 🟢 | 🟢 FlashQLA + FlashInfer/FA2 |
-| Gemma4-family 31B GPTQ | 🔴 | 🟢 | 🔴 | 🟡 | 🟢 | 🟢 | 🟡 | 🟡 | 🔴 | 🟢 noMTP / 🟡 MTP | 🟢 FlashInfer/FA2 + SDPA512 fallback controls |
+| Feature | Qwen-family 27B | Gemma4-family 31B |
+|---|---|---|
+| AWQ Marlin | 🟢 supported | 🔴 not current route |
+| GPTQ Marlin | 🟢 supported | 🟢 supported |
+| Native MTP | 🟢 supported | 🔴 not available |
+| Assistant MTP | 🔴 not current route | 🟡 compatible, not a speed route |
+| Default KV | 🟢 supported | 🟢 supported |
+| `turboquant_4bit_nc` KV | 🟢 supported | 🟢 supported |
+| `int8_per_token_head` KV | 🟡 supported for MTP/capacity experiments | 🟡 tested, not recommended default |
+| Native 262K context | 🟢 baseline target, capacity validated | 🟡 needs separate validation |
+| YaRN 524K extension | 🟡 capacity/offline experiment | 🔴 not validated |
+| No-eager/CUDAGraph | 🟢 supported | 🟢 noMTP / 🟡 MTP |
+| Fast prefill path | 🟢 FlashQLA + FlashInfer/FA2 | 🟢 FlashInfer/FA2 + SDPA512 fallback controls |
 
 Notes:
 
+- Specific checkpoints and weight formats are deployment-profile choices under
+  each model family; they are not separate rows in this feature matrix.
 - Native 262K means model-declared `262144` context. This is the baseline, not
   an ultra-long-context feature.
 - YaRN 524K means RoPE/YaRN extension beyond native context. It is currently a
