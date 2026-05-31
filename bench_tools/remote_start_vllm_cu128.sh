@@ -28,18 +28,32 @@ set -euo pipefail
 : "${VLLM_GEMMA4_TQ4NC_SHARED_DRAFT_SDPA_FALLBACK:=0}"
 : "${VLLM_GEMMA4_TQ4NC_SHARED_DRAFT_NATIVE_DECODE:=0}"
 
-EXP=/data/stable/vllm-sm75-tp2-cu128
-FLASHQLA=/data/stable/FlashQLA-SM70-SM75
-FLASH_ATTN_TURING=/data/stable/flash-attention-turing-sm75-compare-20260520/src
-FLASH_ATTN_TURING_BUILD=$FLASH_ATTN_TURING/build/lib.linux-x86_64-cpython-311
+: "${STABLE_ROOT:=/opt/vllm-2080ti}"
+: "${FLASHQLA_ROOT:=/opt/FlashQLA-SM70-SM75}"
+: "${FLASH_ATTN_TURING_ROOT:=/opt/flash-attention-turing}"
+: "${RUN_USER:=vllm}"
+: "${RUN_HOME:=/var/lib/vllm}"
+: "${CUDA_HOME:=/usr/local/cuda-12.8}"
+: "${CUDA_VISIBLE_DEVICES:=0,1}"
+: "${CUDA_DEVICE_ORDER:=PCI_BUS_ID}"
+: "${SERVICE_STOP_LIST:=}"
+: "${KILL_PROCESS_PATTERN:=VLLM::|vllm|ptxas|triton|sglang.launch_server|sglang::scheduler|sglang::detokenizer}"
+: "${STOP_EXISTING_PROCESSES:=1}"
+
+FLASH_ATTN_TURING_BUILD="${FLASH_ATTN_TURING_ROOT}/build/lib.linux-x86_64-cpython-311"
 STAMP=$(date +%Y%m%d-%H%M%S)
 SAFE_NAME=$(printf '%s' "$SERVED_NAME" | tr -c 'A-Za-z0-9_.-' '_' | sed 's/_*$//')
-LOG="$EXP/vllm-${SAFE_NAME}-${STAMP}.log"
-CURRENT="$EXP/vllm-${SAFE_NAME}.current"
+LOG="${STABLE_ROOT}/vllm-${SAFE_NAME}-${STAMP}.log"
+CURRENT="${STABLE_ROOT}/vllm-${SAFE_NAME}.current"
 
-systemctl stop miniclaw-minit1-dense-qwen27-proxy.service miniclaw-minit1-dense-qwen27.service \
-  miniclaw-minit2-dense-gemma31-proxy.service miniclaw-minit2-dense-gemma31.service || true
-pkill -9 -u dietpi -f "VLLM::|vllm|ptxas|triton|sglang.launch_server|sglang::scheduler|sglang::detokenizer" || true
+if [[ -n "$SERVICE_STOP_LIST" ]]; then
+  # shellcheck disable=SC2086
+  systemctl stop $SERVICE_STOP_LIST || true
+fi
+
+if [[ "$STOP_EXISTING_PROCESSES" == "1" ]]; then
+  pkill -9 -u "$RUN_USER" -f "$KILL_PROCESS_PATTERN" || true
+fi
 sleep 2
 
 common_args=(
@@ -103,12 +117,10 @@ fi
 
 if [[ "$MODEL_FAMILY" == qwen* ]]; then
   common_args+=(--additional-config '{"gdn_prefill_backend":"flashqla_legacy"}')
-  if [[ -z "$CHAT_TEMPLATE_FILE" && -s "$EXP/chat_template_no_think_ragent6.jinja" ]]; then
-    CHAT_TEMPLATE_FILE="$EXP/chat_template_no_think_ragent6.jinja"
+  if [[ -z "$CHAT_TEMPLATE_FILE" && -s "$STABLE_ROOT/chat_template_no_think.jinja" ]]; then
+    CHAT_TEMPLATE_FILE="$STABLE_ROOT/chat_template_no_think.jinja"
   fi
 elif [[ "$MODEL_FAMILY" == gemma* ]]; then
-  # Keep Gemma route text-only to avoid multimodal warmup stalls/noise during
-  # performance-focused kernels validation.
   common_args+=(--limit-mm-per-prompt '{"image":0,"video":0,"audio":0}')
 fi
 
@@ -135,47 +147,46 @@ fi
 
 printf '%s\n' "$LOG" > "$CURRENT"
 touch "$LOG"
-chown dietpi:dietpi "$CURRENT" "$LOG"
+chown "$RUN_USER:$RUN_USER" "$CURRENT" "$LOG"
 
 args_file=$(mktemp)
 printf '%q ' "${common_args[@]}" > "$args_file"
 args_text=$(cat "$args_file")
 rm -f "$args_file"
 
-runuser -u dietpi --preserve-environment -- bash -c "
+runuser -u "$RUN_USER" --preserve-environment -- bash -c "
 set -euo pipefail
-cd '$EXP'
-export HOME='/home/dietpi'
+cd '$STABLE_ROOT'
+export HOME='$RUN_HOME'
 source .venv/bin/activate
-# Do not inherit root-only PATH entries (e.g. /root/.local/bin), which can
-# trigger subprocess PermissionError in torch/inductor repro helpers.
-export CUDA_HOME='/usr/local/cuda-12.8'
-export CUDA_PATH="\$CUDA_HOME"
-export CUDACXX="\$CUDA_HOME/bin/nvcc"
+export CUDA_HOME='$CUDA_HOME'
+export CUDA_PATH=\"\$CUDA_HOME\"
+export CUDACXX=\"\$CUDA_HOME/bin/nvcc\"
 export TORCH_CUDA_ARCH_LIST='7.5'
-export VENV_SITE='$EXP/.venv/lib/python3.11/site-packages'
-export PATH='$EXP/.venv/bin:/usr/local/cuda-12.8/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
-export CUDA_VISIBLE_DEVICES=1,2
-export CUDA_DEVICE_ORDER=PCI_BUS_ID
-export PYTHONPATH="$EXP:$FLASHQLA:$FLASH_ATTN_TURING:$FLASH_ATTN_TURING_BUILD"
-export LD_LIBRARY_PATH="\$VENV_SITE/torch/lib:\${LD_LIBRARY_PATH:-}"
+export VENV_SITE='$STABLE_ROOT/.venv/lib/python3.11/site-packages'
+export PATH='$STABLE_ROOT/.venv/bin:$CUDA_HOME/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+export CUDA_VISIBLE_DEVICES='$CUDA_VISIBLE_DEVICES'
+export CUDA_DEVICE_ORDER='$CUDA_DEVICE_ORDER'
+export PYTHONPATH=\"$STABLE_ROOT:$FLASHQLA_ROOT:$FLASH_ATTN_TURING_ROOT:$FLASH_ATTN_TURING_BUILD\"
+export LD_LIBRARY_PATH=\"\$VENV_SITE/torch/lib:\${LD_LIBRARY_PATH:-}\"
 export FLASHINFER_ENABLE_AOT=1
-export TORCHINDUCTOR_CACHE_DIR='$EXP/torchinductor-cache'
-export TRITON_CACHE_DIR='$EXP/triton-cache'
+export TORCHINDUCTOR_CACHE_DIR='$STABLE_ROOT/torchinductor-cache'
+export TRITON_CACHE_DIR='$STABLE_ROOT/triton-cache'
 export PYTHONUNBUFFERED=1
-export VLLM_SM75_TURING_FA_PREFILL="$VLLM_SM75_TURING_FA_PREFILL"
+export VLLM_SM75_TURING_FA_PREFILL='$VLLM_SM75_TURING_FA_PREFILL'
 for _v in \
   VLLM_GEMMA4_DEBUG_KV_PAGE_SIZES \
   VLLM_GEMMA4_TEXT_ONLY_FLASHINFER \
   VLLM_GEMMA4_SM75_TRITON_TILE16 \
-	  VLLM_TURBOQUANT_FLASHINFER_BACKEND \
-	  VLLM_TURBOQUANT_USE_FLASHINFER_PREFILL \
-	  VLLM_TURBOQUANT_USE_TURING_PREFILL \
-	  VLLM_TURBOQUANT_CUDAGRAPH_SPEC_DECODE_SAFE \
-	  VLLM_TURBOQUANT_SPEC_CONTINUATION_DECODE_FASTPATH \
-	  VLLM_TURBOQUANT_CONTINUATION_WORKSPACE_RESERVE_TOKENS \
-	  VLLM_USE_FLASHINFER_SAMPLER \
-	  VLLM_GEMMA4_TQ4NC_MTP_KV_SHARING_FIX \
+  VLLM_TURBOQUANT_FLASHINFER_BACKEND \
+  VLLM_TURBOQUANT_USE_FLASHINFER_PREFILL \
+  VLLM_TURBOQUANT_USE_TURING_PREFILL \
+  VLLM_TURBOQUANT_CUDAGRAPH_SPEC_DECODE_SAFE \
+  VLLM_TURBOQUANT_SPEC_CONTINUATION_DECODE_FASTPATH \
+  VLLM_TURBOQUANT_CONTINUATION_WORKSPACE_RESERVE_TOKENS \
+  VLLM_TURBOQUANT_SM75_FLASHINFER_PREFILL_MIN_HEAD_DIM \
+  VLLM_USE_FLASHINFER_SAMPLER \
+  VLLM_GEMMA4_TQ4NC_MTP_KV_SHARING_FIX \
   VLLM_GEMMA4_TQ4NC_GROUP_UNIFORM_TYPES \
   VLLM_GEMMA4_TQ4NC_SHARED_FI_WORKSPACE \
   VLLM_GEMMA4_TQ4NC_MIXED_METADATA_COMPAT \
@@ -184,16 +195,20 @@ for _v in \
   VLLM_GEMMA4_TQ4NC_SHARED_DRAFT_NATIVE_DECODE \
   VLLM_GEMMA4_TQ_DECODE_D256_SDPA_FALLBACK \
   VLLM_GEMMA4_TQ_DECODE_D512_SDPA_FALLBACK \
-  VLLM_QWOPUS_MTP_BF16_DRAFT \
+  VLLM_QWEN_MTP_BF16_DRAFT \
+  VLLM_INT8KV_FA_PREFILL \
+  VLLM_INT8KV_FA_CONTINUATION_DEQUANT \
+  VLLM_INT8KV_FA_CASCADE_DEQUANT \
+  VLLM_INT8KV_FA_CASCADE_TILE_TOKENS \
   VLLM_DISABLE_COMPILE_CACHE; do
-  if [[ -n "\${!_v:-}" ]]; then
-    export "\$_v=\${!_v}"
+  if [[ -n \"\${!_v:-}\" ]]; then
+    export \"\$_v=\${!_v}\"
   fi
 done
 nohup python3 -m vllm.entrypoints.openai.api_server $args_text > '$LOG' 2>&1 &
-echo \$! > '$EXP/vllm-${SAFE_NAME}.pid'
+echo \$! > '$STABLE_ROOT/vllm-${SAFE_NAME}.pid'
 "
-chown dietpi:dietpi "$LOG" "$EXP/vllm-${SAFE_NAME}.pid"
+chown "$RUN_USER:$RUN_USER" "$LOG" "$STABLE_ROOT/vllm-${SAFE_NAME}.pid"
 
 deadline=$((SECONDS + 900))
 while (( SECONDS < deadline )); do

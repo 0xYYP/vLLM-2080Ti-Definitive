@@ -1,6 +1,6 @@
 # VLLM-2080ti Fork Notes
 
-Created on 2026-05-31 from the Miniclaw stable runtime work.
+Created on 2026-05-31 from the stable dual RTX 2080 Ti runtime work.
 
 This repository is intended to preserve the reproducible source and launch
 surface for the dual RTX 2080 Ti vLLM stack. It should not include model
@@ -9,12 +9,12 @@ directories, or local build artifacts.
 
 Canonical runtime source:
 
-- Stable runtime tree: `/data/stable/vllm-sm75-tp2-cu128`
-- Base source snapshot: `/data/experiments/vllm-0.21.0-marlin-sm75-src`
+- Stable runtime tree: `<STABLE_ROOT>`
+- Base source snapshot: `<BASE_SOURCE_ROOT>`
 - Patched runtime Python files copied from:
-  `/data/stable/vllm-sm75-tp2-cu128/.venv/lib/python3.11/site-packages/vllm`
+  `<PATCHED_SITE_PACKAGES>/vllm`
 - Launcher/profile scripts copied from:
-  `/data/stable/vllm-sm75-tp2-cu128/bench_tools`
+  `<STABLE_ROOT>/bench_tools`
 
 Important copied patch files:
 
@@ -28,7 +28,7 @@ Current branch policy:
 
 - `sm75-tp2-cu128-stable` is the stable 2080 Ti / CUDA 12.8 branch.
 - Tags should use explicit runtime names, for example
-  `miniclaw-sm75-tp2-cu128-20260531`.
+  `sm75-tp2-cu128-20260531`.
 - Upstream vLLM changes should be merged deliberately, not casually rebased over
   the production branch.
 
@@ -36,5 +36,6 @@ External repository policy:
 
 - GitHub repository name: `VLLM-2080ti`.
 - Create the remote only after deciding public vs private visibility.
-- Keep model paths and performance reports in docs; keep large weights and
-  machine-local caches out of git.
+- Use placeholders for model paths and report paths in public docs; keep large
+  weights, benchmark results, machine-local caches, hostnames, service names,
+  and absolute deployment paths out of git.

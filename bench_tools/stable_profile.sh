@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT=/data/stable/vllm-sm75-tp2-cu128
+ROOT=${STABLE_ROOT:-/opt/vllm-2080ti}
 START="$ROOT/bench_tools/remote_start_vllm_cu128.sh"
-: "${PROFILE:?PROFILE required: qwopus27-awq-mtp3 | qwopus27-awq-mtp3-tq4nc-fi | quanttrio27-awq-mtp3 | gemma4-gptq-tq4nc-mtp3 | gemma4-gptq-tq4nc-nomtp}"
+: "${MODEL_ROOT:=/models}"
+: "${PROFILE:?PROFILE required: qwen27-awq-mtp3 | qwen27-awq-mtp3-tq4nc-fi | qwen27-awq-mtp3-int8kv | gemma4-gptq-tq4nc-mtp3 | gemma4-gptq-tq4nc-nomtp}"
 : "${PORT:=19266}"
 
 case "$PROFILE" in
-  qwopus27-awq-mtp3)
-    export VLLM_QWOPUS_MTP_BF16_DRAFT=1
-    export MODEL_DIR=${MODEL_DIR:-/data/models/vllm/mconcat-Qwopus3.6-27B-v2-AWQ-4bit}
-    export SERVED_NAME=${SERVED_NAME:-qwopus27-awq-mtp3-cu128-stable}
+  qwen27-awq-mtp3)
+    export VLLM_QWEN_MTP_BF16_DRAFT=1
+    export MODEL_DIR=${MODEL_DIR:-$MODEL_ROOT/qwen-family-27b-awq}
+    export SERVED_NAME=${SERVED_NAME:-qwen27-awq-mtp3-cu128-stable}
     export MODEL_FAMILY=qwen
     export QUANTIZATION=awq_marlin
     export MAX_MODEL_LEN=${MAX_MODEL_LEN:-8192}
@@ -19,15 +20,15 @@ case "$PROFILE" in
     export MAX_NUM_SEQS=${MAX_NUM_SEQS:-1}
     export MTP_K=${MTP_K:-3}
     ;;
-  qwopus27-awq-mtp3-tq4nc-fi)
-    export VLLM_QWOPUS_MTP_BF16_DRAFT=1
-    export MODEL_DIR=${MODEL_DIR:-/data/models/vllm/mconcat-Qwopus3.6-27B-v2-AWQ-4bit}
-    export SERVED_NAME=${SERVED_NAME:-qwopus27-awq-mtp3-tq4nc-fi-cu128-stable}
+  qwen27-awq-mtp3-tq4nc-fi)
+    export VLLM_QWEN_MTP_BF16_DRAFT=1
+    export MODEL_DIR=${MODEL_DIR:-$MODEL_ROOT/qwen-family-27b-awq}
+    export SERVED_NAME=${SERVED_NAME:-qwen27-awq-mtp3-tq4nc-fi-cu128-stable}
     export MODEL_FAMILY=qwen
     export QUANTIZATION=awq_marlin
     export KV_CACHE_DTYPE=turboquant_4bit_nc
-    # Ragent6 0.2.2 zh-CN full60 can exceed 8192 when the harness reserves
-    # a 2048-token output budget. Keep the real-use TQ profile default at 16k.
+    # Agent-style structured workloads can exceed 8192 when the harness reserves
+    # a large output budget. Keep the real-use TQ profile default at 16k.
     export MAX_MODEL_LEN=${MAX_MODEL_LEN:-16384}
     export GPU_UTIL=${GPU_UTIL:-0.90}
     export MAX_BATCHED_TOKENS=${MAX_BATCHED_TOKENS:-8192}
@@ -38,26 +39,32 @@ case "$PROFILE" in
     export VLLM_TURBOQUANT_CUDAGRAPH_SPEC_DECODE_SAFE=1
     export LANGUAGE_MODEL_ONLY=1
     export SKIP_MM_PROFILING=1
-    # Qwen/Qwopus head_dim=256 regresses badly if sm75 TQ prefill is forced
-    # away from FlashInfer/FA2. Keep this scoped to the Qwen TQ profile.
+    # Qwen-family head_dim=256 regresses badly if SM75 TQ prefill is forced
+    # away from FlashInfer/FA2. Keep this scoped to the Qwen-family TQ profile.
     export VLLM_TURBOQUANT_SM75_FLASHINFER_PREFILL_MIN_HEAD_DIM=0
     # Keep speculative continuation on the decode-style path for q_len>1
     # CUDAGraph verification chunks.
     export VLLM_TURBOQUANT_SPEC_CONTINUATION_DECODE_FASTPATH=1
     ;;
-  quanttrio27-awq-mtp3)
-    export MODEL_DIR=${MODEL_DIR:-/data/models/vllm/QuantTrio-Qwen3.6-27B-AWQ}
-    export SERVED_NAME=${SERVED_NAME:-quanttrio-qwen36-27b-awq-mtp3-cu128-stable}
+  qwen27-awq-mtp3-int8kv)
+    export VLLM_QWEN_MTP_BF16_DRAFT=1
+    export MODEL_DIR=${MODEL_DIR:-$MODEL_ROOT/qwen-family-27b-awq}
+    export SERVED_NAME=${SERVED_NAME:-qwen27-awq-mtp3-int8kv-cu128-stable}
     export MODEL_FAMILY=qwen
     export QUANTIZATION=awq_marlin
-    export MAX_MODEL_LEN=${MAX_MODEL_LEN:-8192}
+    export KV_CACHE_DTYPE=int8_per_token_head
+    export MAX_MODEL_LEN=${MAX_MODEL_LEN:-262144}
     export GPU_UTIL=${GPU_UTIL:-0.90}
-    export MAX_BATCHED_TOKENS=${MAX_BATCHED_TOKENS:-4096}
+    export MAX_BATCHED_TOKENS=${MAX_BATCHED_TOKENS:-8192}
     export MAX_NUM_SEQS=${MAX_NUM_SEQS:-1}
     export MTP_K=${MTP_K:-3}
+    export VLLM_INT8KV_FA_PREFILL=${VLLM_INT8KV_FA_PREFILL:-1}
+    export VLLM_INT8KV_FA_CONTINUATION_DEQUANT=${VLLM_INT8KV_FA_CONTINUATION_DEQUANT:-1}
+    export VLLM_INT8KV_FA_CASCADE_DEQUANT=${VLLM_INT8KV_FA_CASCADE_DEQUANT:-1}
+    export VLLM_INT8KV_FA_CASCADE_TILE_TOKENS=${VLLM_INT8KV_FA_CASCADE_TILE_TOKENS:-65536}
     ;;
   gemma4-gptq-tq4nc-mtp3)
-    export MODEL_DIR=${MODEL_DIR:-/data/models/vllm/ebircak-gemma-4-31B-it-4bit-W4A16-GPTQ}
+    export MODEL_DIR=${MODEL_DIR:-$MODEL_ROOT/gemma4-family-31b-gptq}
     export SERVED_NAME=${SERVED_NAME:-gemma4-gptq-tq4nc-mtp3-cu128-stable}
     export MODEL_FAMILY=gemma4
     export QUANTIZATION=compressed-tensors
@@ -67,7 +74,8 @@ case "$PROFILE" in
     export MAX_BATCHED_TOKENS=${MAX_BATCHED_TOKENS:-8192}
     export MAX_NUM_SEQS=${MAX_NUM_SEQS:-1}
     export MTP_K=${MTP_K:-3}
-    export SPECULATIVE_CONFIG=${SPECULATIVE_CONFIG:-'{"method":"mtp","model":"/data/models/vllm/google-gemma-4-31B-it-assistant","num_speculative_tokens":3,"draft_tensor_parallel_size":1,"disable_padded_drafter_batch":true}'}
+    export GEMMA4_ASSISTANT_MODEL=${GEMMA4_ASSISTANT_MODEL:-$MODEL_ROOT/gemma4-family-assistant}
+    export SPECULATIVE_CONFIG=${SPECULATIVE_CONFIG:-"{\"method\":\"mtp\",\"model\":\"$GEMMA4_ASSISTANT_MODEL\",\"num_speculative_tokens\":3,\"draft_tensor_parallel_size\":1,\"disable_padded_drafter_batch\":true}"}
     export NO_ASYNC_SCHEDULING=1
     export DISABLE_HYBRID_KV_CACHE_MANAGER=1
     export DISABLE_PREFIX_CACHING=1
@@ -89,7 +97,7 @@ case "$PROFILE" in
     export VLLM_GEMMA4_TQ_DECODE_D512_SDPA_FALLBACK=${VLLM_GEMMA4_TQ_DECODE_D512_SDPA_FALLBACK:-0}
     ;;
   gemma4-gptq-tq4nc-nomtp)
-    export MODEL_DIR=${MODEL_DIR:-/data/models/vllm/ebircak-gemma-4-31B-it-4bit-W4A16-GPTQ}
+    export MODEL_DIR=${MODEL_DIR:-$MODEL_ROOT/gemma4-family-31b-gptq}
     export SERVED_NAME=${SERVED_NAME:-gemma4-gptq-tq4nc-nomtp-cu128-stable}
     export MODEL_FAMILY=gemma4
     export QUANTIZATION=compressed-tensors

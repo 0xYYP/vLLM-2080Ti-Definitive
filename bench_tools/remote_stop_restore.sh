@@ -1,16 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-pkill -9 -u dietpi -f "VLLM::|vllm|ptxas|triton|sglang.launch_server|sglang::scheduler|sglang::detokenizer" || true
-systemctl restart miniclaw-minit1-dense-qwen27.service miniclaw-minit1-dense-qwen27-proxy.service \
-  miniclaw-minit2-dense-gemma31.service miniclaw-minit2-dense-gemma31-proxy.service
-sleep 8
-curl -fsS http://127.0.0.1:18100/health
-echo
-curl -fsS http://127.0.0.1:18110/health
-echo
-systemctl is-active miniclaw-minit1-dense-qwen27.service miniclaw-minit1-dense-qwen27-proxy.service \
-  miniclaw-minit2-dense-gemma31.service miniclaw-minit2-dense-gemma31-proxy.service
+: "${RUN_USER:=vllm}"
+: "${SERVICE_RESTART_LIST:=}"
+: "${HEALTH_URLS:=}"
+: "${KILL_PROCESS_PATTERN:=VLLM::|vllm|ptxas|triton|sglang.launch_server|sglang::scheduler|sglang::detokenizer}"
+
+pkill -9 -u "$RUN_USER" -f "$KILL_PROCESS_PATTERN" || true
+
+if [[ -n "$SERVICE_RESTART_LIST" ]]; then
+  # shellcheck disable=SC2086
+  systemctl restart $SERVICE_RESTART_LIST
+  sleep 8
+fi
+
+if [[ -n "$HEALTH_URLS" ]]; then
+  for url in $HEALTH_URLS; do
+    curl -fsS "$url"
+    echo
+  done
+fi
+
+if [[ -n "$SERVICE_RESTART_LIST" ]]; then
+  # shellcheck disable=SC2086
+  systemctl is-active $SERVICE_RESTART_LIST
+fi
+
 failed=$(systemctl --failed --no-legend || true)
 if [[ -n "$failed" ]]; then
   printf '%s\n' "$failed"

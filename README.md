@@ -1,7 +1,7 @@
 <!-- markdownlint-disable MD001 MD041 -->
 # VLLM-2080ti
 
-This is a hardware-focused vLLM fork for the Miniclaw dual RTX 2080 Ti runtime.
+This is a hardware-focused vLLM fork for a dual RTX 2080 Ti runtime.
 
 Target runtime:
 
@@ -22,7 +22,7 @@ Important local docs:
   evidence.
 - `docs/2080ti-stable/README-cu128.md`: CUDA 12.8 migration and validation log.
 - `bench_tools/stable_profile.sh`: named model/profile environment presets.
-- `bench_tools/remote_start_vllm_cu128.sh`: stable launcher used on Miniclaw.
+- `bench_tools/remote_start_vllm_cu128.sh`: environment-driven launcher template.
 
 Core feature matrix:
 
@@ -52,8 +52,8 @@ Notes:
   an ultra-long-context feature.
 - YaRN 524K means RoPE/YaRN extension beyond native context. It is currently a
   capacity/offline route, not the default interactive service mode.
-- Some Qwen-family BF16 draft checkpoints require
-  `VLLM_QWOPUS_MTP_BF16_DRAFT=1`.
+- Some Qwen-family BF16 draft checkpoints require a launch compatibility flag
+  so the draft model does not inherit the target quantization config.
 - The key local fixes are SM75 FlashQLA/GDN prefill, FlashInfer/FA2 TurboQuant
   prefill, INT8 KV continuation/cascade dequant, TurboQuant + MTP CUDAGraph
   safety, and FlashInfer sampler warmup compatibility.
