@@ -27,12 +27,15 @@ Important local docs:
 Current headline evidence:
 
 - Qwopus27 AWQ `MTP3 + TQ4NC` short-context route:
-  PP4096/TG128 about `1736.42 / 77.65 tok/s`; Ragent6 0.2.2 zh-CN
-  `52/60`, weighted `87.4`.
+  PP4096/TG128 about `1736.42 / 77.65 tok/s`, with stable JSON/tool-style
+  generation under the repaired MTP/CUDAGraph path.
 - Qwopus27 AWQ `noMTP + TQ4NC` native-context baseline:
   READY at `262144`, GPU KV cache `992612 tokens`, max concurrency `3.79x`.
-- Heretic GPTQ retained as the Qwen-family low-refusal tier.
-- Gemma31 GPTQ retained as the Gemma-family quality/style alternative.
+- INT8 KV continuation/cascade path can prefill beyond native context under the
+  YaRN 524K experimental route; this is a capacity proof, not an interactive
+  default.
+- Qwen-family AWQ/GPTQ and Gemma31 GPTQ routes have both reached stable serving
+  and valid generation on the same SM75 TP=2 CUDA 12.8 runtime.
 
 Throughput is always written as `prefill / decode tok/s`.
 
