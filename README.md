@@ -40,6 +40,7 @@ recommended path.
 | YaRN 524K extension | 🟡 capacity/offline experiment | 🔴 not validated |
 | No-eager/CUDAGraph | 🟢 supported | 🟢 noMTP / 🟡 MTP |
 | Fast prefill path | 🟢 FlashQLA + FlashInfer/FA2 | 🟢 FlashInfer/FA2 + SDPA512 fallback controls |
+| Peak PP4096/TG128 | ~1770 / 87 tok/s | ~1580 / 44 tok/s |
 
 Notes:
 
