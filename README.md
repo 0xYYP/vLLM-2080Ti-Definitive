@@ -26,21 +26,23 @@ Important local docs:
 
 Core feature matrix:
 
-Legend: 🟢 stable/recommended, 🟡 usable with limits or experimental, 🔴 not a
-recommended path.
+Legend: 🟢 supported and recommended with measured speed or capacity benefit and
+no observed quality regression, 🟡 supported but not recommended as the default
+route, 🔴 unsupported or not a current working route.
 
 | Feature | Qwen-family 27B | Gemma4-family 31B |
 |---|---|---|
-| AWQ Marlin | 🟢 supported | 🔴 not current route |
-| GPTQ Marlin | 🟢 supported | 🟢 supported |
-| MTP speculative decoding | 🟢 Native MTP | 🟡 external draft tested, not a speed route |
-| `turboquant_4bit_nc` KV | 🟢 supported | 🟢 supported |
-| `int8_per_token_head` KV | 🟡 supported for MTP/capacity experiments | 🟡 tested, not recommended default |
-| Native 262K context | 🟢 baseline target, capacity validated | 🟡 needs separate validation |
+| AWQ Marlin | 🟢 recommended weight route | 🔴 not current route |
+| GPTQ Marlin | 🟢 recommended weight route | 🟢 recommended weight route |
+| MTP speculative decoding | 🟢 native speed route | 🟡 external draft works, no speed win |
+| `turboquant_4bit_nc` KV | 🟢 recommended capacity route | 🟢 recommended capacity route |
+| `turboquant_k8v4` KV | 🟡 works, lower-priority KV route | 🔴 not current route |
+| INT8 KV continuation fast path | 🟢 recommended MTP/capacity route | 🔴 not current route |
 | YaRN 524K extension | 🟡 capacity/offline experiment | 🔴 not validated |
-| No-eager/CUDAGraph | 🟢 supported | 🟢 noMTP / 🟡 MTP |
-| Fast prefill path | 🟢 FlashQLA + FlashInfer/FA2 | 🟢 FlashInfer/FA2 + SDPA512 fallback controls |
-| Peak PP4096/TG128 | ~1770 / 87 tok/s | ~1580 / 44 tok/s |
+| No-eager/CUDAGraph noMTP | 🟢 recommended graph route | 🟢 recommended graph route |
+| No-eager/CUDAGraph with MTP | 🟢 recommended graph route | 🟡 works, limited speed gain |
+| Fast prefill path | 🟢 FlashQLA + FlashInfer/FA2 | 🟢 FlashInfer/FA2 with SDPA512 controls |
+| Peak MTP=3 single-request PP4096/TG128 | 1841.7 / 101.3 tok/s | 1665.9 / 44.3 tok/s |
 
 Notes:
 
@@ -53,11 +55,21 @@ Notes:
   an ultra-long-context feature.
 - YaRN 524K means RoPE/YaRN extension beyond native context. It is currently a
   capacity/offline route, not the default interactive service mode.
+- A yellow cell can still be validated and usable; it means the route is not
+  the recommended default because another path gives better speed, capacity, or
+  quality for this hardware profile.
+- Qwen-family TurboQuant KV evidence covers both `turboquant_4bit_nc` and
+  `turboquant_k8v4`; `4bit_nc` is the current preferred high-capacity route.
+- The peak row is recorded historical MTP=3 single-request PP4096/TG128
+  evidence. It is not aggregate throughput, not concurrent-request throughput,
+  and not a guarantee that the current stable profile reproduces the same
+  number.
 - Some Qwen-family BF16 draft checkpoints require a launch compatibility flag
   so the draft model does not inherit the target quantization config.
 - The key local fixes are SM75 FlashQLA/GDN prefill, FlashInfer/FA2 TurboQuant
-  prefill, INT8 KV continuation/cascade dequant, TurboQuant + MTP CUDAGraph
-  safety, and FlashInfer sampler warmup compatibility.
+  prefill, INT8 KV continuation/cascade dequant for long-context capacity,
+  TurboQuant + MTP CUDAGraph safety, and FlashInfer sampler warmup
+  compatibility.
 
 Representative validation evidence:
 
@@ -65,6 +77,8 @@ Representative validation evidence:
   `1736.42 / 77.65 tok/s`, with stable JSON/tool-style generation.
 - Qwen-family 27B AWQ `noMTP + TQ4NC`, native context:
   READY at `262144`, max concurrency `3.79x` for 262K requests.
+- Qwen-family 27B AWQ `turboquant_k8v4`, native context:
+  READY at `262144`, reported KV cache `520461` tokens in startup probing.
 - Qwen-family 27B GPTQ `INT8 KV + YaRN 524K`:
   32K prefill `1494.20 tok/s`; 520K prefill completed at `497.86 tok/s`
   in capacity smoke testing.
