@@ -27,23 +27,23 @@ Important local docs:
 Core feature matrix:
 
 - Model families:
-  - Qwen/Qwopus 27B AWQ with native MTP.
-  - Qwen/Heretic 27B GPTQ with native MTP.
-  - Gemma4 31B GPTQ with text-only serving and optional assistant MTP path.
+  - Qwen-family 27B text models with native MTP.
+  - Gemma4-family 31B text models with optional assistant MTP path.
 - Weight quantization:
-  - AWQ Marlin for Qwen/Qwopus.
-  - GPTQ Marlin for Qwen/Heretic and Gemma4.
+  - AWQ Marlin for Qwen-family checkpoints.
+  - GPTQ Marlin for Qwen-family and Gemma4-family checkpoints.
 - KV cache modes:
   - Default FP16/BF16 KV for baseline compatibility.
   - `turboquant_4bit_nc` for high-capacity Qwen/Gemma serving.
   - `int8_per_token_head` for Qwen-family MTP and extended-context experiments.
 - Speculative decoding:
   - Qwen-family native MTP works with no-eager/CUDAGraph.
-  - Qwopus requires `VLLM_QWOPUS_MTP_BF16_DRAFT=1`.
+  - Some Qwen-family BF16 draft checkpoints require
+    `VLLM_QWOPUS_MTP_BF16_DRAFT=1`.
   - Gemma4 MTP is compatibility-tested but not a recommended speed path.
 - Context modes:
-  - Native context baseline: `262144` tokens for Qwen/Qwopus.
-  - Qwopus AWQ `TQ4NC + noMTP` reaches READY at `262144` with GPU KV cache
+  - Native context baseline: `262144` tokens for Qwen-family 27B models.
+  - Qwen-family AWQ `TQ4NC + noMTP` reaches READY at `262144` with GPU KV cache
     capacity `992612 tokens`.
   - YaRN factor 2 / `524288` is experimental and only for capacity/offline
     routes; it is not the default interactive path.
@@ -56,11 +56,11 @@ Core feature matrix:
 
 Representative validation evidence:
 
-- Qwopus27 AWQ `MTP3 + TQ4NC`, PP4096/TG128:
+- Qwen-family 27B AWQ `MTP3 + TQ4NC`, PP4096/TG128:
   `1736.42 / 77.65 tok/s`, with stable JSON/tool-style generation.
-- Qwopus27 AWQ `noMTP + TQ4NC`, native context:
+- Qwen-family 27B AWQ `noMTP + TQ4NC`, native context:
   READY at `262144`, max concurrency `3.79x` for 262K requests.
-- Heretic GPTQ `INT8 KV + YaRN 524K`:
+- Qwen-family 27B GPTQ `INT8 KV + YaRN 524K`:
   32K prefill `1494.20 tok/s`; 520K prefill completed at `497.86 tok/s`
   in capacity smoke testing.
 
