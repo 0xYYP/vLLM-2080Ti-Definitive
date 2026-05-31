@@ -33,8 +33,8 @@ recommended path.
 |---|---|---|
 | AWQ Marlin | 🟢 supported | 🔴 not current route |
 | GPTQ Marlin | 🟢 supported | 🟢 supported |
-| Native MTP | 🟢 supported | 🔴 not available |
-| Assistant MTP | 🔴 not current route | 🟡 compatible, not a speed route |
+| In-checkpoint MTP | 🟢 supported | 🔴 not current route |
+| External draft MTP | 🟡 launcher-supported, not validated as stable | 🟡 compatible, not a speed route |
 | Default KV | 🟢 supported | 🟢 supported |
 | `turboquant_4bit_nc` KV | 🟢 supported | 🟢 supported |
 | `int8_per_token_head` KV | 🟡 supported for MTP/capacity experiments | 🟡 tested, not recommended default |
@@ -47,6 +47,12 @@ Notes:
 
 - Specific checkpoints and weight formats are deployment-profile choices under
   each model family; they are not separate rows in this feature matrix.
+- In-checkpoint MTP means the target checkpoint itself contains the MTP/draft
+  tensors and vLLM can use `{"method":"mtp","num_speculative_tokens":K}` without
+  a separate draft model path.
+- External draft MTP means vLLM receives a separate assistant/draft model through
+  `SPECULATIVE_CONFIG`. The launcher supports this generally, but only Gemma4
+  has a documented external-assistant profile in this stable tree today.
 - Native 262K means model-declared `262144` context. This is the baseline, not
   an ultra-long-context feature.
 - YaRN 524K means RoPE/YaRN extension beyond native context. It is currently a
