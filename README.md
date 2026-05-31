@@ -6,6 +6,39 @@ The definitive vLLM runtime for dual RTX 2080 Ti / SM75 serving.
 This is a hardware-focused fork that preserves the patched source, launch
 profiles, and runtime notes needed to reproduce the working 2080 Ti vLLM stack.
 
+## Why RTX 2080 Ti for LLM Inference?
+
+The project is built around a simple cost/performance bet: use roughly half the
+secondary-market price of an RTX 3090 Ti to get a dual 22GB RTX 2080 Ti setup
+that can match or exceed it on the physical resources that matter for LLM
+serving, then use vLLM runtime work to turn those resources into real tokens.
+
+The CUDA core row uses a physical, de-watered normalization: 64 FP32 lanes per
+SM. This intentionally avoids mixing Turing's physical CUDA lanes with Ampere's
+marketing CUDA-core count, where each SM exposes two FP32-capable datapaths.
+
+| Metric | 1x RTX 3090 Ti baseline | 2x RTX 2080 Ti 22GB + NVLink | Ratio |
+|---|---:|---:|---:|
+| Physical CUDA core count | 5,376 | 8,704 | 1.62x |
+| SM count | 84 | 136 | 1.62x |
+| Physical Tensor Core count | 336 | 1,088 | 3.24x |
+| Dense Tensor FP16 matrix throughput | 160 TFLOPS | 228 TFLOPS | 1.43x |
+| Total physical memory bandwidth | 1,008 GB/s | 1,232 GB/s | 1.22x |
+| Total VRAM capacity | 24GB | 44GB | 1.83x |
+| Secondary-market price anchor | about CNY 7,000-8,000 | CNY 3,600 with NVLink | about 0.5x |
+
+That is the first value of this fork: take old but strong Turing silicon and
+make it behave like a serious 27B/31B-class inference platform through Marlin,
+FlashQLA/FlashInfer/FA2, TurboQuant/INT8 KV, MTP, and CUDAGraph integration.
+
+Spec references: NVIDIA's
+[Turing architecture whitepaper](https://images.nvidia.com/aem-dam/Solutions/design-visualization/technologies/turing-architecture/NVIDIA-Turing-Architecture-Whitepaper.pdf?ncid=no-ncid)
+for RTX 2080 Ti figures, NVIDIA's
+[RTX 3090 Ti product page](https://www.nvidia.com/en-us/geforce/graphics-cards/30-series/rtx-3090-3090ti/)
+and
+[Ada architecture documentation](https://images.nvidia.com/aem-dam/Solutions/geforce/ada/nvidia-ada-gpu-architecture.pdf?ncid=no-ncid)
+for RTX 3090 Ti figures.
+
 Target runtime:
 
 - GPU: dual RTX 2080 Ti, SM75, tensor parallel size 2
