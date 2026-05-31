@@ -24,18 +24,45 @@ Important local docs:
 - `bench_tools/stable_profile.sh`: named model/profile environment presets.
 - `bench_tools/remote_start_vllm_cu128.sh`: stable launcher used on Miniclaw.
 
-Current headline evidence:
+Core feature matrix:
 
-- Qwopus27 AWQ `MTP3 + TQ4NC` short-context route:
-  PP4096/TG128 about `1736.42 / 77.65 tok/s`, with stable JSON/tool-style
-  generation under the repaired MTP/CUDAGraph path.
-- Qwopus27 AWQ `noMTP + TQ4NC` native-context baseline:
-  READY at `262144`, GPU KV cache `992612 tokens`, max concurrency `3.79x`.
-- INT8 KV continuation/cascade path can prefill beyond native context under the
-  YaRN 524K experimental route; this is a capacity proof, not an interactive
-  default.
-- Qwen-family AWQ/GPTQ and Gemma31 GPTQ routes have both reached stable serving
-  and valid generation on the same SM75 TP=2 CUDA 12.8 runtime.
+- Model families:
+  - Qwen/Qwopus 27B AWQ with native MTP.
+  - Qwen/Heretic 27B GPTQ with native MTP.
+  - Gemma4 31B GPTQ with text-only serving and optional assistant MTP path.
+- Weight quantization:
+  - AWQ Marlin for Qwen/Qwopus.
+  - GPTQ Marlin for Qwen/Heretic and Gemma4.
+- KV cache modes:
+  - Default FP16/BF16 KV for baseline compatibility.
+  - `turboquant_4bit_nc` for high-capacity Qwen/Gemma serving.
+  - `int8_per_token_head` for Qwen-family MTP and extended-context experiments.
+- Speculative decoding:
+  - Qwen-family native MTP works with no-eager/CUDAGraph.
+  - Qwopus requires `VLLM_QWOPUS_MTP_BF16_DRAFT=1`.
+  - Gemma4 MTP is compatibility-tested but not a recommended speed path.
+- Context modes:
+  - Native context baseline: `262144` tokens for Qwen/Qwopus.
+  - Qwopus AWQ `TQ4NC + noMTP` reaches READY at `262144` with GPU KV cache
+    capacity `992612 tokens`.
+  - YaRN factor 2 / `524288` is experimental and only for capacity/offline
+    routes; it is not the default interactive path.
+- Fast attention and serving fixes:
+  - SM75 FlashQLA / GDN prefill route.
+  - FlashInfer/FA2 TurboQuant prefill on Turing.
+  - INT8 KV continuation/cascade dequant bridge for long-context prefill.
+  - TurboQuant + MTP CUDAGraph safety fixes.
+  - FlashInfer sampler warmup compatibility fix.
+
+Representative validation evidence:
+
+- Qwopus27 AWQ `MTP3 + TQ4NC`, PP4096/TG128:
+  `1736.42 / 77.65 tok/s`, with stable JSON/tool-style generation.
+- Qwopus27 AWQ `noMTP + TQ4NC`, native context:
+  READY at `262144`, max concurrency `3.79x` for 262K requests.
+- Heretic GPTQ `INT8 KV + YaRN 524K`:
+  32K prefill `1494.20 tok/s`; 520K prefill completed at `497.86 tok/s`
+  in capacity smoke testing.
 
 Throughput is always written as `prefill / decode tok/s`.
 
