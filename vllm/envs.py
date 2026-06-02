@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     VLLM_LOG_STATS_INTERVAL: float = 10.0
     VLLM_TRACE_FUNCTION: int = 0
     VLLM_USE_FLASHINFER_SAMPLER: bool = True
+    VLLM_SM75_SPEC_SYNC_MODE: Literal["auto", "safe", "nosync"] = "auto"
     VLLM_PP_LAYER_PARTITION: str | None = None
     VLLM_CPU_KVCACHE_SPACE: int | None = 0
     VLLM_CPU_OMP_THREADS_BIND: str = "auto"
@@ -728,6 +729,16 @@ environment_variables: dict[str, Callable[[], Any]] = {
         if "VLLM_USE_FLASHINFER_SAMPLER" in os.environ
         else True
     ),
+    # 2080Ti/SM75 local policy for async-spec decode stream syncs.
+    # auto: keep syncs for TurboQuant KV safety; skip for non-TQ KV speed.
+    # safe: always keep syncs.
+    # nosync: always skip syncs for peak non-TQ profiling.
+    "VLLM_SM75_SPEC_SYNC_MODE": lambda: (
+        env_with_choices(
+            "VLLM_SM75_SPEC_SYNC_MODE", "auto", ["auto", "safe", "nosync"], False
+        )()
+        or "auto"
+    ).lower(),
     # Pipeline stage partition strategy
     "VLLM_PP_LAYER_PARTITION": lambda: os.getenv("VLLM_PP_LAYER_PARTITION", None),
     # (CPU backend only) CPU key-value cache space.

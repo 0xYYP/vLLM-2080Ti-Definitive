@@ -79,10 +79,6 @@ from vllm.v1.utils import CpuGpuBuffer
 
 FLASHINFER_WORKSPACE_BUFFER_SIZE_BATCH_INVARIANT = 2048 * 1024 * 1024
 
-_TURING_FA_PREFILL_USED = 0
-_TURING_FA_PREFILL_SKIP_LOGGED: set[str] = set()
-_TURING_FA_PREFILL_IMPORT = None
-
 FP8_DTYPE = current_platform.fp8_dtype()
 FP4_DTYPE = torch.uint8
 
@@ -1596,90 +1592,14 @@ class FlashInferImpl(AttentionImpl):
                     else:
                         out_prefill = output[num_decode_tokens:]
 
-                    used_turing_fa = False
-                    if os.environ.get("VLLM_SM75_TURING_FA_PREFILL") == "1":
-                        global _TURING_FA_PREFILL_USED, _TURING_FA_PREFILL_IMPORT
-                        global _TURING_FA_PREFILL_SKIP_LOGGED
-                        skip_reason = None
-                        prefill_meta = attn_metadata.prefill
-                        assert isinstance(prefill_meta, FIPrefill)
-                        prefill_key = key[num_decode_tokens:]
-                        prefill_value = value[num_decode_tokens:]
-                        if num_decode_tokens != 0:
-                            skip_reason = "mixed_decode_prefill"
-                        elif self.window_left != -1:
-                            skip_reason = "sliding_window"
-                        elif self.logits_soft_cap not in (None, 0.0):
-                            skip_reason = "logits_soft_cap"
-                        elif self.sinks is not None:
-                            skip_reason = "attention_sinks"
-                        elif self.is_kvcache_nvfp4 or is_quantized_kv_cache(self.kv_cache_dtype):
-                            skip_reason = "quantized_kv_cache"
-                        elif query.dtype != torch.float16 or key.dtype != torch.float16 or value.dtype != torch.float16:
-                            skip_reason = "non_fp16_qkv"
-                        elif self.head_size not in (64, 128):
-                            skip_reason = "unsupported_head_dim"
-                        elif prefill_meta.qo_indptr_gpu is None or prefill_meta.seq_lens_cpu is None:
-                            skip_reason = "missing_prefill_metadata"
-                        else:
-                            q_lens_cpu = (
-                                prefill_meta.qo_indptr_cpu[1:]
-                                - prefill_meta.qo_indptr_cpu[:-1]
-                            )
-                            if not torch.equal(q_lens_cpu, prefill_meta.seq_lens_cpu.to(q_lens_cpu.device)):
-                                skip_reason = "prefix_or_cached_kv"
-                            elif not (
-                                prefill_query.is_contiguous()
-                                and prefill_key.is_contiguous()
-                                and prefill_value.is_contiguous()
-                            ):
-                                skip_reason = "non_contiguous_qkv"
-                            else:
-                                if _TURING_FA_PREFILL_IMPORT is None:
-                                    from flash_attention_interface import flash_attn_varlen_func
-
-                                    _TURING_FA_PREFILL_IMPORT = flash_attn_varlen_func
-                                out_prefill.copy_(
-                                    _TURING_FA_PREFILL_IMPORT(
-                                        prefill_query,
-                                        prefill_key,
-                                        prefill_value,
-                                        prefill_meta.qo_indptr_gpu.to(torch.int32),
-                                        prefill_meta.qo_indptr_gpu.to(torch.int32),
-                                        prefill_meta.max_q_len,
-                                        prefill_meta.max_q_len,
-                                        softmax_scale=self.scale,
-                                        causal=True,
-                                    )
-                                )
-                                _TURING_FA_PREFILL_USED += 1
-                                used_turing_fa = True
-                                if _TURING_FA_PREFILL_USED <= 4 or _TURING_FA_PREFILL_USED % 64 == 0:
-                                    logger.info(
-                                        "SM75 Turing FlashAttention prefill used count=%d tokens=%d max_q_len=%d heads=%d kv_heads=%d head_dim=%d",
-                                        _TURING_FA_PREFILL_USED,
-                                        num_prefill_tokens,
-                                        prefill_meta.max_q_len,
-                                        prefill_query.shape[1],
-                                        prefill_key.shape[1],
-                                        self.head_size,
-                                    )
-                        if skip_reason is not None and skip_reason not in _TURING_FA_PREFILL_SKIP_LOGGED:
-                            _TURING_FA_PREFILL_SKIP_LOGGED.add(skip_reason)
-                            logger.info(
-                                "SM75 Turing FlashAttention prefill skipped reason=%s",
-                                skip_reason,
-                            )
-
-                    if not used_turing_fa:
-                        prefill_wrapper.run(
-                            prefill_query,
-                            kv_cache_permute,
-                            k_scale=layer._k_scale_float,
-                            v_scale=layer._v_scale_float,
-                            out=out_prefill,
-                            kv_cache_sf=kv_cache_sf,
-                        )
+                    prefill_wrapper.run(
+                        prefill_query,
+                        kv_cache_permute,
+                        k_scale=layer._k_scale_float,
+                        v_scale=layer._v_scale_float,
+                        out=out_prefill,
+                        kv_cache_sf=kv_cache_sf,
+                    )
 
                     if needs_fp8_out_prefill:
                         output[

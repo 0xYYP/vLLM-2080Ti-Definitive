@@ -4,11 +4,12 @@
 
 import typing
 from collections.abc import Callable, Iterable
+import os
 
 import torch
 from torch import nn
 
-from vllm.compilation.decorators import support_torch_compile
+from vllm.compilation.decorators import ignore_torch_compile, support_torch_compile
 from vllm.config import VllmConfig
 from vllm.distributed.parallel_state import get_pp_group
 from vllm.logger import init_logger
@@ -45,6 +46,13 @@ from .utils import (
 logger = init_logger(__name__)
 
 
+def _maybe_ignore_qwopus_mtp_torch_compile(cls):
+    if os.environ.get("VLLM_QWOPUS_MTP_BF16_DRAFT") == "1":
+        return ignore_torch_compile(cls)
+    return cls
+
+
+@_maybe_ignore_qwopus_mtp_torch_compile
 @support_torch_compile(
     dynamic_arg_dims={
         "input_ids": 0,
@@ -81,11 +89,21 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
         # missing from hf_quant_config.json exclude_modules. Force unquantized.
         # Ref: https://github.com/vllm-project/vllm/pull/38650
         # Ref: https://github.com/NVIDIA/Model-Optimizer/pull/1124
+        qwopus_bf16_mtp = os.environ.get("VLLM_QWOPUS_MTP_BF16_DRAFT") == "1"
         fc_quant = (
             None
-            if (quant_config and quant_config.get_name() == "modelopt_fp4")
+            if (
+                qwopus_bf16_mtp
+                or (quant_config and quant_config.get_name() == "modelopt_fp4")
+            )
             else quant_config
         )
+        layer_quant = None if qwopus_bf16_mtp else quant_config
+        if qwopus_bf16_mtp:
+            logger.info(
+                "VLLM_QWOPUS_MTP_BF16_DRAFT=1: loading Qwen3.5 MTP "
+                "draft fc/layer weights without the target quantization config"
+            )
         self.fc = ColumnParallelLinear(
             self.config.hidden_size * 2,
             self.config.hidden_size,
@@ -100,6 +118,7 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
             Qwen3_5DecoderLayer(
                 vllm_config,
                 layer_type="full_attention",
+                override_quant_config=layer_quant,
                 prefix=f"{prefix}.layers.{idx}",
             )
             for idx in range(self.num_mtp_layers)

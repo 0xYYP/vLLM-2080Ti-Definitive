@@ -66,16 +66,6 @@ if _HAS_FLASH_ATTN:
     from vllm.v1.attention.backends.fa_utils import flash_attn_varlen_func
 
 try:
-    from flash_attention_interface import (
-        flash_attn_varlen_func as turing_flash_attn_varlen_func,
-    )
-
-    _HAS_TURING_FLASH_ATTN = True
-except ImportError:
-    turing_flash_attn_varlen_func = None  # type: ignore[assignment]
-    _HAS_TURING_FLASH_ATTN = False
-
-try:
     from flashinfer import BatchPrefillWithRaggedKVCacheWrapper
 except ImportError:
     BatchPrefillWithRaggedKVCacheWrapper = None  # type: ignore[assignment]
@@ -96,9 +86,6 @@ _SPEC_CONTINUATION_DECODE_FASTPATH = (
 )
 _DEFAULT_TQ_FI_BACKEND = os.getenv("VLLM_TURBOQUANT_FLASHINFER_BACKEND", "fa2")
 _DEFAULT_TQ_FI_PREFILL = os.getenv("VLLM_TURBOQUANT_USE_FLASHINFER_PREFILL", "1") == "1"
-_DEFAULT_TQ_TURING_PREFILL = (
-    os.getenv("VLLM_TURBOQUANT_USE_TURING_PREFILL", "1") == "1"
-)
 _GEMMA4_TQ_DECODE_D512_SDPA_FALLBACK = (
     os.getenv("VLLM_GEMMA4_TQ_DECODE_D512_SDPA_FALLBACK", "1") == "1"
 )
@@ -512,17 +499,11 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
             and current_platform.is_cuda()
             and not sm75_skip_flashinfer_prefill
         )
-        self._use_turing_flash_attn_prefill = (
-            sm75_skip_flashinfer_prefill
-            and _DEFAULT_TQ_TURING_PREFILL
-            and _HAS_TURING_FLASH_ATTN
-        )
         # Detect flash-attn version (FA2/3/4) for prefill paths.
         self.fa_version = (
             None
             if (
                 self._use_flashinfer_prefill
-                or self._use_turing_flash_attn_prefill
                 or sm75_skip_flashinfer_prefill
             )
             else get_flash_attn_version(head_size=head_size)
@@ -535,21 +516,10 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                 cap_str,
             )
         elif sm75_skip_flashinfer_prefill:
-            if self._use_turing_flash_attn_prefill:
-                logger.info_once(
-                    "TurboQuant prefill is using flash-attn-turing fallback on CUDA capability 7.5 for head_dim=%s",
-                    head_size,
-                )
-            elif not _DEFAULT_TQ_TURING_PREFILL:
-                logger.info_once(
-                    "TurboQuant prefill is using SDPA fallback on CUDA capability 7.5 for head_dim=%s because Turing FA fallback is disabled",
-                    head_size,
-                )
-            else:
-                logger.warning_once(
-                    "TurboQuant prefill skipped FlashInfer on CUDA capability 7.5 for head_dim=%s, but flash-attn-turing is unavailable",
-                    head_size,
-                )
+            logger.info_once(
+                "TurboQuant prefill is using SDPA fallback on CUDA capability 7.5 for head_dim=%s because FlashInfer prefill is disabled for this head_dim",
+                head_size,
+            )
 
         # Fixed NUM_KV_SPLITS (grid dims must be constant for cudagraph,
         # and benchmarks show no regression vs dynamic in eager mode).
@@ -723,8 +693,8 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
 
     def _has_flash_attn_prefill(self) -> bool:
         if self._sm75_skip_flashinfer_prefill:
-            return self._use_turing_flash_attn_prefill
-        return self._use_turing_flash_attn_prefill or _HAS_FLASH_ATTN
+            return False
+        return _HAS_FLASH_ATTN
 
     def _flashinfer_indptr(
         self,
@@ -904,19 +874,6 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         max_seqlen_q: int,
         max_seqlen_k: int,
     ) -> torch.Tensor:
-        if self._use_turing_flash_attn_prefill:
-            assert turing_flash_attn_varlen_func is not None
-            return turing_flash_attn_varlen_func(
-                q=q,
-                k=k,
-                v=v,
-                cu_seqlens_q=cu_seqlens_q,
-                cu_seqlens_k=cu_seqlens_k,
-                max_seqlen_q=max_seqlen_q,
-                max_seqlen_k=max_seqlen_k,
-                softmax_scale=self.scale,
-                causal=True,
-            )
         # fa_utils.get_flash_attn_version() returns None on backends that
         # should not pass an explicit fa_version kwarg.
         if self.fa_version is None:

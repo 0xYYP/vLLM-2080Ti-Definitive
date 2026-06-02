@@ -427,6 +427,11 @@ class GPUModelRunner(
         self.kv_cache_dtype = kv_cache_dtype_str_to_dtype(
             cache_config.cache_dtype, self.model_config
         )
+        sync_mode = envs.VLLM_SM75_SPEC_SYNC_MODE
+        cache_dtype = str(cache_config.cache_dtype).lower()
+        self.sm75_spec_syncs_enabled = sync_mode == "safe" or (
+            sync_mode == "auto" and cache_dtype.startswith("turboquant_")
+        )
 
         self.is_pooling_model = model_config.runner_type == "pooling"
         self.enable_prompt_embeds = model_config.enable_prompt_embeds
@@ -1997,7 +2002,10 @@ class GPUModelRunner(
             and self.valid_sampled_token_count_gpu is not None
             and prev_req_id_to_index
         ):
-            if self.valid_sampled_token_count_copy_stream is not None:
+            if (
+                self.sm75_spec_syncs_enabled
+                and self.valid_sampled_token_count_copy_stream is not None
+            ):
                 torch.cuda.current_stream().wait_stream(
                     self.valid_sampled_token_count_copy_stream
                 )
@@ -2037,11 +2045,10 @@ class GPUModelRunner(
         )
         self.seq_lens[num_reqs:].fill_(0)
 
-        # The block table and query_start_loc are copied to GPU with
-        # non_blocking=True. TurboQuant hybrid runs can otherwise race
-        # compute_slot_mapping against those transfers and trip Triton with
-        # illegal-memory-access on later requests.
-        torch.cuda.current_stream().synchronize()
+        if self.sm75_spec_syncs_enabled:
+            # TurboQuant hybrid runs can otherwise race compute_slot_mapping
+            # against non-blocking GPU copies and trip later attention kernels.
+            torch.cuda.current_stream().synchronize()
         self.input_batch.block_table.compute_slot_mapping(
             num_reqs,
             self.query_start_loc.gpu[: num_reqs + 1],

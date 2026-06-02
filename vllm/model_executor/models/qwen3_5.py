@@ -120,6 +120,7 @@ class Qwen3_5DecoderLayer(Qwen3NextDecoderLayer):
         self,
         vllm_config: VllmConfig,
         layer_type: str,
+        override_quant_config=None,
         prefix: str = "",
     ) -> None:
         super(Qwen3NextDecoderLayer, self).__init__()
@@ -127,7 +128,11 @@ class Qwen3_5DecoderLayer(Qwen3NextDecoderLayer):
         config = vllm_config.model_config.hf_text_config
         model_config = vllm_config.model_config
         cache_config = vllm_config.cache_config
-        quant_config = vllm_config.quant_config
+        quant_config = (
+            vllm_config.quant_config
+            if override_quant_config is None
+            else override_quant_config
+        )
 
         self.layer_type = layer_type
         self.layer_idx = extract_layer_index(prefix)

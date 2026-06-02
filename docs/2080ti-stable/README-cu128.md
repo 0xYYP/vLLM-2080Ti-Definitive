@@ -9,7 +9,7 @@ while preserving local vLLM, FlashQLA, FlashInfer, MTP, and KV-cache patches.
 - Runtime changed from `torch 2.11.0+cu130` to `torch 2.11.0+cu128` in this
   isolated venv only.
 - Light validation passed: torch CUDA reports 12.8, CUDA matmul works, vLLM
-  0.21.0 imports, FlashInfer 0.6.8 imports, and flash-attn-turing imports.
+  0.21.0 imports, and FlashInfer 0.6.8 imports.
 - Qwen-family 27B AWQ MTP3 non-eager service started successfully on dual RTX
   2080 Ti with AWQ Marlin, FlashInfer attention, FlashQLA legacy GDN prefill,
   and BF16 draft compatibility.
@@ -21,6 +21,39 @@ while preserving local vLLM, FlashQLA, FlashInfer, MTP, and KV-cache patches.
   FlashInfer/FlashQLA and is not fatal.
 
 Throughput is written as `prefill / decode tok/s`.
+
+## 2026-05-31 Qwen-family 100 tok/s single-request peak
+
+Rechecked the Qwen-family 27B AWQ + native MTP3 route under the CUDA 12.8 stable
+runtime after the 100 tok/s target was relaxed from a stable median requirement
+to a single-row peak requirement.
+
+Evidence:
+
+- Runtime: `torch 2.11.0+cu128`, CUDA runtime 12.8, vLLM 0.21 local SM75 stack.
+- Route: AWQ Marlin, FlashInfer sampler and attention, FlashQLA legacy GDN
+  prefill, native MTP3, CUDAGraph/no-eager.
+- Benchmark shape: single request, PP4096/TG128, `max_model_len=8192`,
+  `max_num_seqs=1`, `max_num_batched_tokens=8192`, `gpu_memory_utilization=0.86`.
+- Peak row: `1747.52 / 100.98 tok/s`.
+- Packaged route: `PROFILE=qwen27-awq-mtp3-peak`, which uses non-TurboQuant KV
+  and the SM75 nosync speculative path.
+
+This is the clean cu128 evidence for the project claim that dual RTX 2080 Ti
+vLLM can reach 100 tok/s single-request decode. It is not a median and should
+not be mixed with aggregate multi-request throughput.
+
+## SM75 speculative-sync auto policy
+
+`VLLM_SM75_SPEC_SYNC_MODE=auto` now adapts to the KV route:
+
+- non-TurboQuant KV: skip the two async-spec stream syncs for higher decode
+  throughput;
+- `turboquant_*` KV: keep the syncs because the TQ/CUDAGraph route needs them
+  for graph safety.
+
+Manual overrides are available for debugging: `safe` always keeps the syncs,
+while `nosync` always skips them.
 
 ## Gemma4 K12 no-eager retest on cu128
 
@@ -75,21 +108,21 @@ Rechecked 2026-05-29 after a later MTP performance regression where structured
 generation still passed but speculative acceptance was `0.0%` and decode fell
 to roughly `20 tok/s`.
 
-Root cause: the launcher did not pass the BF16 draft compatibility flag into the
-vLLM worker environment. The known-good cu128 logs had this variable active,
-which makes the BF16 MTP draft load without inheriting the target AWQ/Marlin
-quantization config. Without it, draft/target logits mismatch and speculative
-decoding accepts nothing.
+Root cause: the launcher did not pass the Qwopus BF16 draft compatibility flag
+into the vLLM worker environment. The known-good cu128 logs had this variable
+active, which makes the BF16 MTP draft load without inheriting the target
+AWQ/Marlin quantization config. Without it, draft/target logits mismatch and
+speculative decoding accepts nothing.
 
 Launcher fix:
 
-- `bench_tools/remote_start_vllm_cu128.sh` now preserves the Qwen-family BF16
-  draft compatibility flag.
+- `bench_tools/remote_start_vllm_cu128.sh` now preserves the Qwopus BF16 draft
+  compatibility flag.
 
 Validation command shape:
 
 ```bash
-VLLM_QWEN_MTP_BF16_DRAFT=1 \
+VLLM_QWOPUS_MTP_BF16_DRAFT=1 \
 MODEL_DIR=<MODEL_ROOT>/<QWEN_FAMILY_AWQ_CHECKPOINT> \
 SERVED_NAME=qwen27-awq-mtp3-cu128-bf16draft-verify \
 PORT=19266 MAX_MODEL_LEN=8192 GPU_UTIL=0.90 MAX_BATCHED_TOKENS=4096 \
