@@ -3,8 +3,6 @@
 
 ![vLLM 2080 Ti Definitive Edition 题图](docs/assets/vllm-2080ti-cover.jpg)
 
-![单请求实时测速演示](docs/assets/vllmspeed.gif)
-
 面向双 RTX 2080 Ti / SM75 推理的终极版 vLLM 运行时。
 
 这是一个硬件定向的 vLLM fork，用来保存已经跑通的 2080 Ti vLLM
@@ -14,6 +12,8 @@
 达到 `100+ tok/s`，Gemma4 31B 单请求 decode 达到 `~100 tok/s`。
 
 语言：[English](README.md) | 简体中文
+
+![单请求实时测速演示](docs/assets/vllmspeed.gif)
 
 ## 💡 为什么用 RTX 2080 Ti 做 LLM 推理？
 
@@ -46,17 +46,6 @@
 这就是本 fork 的首要价值：把老但仍然很强的 Turing 硅片，通过 Marlin、
 FlashQLA/FlashInfer/FA2、TurboQuant/INT8 KV、MTP 和 CUDAGraph 集成，
 变成一个严肃可用的 27B/31B 级别推理平台。
-
-## 🚀 MTP 加速取决于接受率
-
-MTP / speculative decoding 不是固定倍率加速。它的收益取决于 target model
-最终接受了多少 draft token，所以最佳 `MTP_K` 会随任务类型变化。我们的 sweep
-里，代码生成和科学计算分析的加速更明显；文学/自然文长输出的接受率更容易下降，
-高 K 反而可能在真实长输出里回退。
-
-当前稳定 profile 中，Qwen3.6 以 MTP3 作为更保守的混合 agent 默认值；Gemma4
-只在特定 FP16 速度 profile 里使用更高 MTP。详细实测表见
-[MTP 任务敏感性](docs/mtp-task-sensitivity.md)。
 
 ## 🧩 核心路线
 
@@ -193,6 +182,17 @@ Gemma 限制条件：
 - 兼容目标：NVIDIA Turing / SM75 显卡。其它 Turing 显卡仍需要按显存容量、
   P2P/NVLink 行为、模型 head_dim、KV dtype、CUDAGraph/MTP 设置重新验证
   profile。
+
+## 🚀 MTP 加速取决于接受率
+
+MTP / speculative decoding 不是固定倍率加速。它的收益取决于 target model
+最终接受了多少 draft token，所以最佳 `MTP_K` 会随任务类型变化。我们的 sweep
+里，代码生成和科学计算分析的加速更明显；文学/自然文长输出的接受率更容易下降，
+高 K 反而可能在真实长输出里回退。
+
+当前稳定 profile 中，Qwen3.6 以 MTP3 作为更保守的混合 agent 默认值；Gemma4
+只在特定 FP16 速度 profile 里使用更高 MTP。详细实测表见
+[MTP 任务敏感性](docs/mtp-task-sensitivity.md)。
 
 ## 🚀 如何使用
 

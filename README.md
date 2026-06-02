@@ -3,8 +3,6 @@
 
 ![vLLM 2080 Ti Definitive Edition cover](docs/assets/vllm-2080ti-cover.jpg)
 
-![Live single-request speed demo](docs/assets/vllmspeed.gif)
-
 The definitive vLLM runtime for dual RTX 2080 Ti / SM75 serving.
 
 This is a hardware-focused fork that preserves the patched source, launch
@@ -15,6 +13,8 @@ Gemma4 31B reaches `~100 tok/s` single-request decode on the same dual 2080 Ti
 TP=2 runtime.
 
 Language: English | [简体中文](README.zh-CN.md)
+
+![Live single-request speed demo](docs/assets/vllmspeed.gif)
 
 ## 💡 Why RTX 2080 Ti for LLM Inference?
 
@@ -42,19 +42,6 @@ serving, then use vLLM runtime work to turn those resources into real tokens.
 That is the first value of this fork: take old but strong Turing silicon and
 make it behave like a serious 27B/31B-class inference platform through Marlin,
 FlashQLA/FlashInfer/FA2, TurboQuant/INT8 KV, MTP, and CUDAGraph integration.
-
-## 🚀 MTP Is Acceptance-Bound
-
-MTP/speculative decoding is not a fixed multiplier. Its speedup depends on how
-many drafted tokens the target model accepts, so the best `MTP_K` changes with
-task type. In our sweeps, code and scientific-analysis prompts benefited much
-more than natural prose; very high K values could win synthetic throughput tests
-but regress on realistic long-generation prompts.
-
-For the current stable profiles, Qwen3.6 uses MTP3 as the conservative mixed
-agent default, while Gemma4 uses higher MTP values only for specific FP16
-speed-oriented profiles. See [MTP Task Sensitivity](docs/mtp-task-sensitivity.md)
-for the measured Qwen/Gemma sweep tables.
 
 ## 🧩 Core Routes
 
@@ -202,6 +189,19 @@ Common Gemma launcher presets:
 - Compatibility target: NVIDIA Turing / SM75 GPUs. Other Turing cards still
   need profile validation for VRAM capacity, P2P/NVLink behavior, model
   head_dim, KV dtype, and CUDAGraph/MTP settings.
+
+## 🚀 MTP Is Acceptance-Bound
+
+MTP/speculative decoding is not a fixed multiplier. Its speedup depends on how
+many drafted tokens the target model accepts, so the best `MTP_K` changes with
+task type. In our sweeps, code and scientific-analysis prompts benefited much
+more than natural prose; very high K values could win synthetic throughput tests
+but regress on realistic long-generation prompts.
+
+For the current stable profiles, Qwen3.6 uses MTP3 as the conservative mixed
+agent default, while Gemma4 uses higher MTP values only for specific FP16
+speed-oriented profiles. See [MTP Task Sensitivity](docs/mtp-task-sensitivity.md)
+for the measured Qwen/Gemma sweep tables.
 
 ## 🚀 How To Use
 
