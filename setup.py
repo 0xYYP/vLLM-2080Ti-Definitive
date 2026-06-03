@@ -393,6 +393,34 @@ class cmake_build_ext(build_ext):
                     dirs_exist_ok=True,
                 )
 
+    def copy_extensions_to_source(self) -> None:
+        # Editable installs copy built extensions from build_lib back into the
+        # source tree. SM75-only builds intentionally mark vendored FA/FlashMLA
+        # extensions optional because those CMake targets can be no-ops on
+        # 2080 Ti profiles. Setuptools still tries to copy every extension, so
+        # skip missing optional outputs here instead of failing after a
+        # successful build.
+        original_extensions = self.extensions
+        existing_extensions = []
+        build_py = self.get_finalized_command("build_py")
+        for ext in original_extensions:
+            _, build_path = self._get_inplace_equivalent(build_py, ext)
+            build_path = Path(build_path)
+            if build_path.exists() or not getattr(ext, "optional", False):
+                existing_extensions.append(ext)
+            else:
+                logger.info(
+                    "Skipping optional extension copy because build output is "
+                    "missing: %s",
+                    build_path,
+                )
+
+        self.extensions = existing_extensions
+        try:
+            super().copy_extensions_to_source()
+        finally:
+            self.extensions = original_extensions
+
 
 class precompiled_build_ext(build_ext):
     """Disables extension building when using precompiled binaries."""
