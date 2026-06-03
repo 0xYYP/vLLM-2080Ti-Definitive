@@ -178,6 +178,30 @@ Common Gemma launcher presets:
 - `gemma4-gptq-mm-nomtp`: default-KV image-serving compatibility route.
 - `gemma4-gptq-mm-mtp3`: default-KV image-serving route with assistant MTP3.
 
+## 🧪 Tested Model Checkpoints
+
+This section records checkpoint-level validation. It is intentionally stricter
+than "vLLM can load it": a supported checkpoint can start and generate, while a
+recommended checkpoint also has a useful speed/context tradeoff on dual 2080 Ti.
+
+| Checkpoint family | Weight route | Role | Validated KV/context evidence | Status |
+|---|---|---|---|---|
+| Qwopus3.6 27B v2 | AWQ Marlin | Main Qwen quality route | FP16/default KV reaches native 262K in noMTP real-prompt testing; TQ4NC is the recommended compressed 262K route; INT8 KV is usable for capacity / YaRN experiments. | 🟢 Recommended |
+| Qwen3.6 27B Heretic | GPTQ Marlin | Low-refusal Qwen route | 8K MTP and quality/refusal tests passed; use the same Qwen-family runtime profiles, with long-context profiles to be rechecked per checkpoint before production. | 🟢 Recommended variant |
+| Qwen3.6 27B original AWQ | AWQ Marlin | Baseline Qwen route | Stable and compatible with the Qwen-family runtime. LongGen3 TTFT sweep reached about 1738.12 / 60.30 tok/s at MTP5, but it did not beat Qwopus on quality or speed. | 🟡 Validated, retired |
+| Gemma4 31B | GPTQ Marlin + assistant draft | Secondary Gemma route | FP16/default KV is the useful speed route; TQ4NC is a short-context compressed route around the 43K real-prompt edge; INT8 262K is a slow offline compatibility path, not an interactive route. | 🟡 Experimental |
+| Qwen3.6 27B AutoRound W8A16 GS128 | INT8 AutoRound / GPTQMarlin | INT8 weight experiment | noMTP KV cache: 31,597 tokens; INT8 KV + MTP3 KV cache: 14,108 tokens; PP4096/TG128 MTP3: 1610.56 / 68.44 tok/s. | 🟡 Supported, not recommended |
+| Qwen3.6 27B AutoRound main | INT8 AutoRound / GPTQMarlin | INT8 weight experiment | Requires tokenizer/processor files copied from the GS128 branch; noMTP KV cache: 52,662 tokens; INT8 KV + MTP3 KV cache: 29,582 tokens; PP4096/TG128 MTP3: 1551.29 / 51.11 tok/s. | 🟡 Supported, not recommended |
+
+AutoRound INT8 conclusion: both tested INT8 checkpoints are useful compatibility
+evidence for this fork, but neither is a practical production route on dual
+2080 Ti. GS128 has too little KV capacity; the main branch improves capacity but
+loses too much speculative-decode speed. The recommended Qwen route remains
+4-bit AWQ/GPTQ Marlin plus the validated KV profile for the target use case.
+The original Qwen3.6 AWQ checkpoint remains a useful baseline and can be
+downloaded again for regression checks, but Qwopus replaces it as the preferred
+quality route.
+
 ## 🛠️ Target Hardware & Runtime
 
 - Validated GPU profile: dual RTX 2080 Ti 22GB, SM75, NVLink, tensor parallel

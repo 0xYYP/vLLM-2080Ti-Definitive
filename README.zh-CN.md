@@ -171,6 +171,28 @@ Gemma 限制条件：
 - `gemma4-gptq-mm-nomtp`：default-KV 图像多模态兼容路线。
 - `gemma4-gptq-mm-mtp3`：default-KV + assistant MTP3 图像多模态路线。
 
+## 🧪 已测试模型权重
+
+这一节记录 checkpoint 级别的验证结果。这里的标准比“vLLM 能加载”更严格：
+支持表示可以启动并生成；推荐表示在双 2080 Ti 上同时具备有意义的速度 /
+上下文权衡。
+
+| Checkpoint 系列 | 权重路线 | 定位 | 已验证 KV / 上下文证据 | 状态 |
+|---|---|---|---|---|
+| Qwopus3.6 27B v2 | AWQ Marlin | Qwen 质量主线 | FP16/default KV 在 noMTP 真实 prompt 下通过原生 262K；TQ4NC 是推荐压缩 262K 路线；INT8 KV 可用于容量 / YaRN 实验。 | 🟢 推荐 |
+| Qwen3.6 27B Heretic | GPTQ Marlin | 低拒答 Qwen 路线 | 8K MTP、质量和拒答率测试已通过；可使用同一套 Qwen-family runtime profile，长上下文 profile 生产前需要按 checkpoint 复测。 | 🟢 推荐变体 |
+| Qwen3.6 27B 原版 AWQ | AWQ Marlin | Qwen 基线路线 | 已验证可以稳定兼容 Qwen-family runtime。LongGen3 TTFT sweep 在 MTP5 达到约 1738.12 / 60.30 tok/s，但质量和速度都没有超过 Qwopus。 | 🟡 已验证，已退役 |
+| Gemma4 31B | GPTQ Marlin + assistant draft | Gemma 第二路线 | FP16/default KV 是实用速度路线；TQ4NC 是约 43K 真实 prompt 边界的短上下文压缩路线；INT8 262K 是慢速离线兼容路线，不适合交互服务。 | 🟡 实验路线 |
+| Qwen3.6 27B AutoRound W8A16 GS128 | INT8 AutoRound / GPTQMarlin | INT8 权重实验 | noMTP KV cache：31,597 tokens；INT8 KV + MTP3 KV cache：14,108 tokens；PP4096/TG128 MTP3：1610.56 / 68.44 tok/s。 | 🟡 支持但不推荐 |
+| Qwen3.6 27B AutoRound main | INT8 AutoRound / GPTQMarlin | INT8 权重实验 | 需要从 GS128 分支补 tokenizer/processor 文件；noMTP KV cache：52,662 tokens；INT8 KV + MTP3 KV cache：29,582 tokens；PP4096/TG128 MTP3：1551.29 / 51.11 tok/s。 | 🟡 支持但不推荐 |
+
+AutoRound INT8 结论：这两个 INT8 checkpoint 都可以作为本 fork 的兼容性证据，
+但都不适合作为双 2080 Ti 的生产路线。GS128 的 KV 容量太低；main 分支容量
+更好，但 speculative decode 速度损失过大。Qwen 推荐路线仍然是 4-bit
+AWQ/GPTQ Marlin，再按目标场景选择已经验证的 KV profile。
+Qwen3.6 原版 AWQ 仍然是有价值的 baseline，后续回归测试可以重新下载；
+但质量路线已经由 Qwopus 取代。
+
 ## 🛠️ 目标硬件与运行环境
 
 - 已验证 GPU profile：双 RTX 2080 Ti 22GB，SM75，NVLink，tensor parallel
