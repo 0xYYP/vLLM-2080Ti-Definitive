@@ -1000,12 +1000,20 @@ if _is_hip():
     ext_modules.append(CMakeExtension(name="vllm._rocm_C"))
 
 if _is_cuda():
-    ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa2_C"))
+    # SM75-only builds intentionally skip vendored vllm-flash-attn in CMake:
+    # the validated 2080 Ti serving path uses FlashQLA/FlashInfer/TurboQuant
+    # fallbacks instead of upstream FA2 kernels. Mark these optional so editable
+    # installs do not fail when the CMake component is a no-op.
+    ext_modules.append(
+        CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa2_C", optional=True)
+    )
     if envs.VLLM_USE_PRECOMPILED or (
         CUDA_HOME and get_nvcc_cuda_version() >= Version("12.3")
     ):
         # FA3 requires CUDA 12.3 or later
-        ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa3_C"))
+        ext_modules.append(
+            CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa3_C", optional=True)
+        )
     # FA4 CuteDSL - Python-only component for FA4's cute DSL support
     # Optional since this doesn't produce a .so file, just copies Python files
     ext_modules.append(
