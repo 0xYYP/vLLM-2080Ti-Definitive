@@ -3,6 +3,8 @@
 This document records the FP8 and GPTQ-INT4 checkpoint sweep on the dual RTX
 2080 Ti TP=2 runtime. Throughput is reported as `prefill / decode tok/s`.
 
+![Qwen3.6 KV throughput sweep visual matrix](assets/qwen36-kv-throughput-sweep.svg)
+
 ## Test Matrix
 
 | Checkpoint route | Mode | KV precision | PP4096/TG128 prefill / decode | PP65536/TG512 prefill / decode |
