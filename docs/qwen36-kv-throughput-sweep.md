@@ -3,7 +3,9 @@
 This document records the FP8 and GPTQ-INT4 checkpoint sweep on the dual RTX
 2080 Ti TP=2 runtime. Throughput is reported as `prefill / decode tok/s`.
 
-![Qwen3.6 KV throughput sweep visual matrix](assets/qwen36-kv-throughput-sweep.svg)
+![Qwen3.6 FP8 KV throughput grouped bar chart](assets/qwen36-kv-throughput-fp8-bars.svg)
+
+![Qwen3.6 GPTQ-INT4 KV throughput grouped bar chart](assets/qwen36-kv-throughput-gptq-bars.svg)
 
 ## Test Matrix
 
