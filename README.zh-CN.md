@@ -156,6 +156,10 @@ INT8 KV 没有体现出明显 decode 速度下降。TurboQuant KV 在短上下�
 精度的 A/B 数据见
 [Qwen3.6 KV 吞吐 Sweep](docs/qwen36-kv-throughput-sweep.zh-CN.md)。
 
+![Qwen3.6 FP8 KV 吞吐分组柱状图](docs/assets/qwen36-kv-throughput-fp8-bars.svg)
+
+![Qwen3.6 GPTQ-INT4 KV 吞吐分组柱状图](docs/assets/qwen36-kv-throughput-gptq-bars.svg)
+
 ## 🧭 Profile 与推荐路线
 
 生产 profile 选择单独维护在

@@ -160,6 +160,10 @@ for task acceptance data, and
 [Qwen3.6 KV Throughput Sweep](docs/qwen36-kv-throughput-sweep.md) for the FP8
 and GPTQ-INT4 KV precision A/B tables.
 
+![Qwen3.6 FP8 KV throughput grouped bar chart](docs/assets/qwen36-kv-throughput-fp8-bars.svg)
+
+![Qwen3.6 GPTQ-INT4 KV throughput grouped bar chart](docs/assets/qwen36-kv-throughput-gptq-bars.svg)
+
 ## 🧭 Profiles
 
 Production profile selection is documented separately in
