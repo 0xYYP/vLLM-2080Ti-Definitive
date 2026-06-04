@@ -8,6 +8,9 @@
 这是一个硬件定向的 vLLM fork，用来保存已经跑通的 2080 Ti vLLM
 栈：补丁源码、启动 profile、运行时说明和稳定环境记录。
 
+Fork 发布版本：`v0.1.2`
+基础 vLLM：`0.21.0`
+
 核心实测：同一套双 2080 Ti TP=2 runtime 下，Qwen3.6 27B 单请求 decode
 达到 `100+ tok/s`，Gemma4 31B 单请求 decode 达到 `~100 tok/s`。
 
@@ -133,6 +136,7 @@ Qwen3.6 原版 AWQ 仍然是有价值的 baseline，后续回归测试可以重�
 - 已验证 GPU profile：双 RTX 2080 Ti 22GB，SM75，NVLink，tensor parallel
   size 2
 - CUDA/PyTorch：CUDA 12.8，`torch 2.11.0+cu128`
+- Fork 发布版本：`v0.1.2`
 - 基础 vLLM：`0.21.0`
 - 仓库身份：`vllm-2080ti-definitive`
 - 稳定运行时身份：`vllm-sm75-tp2-cu128`

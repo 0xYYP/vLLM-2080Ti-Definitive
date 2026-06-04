@@ -8,6 +8,9 @@ The definitive vLLM runtime for dual RTX 2080 Ti / SM75 serving.
 This is a hardware-focused fork that preserves the patched source, launch
 profiles, and runtime notes needed to reproduce the working 2080 Ti vLLM stack.
 
+Fork release: `v0.1.2`
+Base vLLM: `0.21.0`
+
 Headline evidence: Qwen3.6 27B reaches `100+ tok/s` single-request decode, and
 Gemma4 31B reaches `~100 tok/s` single-request decode on the same dual 2080 Ti
 TP=2 runtime.
@@ -135,6 +138,7 @@ quality route.
 - Validated GPU profile: dual RTX 2080 Ti 22GB, SM75, NVLink, tensor parallel
   size 2
 - CUDA/PyTorch: CUDA 12.8, `torch 2.11.0+cu128`
+- Fork release: `v0.1.2`
 - Base vLLM: `0.21.0`
 - Repository identity: `vllm-2080ti-definitive`
 - Main stable runtime identity: `vllm-sm75-tp2-cu128`
