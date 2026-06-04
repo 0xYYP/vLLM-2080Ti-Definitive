@@ -11,6 +11,7 @@ ApplyRotaryEmb methods based on the calling context:
 3. RotaryEmbedding.forward_hip() -> ApplyRotaryEmb.forward() (auto-dispatch)
 """
 
+import builtins
 from dataclasses import dataclass
 
 import pytest
@@ -201,3 +202,31 @@ def test_rotary_embedding_dispatch(
     - forward_cuda/forward methods should call ApplyRotaryEmb.forward()
     """
     run_dispatch_test(test_case, device)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required.")
+def test_apply_rotary_emb_cuda_falls_back_without_vllm_flash_attn(monkeypatch):
+    from vllm.model_executor.layers.rotary_embedding.common import ApplyRotaryEmb
+
+    original_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "vllm.vllm_flash_attn.layers.rotary":
+            raise ImportError("missing vllm_flash_attn rotary extension")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    op = object.__new__(ApplyRotaryEmb)
+    op.is_neox_style = True
+    op.enable_fp32_compute = False
+
+    x = torch.randn(2, 4, 3, 8, dtype=torch.float16, device="cuda")
+    cos = torch.randn(4, 4, dtype=torch.float16, device="cuda")
+    sin = torch.randn(4, 4, dtype=torch.float16, device="cuda")
+
+    output = ApplyRotaryEmb.forward_cuda(op, x, cos, sin)
+
+    assert output.shape == x.shape
+    assert output.dtype == x.dtype
+    assert torch.isfinite(output).all()

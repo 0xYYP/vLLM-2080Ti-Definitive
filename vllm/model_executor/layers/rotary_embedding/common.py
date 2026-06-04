@@ -229,7 +229,14 @@ class ApplyRotaryEmb(CustomOp):
         cos: torch.Tensor,
         sin: torch.Tensor,
     ) -> torch.Tensor:
-        from vllm.vllm_flash_attn.layers.rotary import apply_rotary_emb
+        try:
+            from vllm.vllm_flash_attn.layers.rotary import apply_rotary_emb
+        except (ImportError, ModuleNotFoundError):
+            logger.warning_once(
+                "vllm_flash_attn rotary extension is unavailable; "
+                "falling back to native rotary embedding."
+            )
+            return self.forward_native(x, cos, sin)
 
         x, cos, sin, origin_shape, origin_dtype = self._pre_process(x, cos, sin)
 
