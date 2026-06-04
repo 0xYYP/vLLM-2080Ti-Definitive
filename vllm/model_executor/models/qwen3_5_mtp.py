@@ -90,19 +90,26 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
         # Ref: https://github.com/vllm-project/vllm/pull/38650
         # Ref: https://github.com/NVIDIA/Model-Optimizer/pull/1124
         qwopus_bf16_mtp = os.environ.get("VLLM_QWOPUS_MTP_BF16_DRAFT") == "1"
+        quant_name = quant_config.get_name() if quant_config else None
         fc_quant = (
             None
             if (
                 qwopus_bf16_mtp
-                or (quant_config and quant_config.get_name() == "modelopt_fp4")
+                or quant_name == "modelopt_fp4"
             )
             else quant_config
         )
-        layer_quant = None if qwopus_bf16_mtp else quant_config
+        # Some Qwen3.5/Qwopus checkpoints store only mtp.fc as BF16 while
+        # keeping the MTP decoder layer quantized. For FP8 checkpoints, forcing
+        # the whole draft layer to BF16 silently drops weight_scale_inv params
+        # and makes speculative acceptance collapse.
+        layer_quant = None if (qwopus_bf16_mtp and quant_name != "fp8") else quant_config
         if qwopus_bf16_mtp:
             logger.info(
                 "VLLM_QWOPUS_MTP_BF16_DRAFT=1: loading Qwen3.5 MTP "
-                "draft fc/layer weights without the target quantization config"
+                "draft fc without the target quantization config; "
+                "draft layer quantization=%s",
+                "disabled" if layer_quant is None else quant_name,
             )
         self.fc = ColumnParallelLinear(
             self.config.hidden_size * 2,

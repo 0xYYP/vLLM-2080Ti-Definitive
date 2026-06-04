@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from collections import Counter
 from dataclasses import dataclass, fields, replace
 from enum import IntEnum
@@ -22,6 +23,10 @@ if TYPE_CHECKING:
     from vllm.config import VllmConfig
 
 logger = init_logger(__name__)
+
+_INT8KV_ALIGNED_HEAD_STRIDE = (
+    os.getenv("VLLM_INT8KV_ALIGNED_HEAD_STRIDE", "0") == "1"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +147,23 @@ class AttentionSpec(KVCacheSpec):
         # by the attention backend, but the memory is carved from the
         # raw KV cache allocation so it must be budgeted here.
         if self.kv_quant_mode.is_per_token_head:
+            if (
+                self.kv_quant_mode == KVQuantMode.INT8_PER_TOKEN_HEAD
+                and _INT8KV_ALIGNED_HEAD_STRIDE
+            ):
+                scale_pad = get_dtype_size(torch.float32) // get_dtype_size(self.dtype)
+                padded_head_size = round_up(self.head_size + scale_pad, 16)
+                real_page_size = (
+                    2
+                    * self.block_size
+                    * self.num_kv_heads
+                    * padded_head_size
+                    * get_dtype_size(self.dtype)
+                )
+                if self.page_size_padded is not None:
+                    assert self.page_size_padded >= real_page_size
+                    return self.page_size_padded
+                return real_page_size
             real_page_size += (
                 2 * self.block_size * self.num_kv_heads * get_dtype_size(torch.float32)
             )

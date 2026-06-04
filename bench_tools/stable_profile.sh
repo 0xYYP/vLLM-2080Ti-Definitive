@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT=${STABLE_ROOT:-/opt/vllm-2080ti}
 START="$ROOT/bench_tools/remote_start_vllm_cu128.sh"
 : "${MODEL_ROOT:=/models}"
-: "${PROFILE:?PROFILE required: qwen27-awq-mtp3 | qwen27-awq-mtp3-peak | qwen27-awq-mtp3-tq4nc-fi | qwen27-awq-mtp3-int8kv | qwen27-awq-mm-nomtp | qwen27-awq-mm-mtp3 | qwen27-awq-mm-tq4nc-nomtp | qwen27-awq-mm-tq4nc-mtp3 | heretic27-gptq-mm-nomtp | heretic27-gptq-mm-tq4nc-mtp3 | gemma4-gptq-tq4nc-mtp3 | gemma4-gptq-tq4nc-nomtp | gemma4-gptq-mm-nomtp | gemma4-gptq-mm-mtp3}"
+: "${PROFILE:?PROFILE required: qwen27-awq-mtp3 | qwen27-gptq-mtp3 | qwen27-fp8-mtp3 | qwen27-awq-mtp3-peak | qwen27-awq-mtp3-tq4nc-fi | qwen27-awq-mtp3-int8kv | qwen27-awq-mm-nomtp | qwen27-awq-mm-mtp3 | qwen27-awq-mm-tq4nc-nomtp | qwen27-awq-mm-tq4nc-mtp3 | heretic27-gptq-mm-nomtp | heretic27-gptq-mm-tq4nc-mtp3 | gemma4-gptq-tq4nc-mtp3 | gemma4-gptq-tq4nc-nomtp | gemma4-gptq-mm-nomtp | gemma4-gptq-mm-mtp3}"
 : "${PORT:=19266}"
 
 case "$PROFILE" in
@@ -14,6 +14,30 @@ case "$PROFILE" in
     export SERVED_NAME=${SERVED_NAME:-qwen27-awq-mtp3-cu128-stable}
     export MODEL_FAMILY=qwen
     export QUANTIZATION=awq_marlin
+    export MAX_MODEL_LEN=${MAX_MODEL_LEN:-8192}
+    export GPU_UTIL=${GPU_UTIL:-0.90}
+    export MAX_BATCHED_TOKENS=${MAX_BATCHED_TOKENS:-4096}
+    export MAX_NUM_SEQS=${MAX_NUM_SEQS:-1}
+    export MTP_K=${MTP_K:-3}
+    ;;
+  qwen27-gptq-mtp3)
+    export VLLM_QWOPUS_MTP_BF16_DRAFT=1
+    export MODEL_DIR=${MODEL_DIR:-$MODEL_ROOT/qwen-family-27b-gptq-int4}
+    export SERVED_NAME=${SERVED_NAME:-qwen27-gptq-mtp3-cu128-stable}
+    export MODEL_FAMILY=qwen
+    export QUANTIZATION=gptq_marlin
+    export MAX_MODEL_LEN=${MAX_MODEL_LEN:-8192}
+    export GPU_UTIL=${GPU_UTIL:-0.90}
+    export MAX_BATCHED_TOKENS=${MAX_BATCHED_TOKENS:-4096}
+    export MAX_NUM_SEQS=${MAX_NUM_SEQS:-1}
+    export MTP_K=${MTP_K:-3}
+    ;;
+  qwen27-fp8-mtp3)
+    export VLLM_QWOPUS_MTP_BF16_DRAFT=1
+    export MODEL_DIR=${MODEL_DIR:-$MODEL_ROOT/qwen-family-27b-fp8}
+    export SERVED_NAME=${SERVED_NAME:-qwen27-fp8-mtp3-cu128-stable}
+    export MODEL_FAMILY=qwen
+    export QUANTIZATION=fp8
     export MAX_MODEL_LEN=${MAX_MODEL_LEN:-8192}
     export GPU_UTIL=${GPU_UTIL:-0.90}
     export MAX_BATCHED_TOKENS=${MAX_BATCHED_TOKENS:-4096}

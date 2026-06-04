@@ -211,3 +211,45 @@ Current safety gate:
 The next real FlashInfer fix should move wrapper planning into the
 metadata/runner setup path, not keep planning inside `turboquant_attn.py`
 forward.
+
+## FP8 TQK8V4 continuation SDPA auto-cap
+
+Added an opt-in resource-control guard for TurboQuant continuation SDPA:
+
+- `VLLM_TURBOQUANT_CONTINUATION_SDPA_Q_CHUNK`
+- `VLLM_TURBOQUANT_CONTINUATION_SDPA_MAX_QK_CELLS`
+
+When both are set, the effective continuation chunk is capped by:
+
+```text
+min(q_chunk, max_qk_cells // seq_len)
+```
+
+The same path now writes chunk outputs into a preallocated output tensor instead
+of accumulating chunks in a Python list and concatenating at the end. Defaults
+remain unchanged when the env vars are unset.
+
+Validation on dual RTX 2080 Ti, FP8 Qwen-family 27B, native MTP3,
+`turboquant_k8v4`, `MAX_MODEL_LEN=69632`, `MAX_BATCHED_TOKENS=1024`,
+`MAX_NUM_SEQS=1`:
+
+- Manual `qchunk256`, `PP4096/TG128`: `1294.69 / 68.85 tok/s`.
+- Auto-cap `qchunk512`, `max_qk_cells=16777216`, `PP4096/TG128`:
+  `1347.02 / 74.15 tok/s`.
+- Manual `qchunk256`, `PP65536/TG128`: `393.26 / 37.20 tok/s`.
+- Auto-cap `qchunk512`, `max_qk_cells=16777216`, `PP65536/TG128`:
+  `381.08 / 36.97 tok/s`.
+
+Invalid boundary checks:
+
+- `max_qk_cells=17301504`, `17825792`, and `18874368` all failed
+  `PP65536/TG128` with `EngineCore encountered an issue` and
+  `completion_tokens=0`.
+- Bare `qchunk384` and `qchunk512` without the cap also failed real
+  long-context generation.
+
+Conclusion: `16777216` is the current tested safe auto-cap for this profile. It
+turns an otherwise invalid `qchunk512` long-context run into a valid one and
+improves short-context throughput, but it does not yet improve long-context
+speed over manual `qchunk256`. Treat it as a resource-control improvement, not
+the final W8A8 performance answer.

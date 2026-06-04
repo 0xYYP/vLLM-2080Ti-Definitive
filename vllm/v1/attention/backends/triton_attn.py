@@ -7,7 +7,11 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 import torch
-from flashinfer import BatchPrefillWithRaggedKVCacheWrapper, merge_state_in_place
+from flashinfer import (
+    BatchPrefillWithPagedKVCacheWrapper,
+    BatchPrefillWithRaggedKVCacheWrapper,
+    merge_state_in_place,
+)
 from flashinfer.prefill import single_prefill_with_kv_cache_return_lse
 
 import vllm.envs as envs
@@ -50,6 +54,9 @@ logger = init_logger(__name__)
 
 _INT8KV_FA_PREFILL = os.getenv("VLLM_INT8KV_FA_PREFILL", "0") == "1"
 _INT8KV_FI_PREFILL_BACKEND = os.getenv("VLLM_INT8KV_FLASHINFER_PREFILL_BACKEND", "fa2")
+_INT8KV_FA_RAGGED_PREFILL = (
+    os.getenv("VLLM_INT8KV_FA_RAGGED_PREFILL", "1") == "1"
+)
 _INT8KV_FA_CONTINUATION_DEQUANT = (
     os.getenv("VLLM_INT8KV_FA_CONTINUATION_DEQUANT", "0") == "1"
 )
@@ -65,14 +72,129 @@ _INT8KV_FA_CASCADE_DEQUANT = os.getenv(
 _INT8KV_FA_CASCADE_TILE_TOKENS = int(
     os.getenv("VLLM_INT8KV_FA_CASCADE_TILE_TOKENS", "65536")
 )
+_INT8KV_FA_DIRECT_PAGED = os.getenv("VLLM_INT8KV_FA_DIRECT_PAGED", "0") == "1"
+_INT8KV_ALIGNED_HEAD_STRIDE = (
+    os.getenv("VLLM_INT8KV_ALIGNED_HEAD_STRIDE", "0") == "1"
+)
 _INT8KV_FI_PREFILL_WORKSPACES: dict[tuple[str, str], torch.Tensor] = {}
 _INT8KV_FI_PREFILL_WRAPPERS: dict[tuple[object, ...], BatchPrefillWithRaggedKVCacheWrapper] = {}
+_INT8KV_FI_PAGED_WRAPPERS: dict[tuple[object, ...], BatchPrefillWithRaggedKVCacheWrapper] = {}
 _INT8KV_FI_KV_WORKSPACES: dict[
     tuple[str, str, int, int, int], tuple[torch.Tensor, torch.Tensor]
 ] = {}
 _INT8KV_FA_PREFILL_USED = 0
+_INT8KV_FA_DIRECT_USED = 0
 _INT8KV_FA_PREFILL_SKIP_LOGGED: set[str] = set()
 _INT8KV_FA_PREFILL_DEBUG_LOGGED = 0
+
+
+def _int8kv_direct_paged_jit_args(head_size: int) -> list[object]:
+    variant_decl = r"""
+#include <flashinfer/attention/variants.cuh>
+namespace flashinfer {
+DEFINE_HAS_MEMBER(maybe_k_scale_cache)
+DEFINE_HAS_MEMBER(maybe_v_scale_cache)
+DEFINE_HAS_MEMBER(paged_kv)
+
+template <bool use_sliding_window, bool use_logits_soft_cap>
+struct Int8TokenHeadScaleAttention : AttentionVariantBase {
+  static constexpr bool use_softmax = true;
+  uint32_t qo_len;
+  uint32_t kv_len;
+  uint32_t window_left;
+  float sm_scale_log2;
+  float soft_cap_pre_tanh_scale;
+
+  template <typename Params>
+  __device__ __host__ Int8TokenHeadScaleAttention(const Params& params, uint32_t batch_idx,
+                                                  uint8_t* smem_ptr) {
+    qo_len = params.get_qo_len(batch_idx);
+    kv_len = params.get_kv_len(batch_idx);
+    window_left = (params.window_left >= 0) ? params.window_left : kv_len;
+    if constexpr (use_logits_soft_cap) {
+      soft_cap_pre_tanh_scale = params.sm_scale * math::ptx_rcp(params.logits_soft_cap);
+      sm_scale_log2 = math::log2e * params.logits_soft_cap;
+    } else {
+      sm_scale_log2 = params.sm_scale * math::log2e;
+    }
+  }
+
+  template <typename Params>
+  __device__ __forceinline__ uint32_t physical_scale_index(const Params& params,
+                                                           uint32_t batch_idx,
+                                                           uint32_t kv_idx,
+                                                           uint32_t kv_head_idx) const {
+    if constexpr (has_paged_kv_v<Params>) {
+      uint32_t page_in_request;
+      uint32_t slot;
+      params.paged_kv.page_size.divmod(kv_idx, page_in_request, slot);
+      uint32_t page_iter = params.paged_kv.indptr[batch_idx] + page_in_request;
+      uint32_t physical_page = __ldg(params.paged_kv.indices + page_iter);
+      return physical_page * params.scale_stride_page + slot * params.scale_stride_slot +
+             kv_head_idx * params.scale_stride_head;
+    } else {
+      return kv_idx * params.scale_stride_slot + kv_head_idx * params.scale_stride_head;
+    }
+  }
+
+  REGISTER_LOGITS_TRANSFORM(params, logits, batch_idx, qo_idx, kv_idx, qo_head_idx, kv_head_idx, {
+    float k_scale = params.maybe_k_scale_cache[physical_scale_index(params, batch_idx, kv_idx, kv_head_idx)];
+    logits = logits * k_scale;
+    if constexpr (use_logits_soft_cap) {
+      logits = float(math::tanh(logits * soft_cap_pre_tanh_scale)) * params.logits_soft_cap;
+    }
+    return logits;
+  })
+
+  REGISTER_LOGITS_MASK(params, batch_idx, qo_idx, kv_idx, qo_head_idx, kv_head_idx, {
+    bool mask = true;
+    if constexpr (use_sliding_window) {
+      mask &= (kv_idx + 1 + window_left >= kv_len);
+    }
+    return mask;
+  })
+
+  REGISTER_VALUE_TRANSFORM(params, value, batch_idx, qo_idx, kv_idx, qo_head_idx, kv_head_idx, {
+    float v_scale = params.maybe_v_scale_cache[physical_scale_index(params, batch_idx, kv_idx, kv_head_idx)];
+    return static_cast<T>(static_cast<float>(value) * v_scale);
+  })
+
+  REGISTER_PROBABILITY_TRANSFORM(params, prob, batch_idx, qo_idx, kv_idx, qo_head_idx, kv_head_idx, {
+    float v_scale = params.maybe_v_scale_cache[physical_scale_index(params, batch_idx, kv_idx, kv_head_idx)];
+    return static_cast<T>(static_cast<float>(prob) * v_scale);
+  })
+
+  REGISTER_OUTPUT_TRANSFORM(params, output, batch_idx, qo_idx, qo_head_idx, m, d, softmax_scale, {
+    float d_rcp = (m != -math::inf) ? math::ptx_rcp(d) : 0.f;
+    return output * d_rcp;
+  })
+};
+}
+"""
+    return [
+        f"vllm_int8kv_tokenscale_paged_prefill_sm75_d{head_size}_v1",
+        torch.float16,
+        torch.int8,
+        torch.float16,
+        torch.int32,
+        head_size,
+        head_size,
+        ["maybe_k_scale_cache", "maybe_v_scale_cache"],
+        ["float", "float"],
+        [
+            "logits_soft_cap",
+            "sm_scale",
+            "rope_rcp_scale",
+            "rope_rcp_theta",
+            "gqa_group_size",
+            "scale_stride_page",
+            "scale_stride_slot",
+            "scale_stride_head",
+        ],
+        ["double", "double", "double", "double", "uint32_t", "uint32_t", "uint32_t", "uint32_t"],
+        "Int8TokenHeadScaleAttention<false, false>",
+        variant_decl,
+    ]
 
 
 def _int8kv_normalize_cuda_device(device: torch.device) -> torch.device:
@@ -416,7 +538,14 @@ class TritonAttentionBackend(AttentionBackend):
 
             cache_dtype = STR_DTYPE_TO_TORCH_DTYPE[cache_dtype_str]
             scale_pad = get_dtype_size(torch.float32) // get_dtype_size(cache_dtype)
-            return (num_blocks, 2, block_size, num_kv_heads, head_size + scale_pad)
+            padded_head_size = head_size + scale_pad
+            if (
+                cache_dtype is torch.int8
+                and _INT8KV_ALIGNED_HEAD_STRIDE
+                and padded_head_size % 16 != 0
+            ):
+                padded_head_size = ((padded_head_size + 15) // 16) * 16
+            return (num_blocks, 2, block_size, num_kv_heads, padded_head_size)
         return (num_blocks, 2, block_size, num_kv_heads, head_size)
 
     @staticmethod
@@ -501,7 +630,9 @@ class TritonAttentionImpl(AttentionImpl):
         num_blocks, _, block_size, nkv, padded_hs = kv_cache.shape
         dtype_sz = kv_cache.element_size()
         scale_pad = get_dtype_size(torch.float32) // dtype_sz  # e.g. 4
-        hs = padded_hs - scale_pad
+        hs = self.head_size
+        if hs + scale_pad > padded_hs:
+            hs = padded_hs - scale_pad
 
         raw = kv_cache.untyped_storage()
         base_f32 = torch.tensor([], dtype=torch.float32, device=kv_cache.device).set_(
@@ -625,6 +756,153 @@ class TritonAttentionImpl(AttentionImpl):
             wrapper.plan(**plan_kwargs)
             _INT8KV_FI_PREFILL_WRAPPERS[cache_key] = wrapper
         return wrapper
+
+    def _get_int8kv_flashinfer_paged_wrapper(
+        self,
+        device: torch.device,
+        plan_key: tuple[object, ...],
+    ) -> BatchPrefillWithPagedKVCacheWrapper:
+        norm_device = _int8kv_normalize_cuda_device(device)
+        cache_key = (str(norm_device), _INT8KV_FI_PREFILL_BACKEND, *plan_key)
+        wrapper = _INT8KV_FI_PAGED_WRAPPERS.get(cache_key)
+        if wrapper is None:
+            workspace = _get_int8kv_flashinfer_prefill_workspace(
+                norm_device, _INT8KV_FI_PREFILL_BACKEND
+            )
+            wrapper = BatchPrefillWithPagedKVCacheWrapper(
+                workspace,
+                "NHD",
+                backend=_INT8KV_FI_PREFILL_BACKEND,
+                jit_args=_int8kv_direct_paged_jit_args(self.head_size),
+            )
+            _INT8KV_FI_PAGED_WRAPPERS[cache_key] = wrapper
+        return wrapper
+
+    def _try_int8kv_direct_paged_prefill(
+        self,
+        query: torch.Tensor,
+        kv_cache: torch.Tensor,
+        output: torch.Tensor,
+        attn_metadata: TritonAttentionMetadata,
+        num_actual_tokens: int,
+        q_seq_lens: torch.Tensor,
+        seq_len: int,
+    ) -> bool:
+        if not _INT8KV_FA_DIRECT_PAGED:
+            return False
+        if q_seq_lens.numel() != 1 or attn_metadata.seq_lens_cpu is None:
+            return False
+
+        global _INT8KV_FA_DIRECT_USED
+        try:
+            self._ensure_scale_caches(kv_cache)
+            key_cache, value_cache = kv_cache.unbind(1)
+            if key_cache.dtype != torch.int8 or value_cache.dtype != torch.int8:
+                return False
+            key_cache = key_cache[..., : self.head_size]
+            value_cache = value_cache[..., : self.head_size]
+            block_size = int(key_cache.shape[1])
+            q_len = int(q_seq_lens[0].item())
+            if q_len <= 0 or seq_len < q_len:
+                return False
+            nblocks = (seq_len + block_size - 1) // block_size
+            page_indices = attn_metadata.block_table[0, :nblocks].to(
+                dtype=torch.int32, device=query.device
+            )
+            if _INT8KV_ALIGNED_HEAD_STRIDE:
+                k_scale_cache = self._k_scale_cache
+                v_scale_cache = self._v_scale_cache
+            else:
+                page_ids = page_indices.to(dtype=torch.long)
+                key_cache = key_cache.index_select(0, page_ids).contiguous()
+                value_cache = value_cache.index_select(0, page_ids).contiguous()
+                k_scale_cache = self._k_scale_cache.index_select(0, page_ids).contiguous()
+                v_scale_cache = self._v_scale_cache.index_select(0, page_ids).contiguous()
+                page_indices = torch.arange(nblocks, dtype=torch.int32, device=query.device)
+            last_page_len = seq_len - (nblocks - 1) * block_size
+            qo_indptr = torch.tensor([0, q_len], dtype=torch.int32, device=query.device)
+            kv_indptr = torch.tensor(
+                [0, nblocks], dtype=torch.int32, device=query.device
+            )
+            kv_last_page_len = torch.tensor(
+                [last_page_len], dtype=torch.int32, device=query.device
+            )
+            q_prefill = query[:num_actual_tokens]
+            if not q_prefill.is_contiguous():
+                q_prefill = q_prefill.contiguous()
+            out = output[:num_actual_tokens]
+            plan_key = (
+                self.num_heads,
+                self.num_kv_heads,
+                self.head_size,
+                str(query.dtype),
+                str(key_cache.dtype),
+                q_len,
+                seq_len,
+                block_size,
+            )
+            wrapper = self._get_int8kv_flashinfer_paged_wrapper(
+                query.device,
+                plan_key,
+            )
+            wrapper.plan(
+                qo_indptr=qo_indptr,
+                paged_kv_indptr=kv_indptr,
+                paged_kv_indices=page_indices,
+                paged_kv_last_page_len=kv_last_page_len,
+                num_qo_heads=self.num_heads,
+                num_kv_heads=self.num_kv_heads,
+                head_dim_qk=self.head_size,
+                page_size=block_size,
+                causal=True,
+                window_left=self.sliding_window[0],
+                logits_soft_cap=self.logits_soft_cap,
+                sm_scale=self.scale,
+                pos_encoding_mode="NONE",
+                q_data_type=query.dtype,
+                kv_data_type=key_cache.dtype,
+                o_data_type=output.dtype,
+                seq_lens=torch.tensor(
+                    [seq_len], dtype=torch.int32, device=query.device
+                ),
+                seq_lens_q=q_seq_lens.to(dtype=torch.int32, device=query.device),
+                max_token_per_sequence=q_len,
+            )
+            wrapper.run(
+                q_prefill,
+                (key_cache, value_cache),
+                k_scale_cache,
+                v_scale_cache,
+                0.0,
+                self.scale,
+                1.0,
+                1e-4,
+                self.num_queries_per_kv,
+                k_scale_cache.stride(0),
+                k_scale_cache.stride(1),
+                k_scale_cache.stride(2),
+                out=out,
+            )
+            _INT8KV_FA_DIRECT_USED += 1
+            if _INT8KV_FA_DIRECT_USED <= 4 or _INT8KV_FA_DIRECT_USED % 64 == 0:
+                logger.info(
+                    "INT8 KV FlashInfer direct paged used count=%d backend=%s tokens=%d kv_tokens=%d q_len=%d heads=%d kv_heads=%d head_dim=%d",
+                    _INT8KV_FA_DIRECT_USED,
+                    _INT8KV_FI_PREFILL_BACKEND,
+                    num_actual_tokens,
+                    seq_len,
+                    q_len,
+                    query.shape[1],
+                    self.num_kv_heads,
+                    self.head_size,
+                )
+            return True
+        except Exception as e:
+            skip_reason = f"direct_paged_failed:{type(e).__name__}"
+            if skip_reason not in _INT8KV_FA_PREFILL_SKIP_LOGGED:
+                _INT8KV_FA_PREFILL_SKIP_LOGGED.add(skip_reason)
+                logger.info("INT8 KV FlashInfer prefill skipped reason=%s err=%s", skip_reason, e)
+            return False
 
     def _dequantize_int8kv_cache_range(
         self,
@@ -817,9 +1095,31 @@ class TritonAttentionImpl(AttentionImpl):
         if not q_prefill.is_contiguous():
             q_prefill = q_prefill.contiguous()
 
+        if not use_continuation_bridge:
+            if self._try_int8kv_direct_paged_prefill(
+                q_prefill,
+                kv_cache,
+                output,
+                attn_metadata,
+                num_actual_tokens,
+                q_seq_lens,
+                seq_len,
+            ):
+                return True
+
         if use_cascade_bridge:
             self._ensure_scale_caches(kv_cache)
             key_cache, value_cache = kv_cache.unbind(1)
+            if self._try_int8kv_direct_paged_prefill(
+                q_prefill,
+                kv_cache,
+                output,
+                attn_metadata,
+                num_actual_tokens,
+                q_seq_lens,
+                seq_len,
+            ):
+                return True
             self._run_int8kv_cascade_flashinfer_prefill(
                 q_prefill,
                 key_cache,
@@ -848,6 +1148,16 @@ class TritonAttentionImpl(AttentionImpl):
         kv_indptr_cpu = indptr_cpu
         max_sequence_kv = attn_metadata.max_seq_len
         if use_continuation_bridge:
+            if self._try_int8kv_direct_paged_prefill(
+                q_prefill,
+                kv_cache,
+                output,
+                attn_metadata,
+                num_actual_tokens,
+                q_seq_lens,
+                seq_len,
+            ):
+                return True
             kv_indptr_cpu = torch.tensor(
                 [0, seq_len],
                 dtype=torch.int32,
@@ -929,6 +1239,12 @@ class TritonAttentionImpl(AttentionImpl):
                 k_prefill = k_prefill.contiguous()
             if not v_prefill.is_contiguous():
                 v_prefill = v_prefill.contiguous()
+        if not _INT8KV_FA_RAGGED_PREFILL:
+            skip_reason = "ragged_prefill_disabled"
+            if skip_reason not in _INT8KV_FA_PREFILL_SKIP_LOGGED:
+                _INT8KV_FA_PREFILL_SKIP_LOGGED.add(skip_reason)
+                logger.info("INT8 KV FlashInfer prefill skipped reason=%s", skip_reason)
+            return False
         out = wrapper.run(q_prefill, k_prefill, v_prefill)
         output[:num_actual_tokens].copy_(out)
         _INT8KV_FA_PREFILL_USED += 1

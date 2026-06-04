@@ -13,6 +13,7 @@ ApplyRotaryEmb methods based on the calling context:
 
 import builtins
 from dataclasses import dataclass
+import builtins
 
 import pytest
 import torch

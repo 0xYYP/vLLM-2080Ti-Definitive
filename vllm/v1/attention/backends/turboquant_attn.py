@@ -84,7 +84,16 @@ _CONTINUATION_DECODE_THRESHOLD = 128
 _SPEC_CONTINUATION_DECODE_FASTPATH = (
     os.getenv("VLLM_TURBOQUANT_SPEC_CONTINUATION_DECODE_FASTPATH", "0") == "1"
 )
-_DEFAULT_TQ_FI_BACKEND = os.getenv("VLLM_TURBOQUANT_FLASHINFER_BACKEND", "fa2")
+def _normalize_turboquant_flashinfer_backend(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return "fa2"
+    return normalized or "fa2"
+
+
+_DEFAULT_TQ_FI_BACKEND = _normalize_turboquant_flashinfer_backend(
+    os.getenv("VLLM_TURBOQUANT_FLASHINFER_BACKEND", "fa2")
+)
 _DEFAULT_TQ_FI_PREFILL = os.getenv("VLLM_TURBOQUANT_USE_FLASHINFER_PREFILL", "1") == "1"
 _GEMMA4_TQ_DECODE_D512_SDPA_FALLBACK = (
     os.getenv("VLLM_GEMMA4_TQ_DECODE_D512_SDPA_FALLBACK", "1") == "1"
@@ -109,6 +118,12 @@ _TQ_FI_PREFILL_CUDAGRAPH_SAFE = (
 )
 _TQ_CONTINUATION_WORKSPACE_RESERVE_TOKENS = int(
     os.getenv("VLLM_TURBOQUANT_CONTINUATION_WORKSPACE_RESERVE_TOKENS", "0")
+)
+_TQ_CONTINUATION_SDPA_Q_CHUNK = int(
+    os.getenv("VLLM_TURBOQUANT_CONTINUATION_SDPA_Q_CHUNK", "0")
+)
+_TQ_CONTINUATION_SDPA_MAX_QK_CELLS = int(
+    os.getenv("VLLM_TURBOQUANT_CONTINUATION_SDPA_MAX_QK_CELLS", "0")
 )
 _TQ_CUDAGRAPH_SPEC_DECODE_SAFE = (
     os.getenv("VLLM_TURBOQUANT_CUDAGRAPH_SPEC_DECODE_SAFE", "0") == "1"
@@ -1875,6 +1890,50 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                 probs = torch.softmax(scores.transpose(0, 1) * self.scale, dim=-1)
                 out = (v_attn.transpose(0, 1) * probs.unsqueeze(-1)).sum(dim=1)
                 return out.unsqueeze(0).to(query.dtype)
+
+            q_chunk = _TQ_CONTINUATION_SDPA_Q_CHUNK
+            if q_chunk > 0 and _TQ_CONTINUATION_SDPA_MAX_QK_CELLS > 0:
+                capped_q_chunk = max(
+                    1,
+                    min(q_chunk, _TQ_CONTINUATION_SDPA_MAX_QK_CELLS // max(seq_len, 1)),
+                )
+                if capped_q_chunk < q_chunk:
+                    logger.info_once(
+                        "TurboQuant continuation SDPA q-chunk capped: "
+                        "requested=%d effective=%d max_qk_cells=%d seq_len=%d",
+                        q_chunk,
+                        capped_q_chunk,
+                        _TQ_CONTINUATION_SDPA_MAX_QK_CELLS,
+                        seq_len,
+                    )
+                    q_chunk = capped_q_chunk
+            if 0 < q_chunk < q_len:
+                k_t = k_full.transpose(0, 1).unsqueeze(0)  # (1, Hk, seq_len, D)
+                v_t = v_full.transpose(0, 1).unsqueeze(0)  # (1, Hk, seq_len, D)
+                k_pos = torch.arange(seq_len, device=device).unsqueeze(0)
+                out = torch.empty(q_len, Hq, D, dtype=query.dtype, device=device)
+                for q_start in range(0, q_len, q_chunk):
+                    q_end = min(q_start + q_chunk, q_len)
+                    q_t = query[q_start:q_end].transpose(0, 1).unsqueeze(0)
+                    q_pos = (
+                        torch.arange(q_start, q_end, device=device).unsqueeze(1)
+                        + cached_len
+                    )
+                    mask = k_pos <= q_pos
+                    out_chunk = F.scaled_dot_product_attention(
+                        q_t,
+                        k_t,
+                        v_t,
+                        attn_mask=mask,
+                        scale=self.scale,
+                        enable_gqa=(Hk < Hq),
+                    )
+                    out[q_start:q_end].copy_(out_chunk[0].transpose(0, 1))
+                logger.info_once(
+                    "TurboQuant continuation SDPA q-chunk enabled: chunk=%d",
+                    q_chunk,
+                )
+                return out
 
             q_t = query.transpose(0, 1).unsqueeze(0)  # (1, Hq, q_len, D)
             k_t = k_full.transpose(0, 1).unsqueeze(0)  # (1, Hk, seq_len, D)
