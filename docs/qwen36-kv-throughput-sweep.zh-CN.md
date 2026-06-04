@@ -39,15 +39,5 @@ checkpoint 的 KV 精度吞吐 sweep。吞吐统一写成 `prefill / decode tok/
 
 ## Artifacts
 
-远端原始结果：
-
-```text
-/data/experiments/fp8-int8kv-flashinfer-int8vec-20260603/results_kv_matrix_20260604_v5
-/data/experiments/fp8-int8kv-flashinfer-int8vec-20260603/results_kv_matrix_20260604_repair_fp8_mtp3_int8
-```
-
-本地汇总：
-
-```text
-/home/max/tmp/vllm2080ti-bench/results_kv_matrix_20260604_v5/summary_with_repair.csv
-```
+原始 JSONL artifact 和本地 CSV 汇总保留在源码树外。本文档是公开仓库内的
+规范化摘要。

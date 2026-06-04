@@ -39,15 +39,5 @@ This document records the FP8 and GPTQ-INT4 checkpoint sweep on the dual RTX
 
 ## Artifacts
 
-Remote raw results:
-
-```text
-/data/experiments/fp8-int8kv-flashinfer-int8vec-20260603/results_kv_matrix_20260604_v5
-/data/experiments/fp8-int8kv-flashinfer-int8vec-20260603/results_kv_matrix_20260604_repair_fp8_mtp3_int8
-```
-
-Local summary:
-
-```text
-/home/max/tmp/vllm2080ti-bench/results_kv_matrix_20260604_v5/summary_with_repair.csv
-```
+Raw JSONL artifacts and local CSV summaries are kept outside the source tree.
+This file is the public, normalized summary used by the repository docs.

@@ -82,13 +82,6 @@ head_dim=256 路线完整保留，decode 侧使用 Native MTP + CUDAGraph 策略
 | 图像多模态 | 🟢 default-KV 路线 | 🔴 已观察到输出退化 | 🟢 推荐图像路线 |
 | Peak MTP3 PP4096/TG128 | 🟢 1747.52 / 100.98 tok/s | 🟢 1744.06 / 81.12 tok/s | 🟢 1746.32 / 85.94 tok/s |
 
-详细 FP8 和 GPTQ-INT4 KV 吞吐数据放在
-[docs/qwen36-kv-throughput-sweep.zh-CN.md](docs/qwen36-kv-throughput-sweep.zh-CN.md)。
-简要结论是：开启 MTP 时，FP16/default KV 保持了最佳长上下文 decode 速度；
-未开启 MTP 时，FP16 和 INT8 KV 没有体现出明显 decode 速度下降。TurboQuant KV
-在短上下文测速中仍然很快，但长上下文下会出现明显速度下降，应该主要在追求
-更大 KV 容量时使用。
-
 ### Gemma4 31B 实验路线
 
 Gemma4 31B 保留为第二路线和实验路线。FP16/default KV 路线速度很好，也有
@@ -144,16 +137,24 @@ Qwen3.6 原版 AWQ 仍然是有价值的 baseline，后续回归测试可以重�
   P2P/NVLink 行为、模型 head_dim、KV dtype、CUDAGraph/MTP 设置重新验证
   profile。
 
-## 🚀 MTP 加速取决于接受率
+## 🚀 MTP 与 KV 精度
 
 MTP / speculative decoding 不是固定倍率加速。它的收益取决于 target model
 最终接受了多少 draft token，所以最佳 `MTP_K` 会随任务类型变化。我们的 sweep
 里，代码生成和科学计算分析的加速更明显；文学/自然文长输出的接受率更容易下降，
 高 K 反而可能在真实长输出里回退。
 
+KV 精度会从另一个方向影响同一条 decode 路线。开启 MTP 时，FP16/default KV
+保持最佳长上下文 decode 速度；未开启 MTP 时，当前 Qwen3.6 sweep 中 FP16 和
+INT8 KV 没有体现出明显 decode 速度下降。TurboQuant KV 在短上下文测速中仍然
+很快，但长上下文下会明显掉速，因此更适合在优先追求更大 KV 容量时使用，而不是
+作为最大长上下文 decode 速度路线。
+
 当前稳定 profile 中，Qwen3.6 以 MTP3 作为更保守的混合 agent 默认值；Gemma4
 只在特定 FP16 速度 profile 里使用更高 MTP。详细实测表见
-[MTP 任务敏感性](docs/mtp-task-sensitivity.md)。
+[MTP 任务敏感性](docs/mtp-task-sensitivity.md)；FP8 和 GPTQ-INT4 下不同 KV
+精度的 A/B 数据见
+[Qwen3.6 KV 吞吐 Sweep](docs/qwen36-kv-throughput-sweep.zh-CN.md)。
 
 ## 🧭 Profile 与推荐路线
 

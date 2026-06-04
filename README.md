@@ -81,14 +81,6 @@ controls, and native MTP with CUDAGraph for decode.
 | Multimodal image serving | 🟢 default-KV route | 🔴 output corruption observed | 🟢 recommended image route |
 | Peak MTP3 PP4096/TG128 | 🟢 1747.52 / 100.98 tok/s | 🟢 1744.06 / 81.12 tok/s | 🟢 1746.32 / 85.94 tok/s |
 
-Detailed FP8 and GPTQ-INT4 KV throughput data is kept in
-[docs/qwen36-kv-throughput-sweep.md](docs/qwen36-kv-throughput-sweep.md).
-The short version: with MTP enabled, FP16/default KV keeps the best
-long-context decode speed; without MTP, FP16 and INT8 KV do not show a clear
-decode-speed drop. TurboQuant KV remains fast in short-context tests, but it
-falls off clearly at long context and should be used when the priority is
-larger KV capacity rather than maximum long-context decode speed.
-
 ### Gemma4 31B Experimental Route
 
 Gemma4 31B is kept as a secondary experimental route. The FP16/default-KV path
@@ -146,7 +138,7 @@ quality route.
   need profile validation for VRAM capacity, P2P/NVLink behavior, model
   head_dim, KV dtype, and CUDAGraph/MTP settings.
 
-## 🚀 MTP Is Acceptance-Bound
+## 🚀 MTP And KV Precision
 
 MTP/speculative decoding is not a fixed multiplier. Its speedup depends on how
 many drafted tokens the target model accepts, so the best `MTP_K` changes with
@@ -154,10 +146,19 @@ task type. In our sweeps, code and scientific-analysis prompts benefited much
 more than natural prose; very high K values could win synthetic throughput tests
 but regress on realistic long-generation prompts.
 
+KV precision changes the same decode path in a different way. With MTP enabled,
+FP16/default KV keeps the best long-context decode speed. Without MTP, FP16 and
+INT8 KV do not show a clear decode-speed drop in the current Qwen3.6 sweep.
+TurboQuant KV remains fast in short-context tests, but it falls off clearly at
+long context and should be used when the priority is larger KV capacity rather
+than maximum long-context decode speed.
+
 For the current stable profiles, Qwen3.6 uses MTP3 as the conservative mixed
 agent default, while Gemma4 uses higher MTP values only for specific FP16
 speed-oriented profiles. See [MTP Task Sensitivity](docs/mtp-task-sensitivity.md)
-for the measured Qwen/Gemma sweep tables.
+for task acceptance data, and
+[Qwen3.6 KV Throughput Sweep](docs/qwen36-kv-throughput-sweep.md) for the FP8
+and GPTQ-INT4 KV precision A/B tables.
 
 ## 🧭 Profiles
 
