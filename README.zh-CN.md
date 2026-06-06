@@ -64,20 +64,22 @@ FlashQLA/FlashInfer/FA2、TurboQuant/INT8 KV、MTP 和 CUDAGraph 集成，
 
 ### Qwen3.6 27B 成熟主线
 
-Qwen 系 27B 是成熟主线。这个矩阵是能力总览；具体部署预设放在后面的 Profile
-章节。
-Qwen 路线整合 Marlin 权重加载、FlashQLA/FlashInfer/FA2 prefill、Native MTP
-和 CUDAGraph decode。
+Qwen 系 27B 是这个 fork 的主要生产路线。它在 Marlin 权重、Native MTP、
+FP16/INT8/TurboQuant KV、原生 256K 上下文、YaRN 容量实验和图像多模态兼容性上
+覆盖最完整。
+快速路径：Qwen 使用 FlashQLA-SM70-SM75 处理 Gated DeltaNet /
+linear-attention prefill，full-attention prefill 走 FlashInfer / FA2，
+head_dim=256 路线完整保留，decode 侧使用 Native MTP + CUDAGraph 策略。
 
 | 功能 | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
-| 权重路线 | 🟢 FP8 / INT4 | 🟢 FP8 / INT4 | 🟢 FP8 / INT4 |
-| Native MTP3 解码 | 🟢 speed 可用 | 🟢 speed 可用 | 🟢 speed 可用 |
-| 上下文容量 | 🟢 FP8 100K / INT4 256K | 🟢 FP8 240K / INT4 128K x2 | 🟡 容量实验路线 |
-| YaRN 扩展 | ⚪ 非 FP16 路线 | 🟡 FP8 216K speed 路线 | 🟡 实验路线 |
-| No-eager / CUDAGraph | 🟢 支持 | 🟢 支持 | 🟢 speed 模式支持 |
-| 快速 prefill 路线 | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟢 TurboQuant speed 路线 |
-| 图像多模态 | ⚪ 无 active profile | ⚪ 无 active profile | 🟡 实验路线 |
+| Marlin 权重路线 | 🟢 FP8/INT4 | 🟢 FP8/INT4 | 🟢 FP8/INT4 |
+| Native MTP3 解码 | 🟢 短上下文速度路线 | 🟢 容量 + 速度路线 | 🟢 压缩容量路线 |
+| 原生 256K 上下文 | 🟢 noMTP 真实 prompt 已通过 | 🟡 容量/速度候选 | 🟢 真实 prompt / service 已通过 |
+| YaRN 512K 扩展 | ⚪ 非目标路线 | 🟢 容量路线 | 🟡 容量候选 |
+| No-eager / CUDAGraph | 🟢 支持 | 🟢 支持 | 🟢 graph-safety 已修复 |
+| 快速 prefill 路线 | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟢 TurboQuant FlashInfer path |
+| 图像多模态 | 🟢 default-KV 路线 | 🔴 已观察到输出退化 | 🟢 推荐图像路线 |
 | Peak MTP3 PP4096/TG128 | 🟢 1747.52 / 100.98 tok/s | 🟢 1744.06 / 81.12 tok/s | 🟢 1746.32 / 85.94 tok/s |
 
 Mode 说明：FP16 KV 是 stable 服务路径；INT8 KV 和 TurboQuant KV 只在 speed
@@ -85,18 +87,22 @@ Mode 说明：FP16 KV 是 stable 服务路径；INT8 KV 和 TurboQuant KV 只在
 
 ### Gemma4 31B 实验路线
 
-Gemma4 31B 是实验路线。它有很强的短上下文 FP16 速度证据，但大上下文和压缩
-KV 路线还不成熟。
+Gemma4 31B 保留为第二路线和实验路线。FP16/default KV 路线速度很好，也有
+实用价值；但 Gemma 的 head_dim=512 和异构/GQA attention 让压缩 KV 和长上下文
+路线成熟度明显低于 Qwen。
+快速路径：Gemma 的 FP16/default KV 短上下文服务可以走快速路线；压缩 KV
+长上下文目前仍会回落到 SDPA/GQA 兼容路线，assistant MTP 能兼容但收益更依赖
+具体任务。
 
 | 功能 | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
-| 权重路线 | 🟢 INT4 target | 🟢 INT4 target | 🟢 INT4 target |
+| Marlin 权重路线 | 🟢 GPTQ target | 🟢 GPTQ target | 🟢 GPTQ target |
 | Assistant MTP 解码 | 🟢 MTP5 峰值路线 | 🔴 实验路径 | 🔴 MTP 性能退化 |
-| 原生 256K 上下文 | 🔴 严格探针失败 | 🔴 严格探针失败 | ⚪ 实用容量不足 |
+| 原生 256K 上下文 | ⚪ 显存不足 | 🟡 慢速离线路线 | ⚪ 实用容量不足 |
 | YaRN 512K 扩展 | ⚪ 不支持 | ⚪ 不支持 | ⚪ 不支持 |
-| No-eager / CUDAGraph | 🟢 测速支持 | 🔴 fallback 很重 | 🟢 兼容性已修复 |
-| 快速 prefill 路线 | 🟢 default-KV 测速路径 | 🔴 SDPA/GQA fallback 代价大 | 🟡 压缩路径，长上下文严格验证失败 |
-| 图像多模态 | ⚪ 无 active profile | ⚪ 不支持 | ⚪ 不支持 |
+| No-eager / CUDAGraph | 🟢 支持 | 🔴 fallback 很重 | 🟢 兼容性已修复 |
+| 快速 prefill 路线 | 🟢 default-KV 快速路径 | 🔴 SDPA/GQA fallback 代价大 | 🟡 短上下文快，长上下文受限 |
+| 图像多模态 | 🟢 default-KV 路线 | ⚪ 不支持 | ⚪ 不支持 |
 | Peak PP4096/TG128 | 🟢 MTP5 1655.65 / 99.64 tok/s | 🔴 非服务 profile | 🟡 noMTP 1596.15 / 31.70 tok/s |
 
 ## 🧪 已测试模型权重

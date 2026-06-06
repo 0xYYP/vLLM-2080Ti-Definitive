@@ -63,20 +63,22 @@ supported.
 
 ### Qwen3.6 27B Mature Route
 
-Qwen-family 27B is the mature route. This matrix is a capability overview;
-deployment presets are listed later in Profiles.
-Qwen combines Marlin weight loading, FlashQLA/FlashInfer/FA2 prefill, native
-MTP, and CUDAGraph decode.
+Qwen-family 27B is the primary production route for this fork. It has the most
+complete coverage across Marlin weights, native MTP, FP16/INT8/TurboQuant KV,
+native 256K context, YaRN capacity experiments, and image-serving compatibility.
+Fast path: Qwen uses FlashQLA-SM70-SM75 for Gated DeltaNet / linear-attention
+prefill, FlashInfer / FA2 for full-attention prefill, head_dim=256 fast-path
+controls, and native MTP with CUDAGraph for decode.
 
 | Feature | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
-| Weight route | 🟢 FP8 / INT4 | 🟢 FP8 / INT4 | 🟢 FP8 / INT4 |
-| Native MTP3 decoding | 🟢 speed-capable | 🟢 speed-capable | 🟢 speed-capable |
-| Context capacity | 🟢 FP8 100K / INT4 256K | 🟢 FP8 240K / INT4 128K x2 | 🟡 capacity experiments |
-| YaRN extension | ⚪ not a FP16 route | 🟡 FP8 216K speed route | 🟡 experimental route |
-| No-eager / CUDAGraph | 🟢 supported | 🟢 supported | 🟢 supported in speed mode |
-| Fast prefill path | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟢 TurboQuant speed path |
-| Multimodal image serving | ⚪ no active profile | ⚪ no active profile | 🟡 experimental route |
+| Marlin weight route | 🟢 FP8/INT4 | 🟢 FP8/INT4 | 🟢 FP8/INT4 |
+| Native MTP3 decoding | 🟢 short-context speed route | 🟢 capacity + speed route | 🟢 compressed-capacity route |
+| Native 256K context | 🟢 noMTP real prompt supported | 🟡 capacity/speed candidate | 🟢 real prompt/service supported |
+| YaRN 512K extension | ⚪ not the target route | 🟢 supported capacity route | 🟡 capacity candidate |
+| No-eager / CUDAGraph | 🟢 supported | 🟢 supported | 🟢 graph-safety fixed |
+| Fast prefill path | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟢 TurboQuant FlashInfer path |
+| Multimodal image serving | 🟢 default-KV route | 🔴 output corruption observed | 🟢 recommended image route |
 | Peak MTP3 PP4096/TG128 | 🟢 1747.52 / 100.98 tok/s | 🟢 1744.06 / 81.12 tok/s | 🟢 1746.32 / 85.94 tok/s |
 
 Mode note: FP16 KV is the stable service path. INT8 KV and TurboQuant KV are
@@ -84,18 +86,22 @@ speed-mode paths for capacity, YaRN, workspace isolation, and experiments.
 
 ### Gemma4 31B Experimental Route
 
-Gemma4 31B is an experimental route. It has strong short-context FP16 speed,
-but large-context and compressed-KV paths are not mature yet.
+Gemma4 31B is kept as a secondary experimental route. The FP16/default-KV path
+is fast and useful, but Gemma's head_dim=512 and heterogeneous/GQA attention
+make compressed-KV and long-context routes much less mature than Qwen.
+Fast path: Gemma uses the default-KV fast route for short-context FP16 service;
+compressed long-context paths still fall back to SDPA/GQA compatibility, and
+assistant MTP is compatible but more workload-sensitive.
 
 | Feature | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
-| Weight route | 🟢 INT4 target | 🟢 INT4 target | 🟢 INT4 target |
+| Marlin weight route | 🟢 GPTQ target | 🟢 GPTQ target | 🟢 GPTQ target |
 | Assistant MTP decoding | 🟢 MTP5 peak route | 🔴 experimental | 🔴 MTP regression |
-| Native 256K context | 🔴 strict probe failed | 🔴 strict probe failed | ⚪ not enough practical capacity |
+| Native 256K context | ⚪ capacity-negative | 🟡 slow offline route | ⚪ not enough practical capacity |
 | YaRN 512K extension | ⚪ not supported | ⚪ not supported | ⚪ not supported |
-| No-eager / CUDAGraph | 🟢 speed tests supported | 🔴 fallback-heavy | 🟢 repaired for compatibility |
-| Fast prefill path | 🟢 default-KV speed path | 🔴 SDPA/GQA fallback cost | 🟡 compression path, long-context failed strict validation |
-| Multimodal image serving | ⚪ no active profile | ⚪ not supported | ⚪ not supported |
+| No-eager / CUDAGraph | 🟢 supported | 🔴 fallback-heavy | 🟢 repaired for compatibility |
+| Fast prefill path | 🟢 default-KV fast path | 🔴 SDPA/GQA fallback cost | 🟡 short-context fast, long-context limited |
+| Multimodal image serving | 🟢 default-KV route | ⚪ not supported | ⚪ not supported |
 | Peak PP4096/TG128 | 🟢 MTP5 1655.65 / 99.64 tok/s | 🔴 not a serving profile | 🟡 noMTP 1596.15 / 31.70 tok/s |
 
 ## 🧪 Tested Model Checkpoints
