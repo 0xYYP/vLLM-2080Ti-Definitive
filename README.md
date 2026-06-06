@@ -63,37 +63,28 @@ supported.
 
 ### Qwen3.6 27B Mature Route
 
-Qwen-family 27B is the primary production route for this fork. It has the most
-complete coverage across weight-only FP8/INT4 routes, native MTP,
-FP16/INT8 KV, native 256K context, and strict long-prompt profile validation.
-The FP8 and INT4 checkpoint routes are served through the Marlin weight path;
-the concrete checkpoint is selected by `MODEL_DIR`.
-Fast path: Qwen uses FlashQLA-SM70-SM75 for Gated DeltaNet / linear-attention
-prefill, FlashInfer / FA2 for full-attention prefill, head_dim=256 fast-path
-controls, and native MTP with CUDAGraph for decode.
+Qwen-family 27B is the mature route. This matrix uses the Speed/high-performance
+capability view; production-safe launcher profiles are listed later.
+Qwen combines Marlin weight loading, FlashQLA/FlashInfer/FA2 prefill, native
+MTP, and CUDAGraph decode.
 
-| Feature | FP16 KV | INT8 KV | TQ4NC KV |
+| Feature | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
-| Weight route | 🟢 FP8 / INT4 | 🟢 FP8 / INT4 | 🟡 experimental |
-| Native MTP3 decoding | 🟢 stable route | 🟢 speed route | 🔴 strict long-prompt profiles demoted |
-| Strict context evidence | 🟢 FP8 100K / INT4 256K | 🟢 FP8 240K / INT4 128K x2 | 🔴 empty-stream long-prompt failures |
-| YaRN extension | ⚪ not a FP16 route | 🟡 FP8 216K strict pass, not 512K | 🔴 no active route |
-| No-eager / CUDAGraph | 🟢 supported | 🟢 supported | 🟢 graph-safety fixed, not promoted |
-| Fast prefill path | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟡 TurboQuant experiments |
-| Multimodal image serving | ⚪ no active profile | ⚪ no active profile | 🔴 previous strict route failed |
+| Weight route | 🟢 FP8 / INT4 | 🟢 FP8 / INT4 | 🟢 FP8 / INT4 |
+| Native MTP3 decoding | 🟢 speed-capable | 🟢 speed-capable | 🟢 speed-capable |
+| Context capacity | 🟢 FP8 100K / INT4 256K | 🟢 FP8 240K / INT4 128K x2 | 🟡 capacity experiments |
+| YaRN extension | ⚪ not a FP16 route | 🟡 FP8 216K speed route | 🟡 experimental route |
+| No-eager / CUDAGraph | 🟢 supported | 🟢 supported | 🟢 supported in speed mode |
+| Fast prefill path | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟢 TurboQuant speed path |
+| Multimodal image serving | ⚪ no active profile | ⚪ no active profile | 🟡 experimental route |
 | Peak MTP3 PP4096/TG128 | 🟢 1747.52 / 100.98 tok/s | 🟢 1744.06 / 81.12 tok/s | 🟢 1746.32 / 85.94 tok/s |
 
 ### Gemma4 31B Experimental Route
 
-Gemma4 31B is kept as a secondary experimental route. The FP16/default-KV path
-has strong short-context speed evidence, but Gemma's head_dim=512 and
-heterogeneous/GQA attention made the current large-context probes fail strict
-capacity validation. Gemma has no active capacity profile yet.
-Fast path: Gemma uses the default-KV fast route for speed tests. Compressed KV
-routes still fall back heavily or return invalid long-prompt results, and
-assistant MTP is workload-sensitive.
+Gemma4 31B is an experimental route. It has strong short-context FP16 speed,
+but large-context and compressed-KV paths are not mature yet.
 
-| Feature | FP16 KV | INT8 KV | TQ4NC KV |
+| Feature | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
 | Weight route | 🟢 INT4 target | 🟢 INT4 target | 🟢 INT4 target |
 | Assistant MTP decoding | 🟢 MTP5 peak route | 🔴 experimental | 🔴 MTP regression |
@@ -117,17 +108,9 @@ recommended checkpoint also has a useful speed/context tradeoff on dual 2080 Ti.
 | Qwen3.6 27B AutoRound | AutoRound INT8 | [Minachist/Qwen3.6-27B-INT8-AutoRound W8A16-GS128](https://huggingface.co/Minachist/Qwen3.6-27B-INT8-AutoRound/tree/W8A16-GS128) | 🟡 Supported |
 | Gemma4 31B GPTQ | GPTQ-INT4 + assistant draft | [ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ](https://huggingface.co/ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ) | 🟡 Supported |
 
-FP8 and AutoRound INT8 conclusion: FP8 is the recommended high-quality 8-bit
-Qwen route when quality is prioritized over maximum 4-bit throughput. It uses
-weight-only FP8 on SM75 instead of native FP8 compute, so INT4 remains the
-default performance/capacity route. AWQ, GPTQ, and future compatible formats
-such as NVFP4 are checkpoint packaging choices under the same INT4 profile
-family; select the concrete checkpoint with `MODEL_DIR`. AutoRound GS128 has too little KV
-capacity; the main branch improves capacity but loses too much speculative-decode
-speed, so only GS128 is kept in the tested-model list.
-The original Qwen3.6 AWQ checkpoint remains a useful baseline and can be
-downloaded again for regression checks, but Qwopus replaces it as the preferred
-quality route.
+FP8 is the recommended high-quality Qwen 8-bit route; INT4 remains the default
+performance/capacity route. AutoRound INT8 is supported as an experimental
+checkpoint route, not a default profile.
 
 ## 🛠️ Target Hardware & Runtime
 
@@ -141,30 +124,6 @@ quality route.
 - Compatibility target: NVIDIA Turing / SM75 GPUs. Other Turing cards still
   need profile validation for VRAM capacity, P2P/NVLink behavior, model
   head_dim, KV dtype, and CUDAGraph/MTP settings.
-
-## 🚀 MTP And KV Precision
-
-Use the bundled profiles instead of hand-tuning MTP and KV settings first.
-MTP is already set to the best practical value for each route. FP16/default KV
-is the safest choice for stable service; quantized KV is provided through
-speed-mode profiles when the priority is context capacity or throughput.
-
-Detailed benchmark notes are kept in
-[MTP Task Sensitivity](docs/mtp-task-sensitivity.md) and
-[Qwen3.6 KV Throughput Sweep](docs/qwen36-kv-throughput-sweep.md).
-
-## 🧭 Profiles
-
-Start from [Model Profile Routes](docs/model-profile-routes.md). Pick the model
-family and weight precision first, then choose one of two profile classes:
-
-- `stable-*`: recommended daily service profiles. These use stable mode and
-  FP16/default KV only.
-- `speed-*`: high-performance profiles for INT8 KV, TurboQuant KV, YaRN, and
-  other context-capacity or throughput-first routes.
-
-The launcher applies the mode from the selected profile and refuses stable mode
-with quantized KV, so profile names and runtime behavior stay aligned.
 
 ## 🚀 How To Use
 
@@ -194,6 +153,35 @@ CUDA_VISIBLE_DEVICES=0,1 \
 
 When `PROFILE` is set, the profile supplies the launch mode. Use custom `MODE`
 only for no-profile experiments.
+
+## 🧭 Profiles
+
+Start from [Model Profile Routes](docs/model-profile-routes.md). Pick the model
+family and weight precision first, then choose one of two profile classes:
+
+- `stable-*`: recommended daily service profiles. These use stable mode and
+  FP16/default KV only.
+- `speed-*`: high-performance profiles for INT8 KV, TurboQuant KV, YaRN, and
+  other context-capacity or throughput-first routes.
+
+The launcher applies the mode from the selected profile and refuses stable mode
+with quantized KV, so profile names and runtime behavior stay aligned.
+
+Experimental profiles live under `profiles/experimental/`. They are kept in the
+same `profiles` tree for discoverability, but the launcher only scans
+`profiles/*.env` by default. To try an experimental route, set the launcher
+Profile directory to `profiles/experimental`.
+
+## 🚀 MTP And KV Precision
+
+Use the bundled profiles instead of hand-tuning MTP and KV settings first.
+MTP is already set to the best practical value for each route. FP16/default KV
+is the safest choice for stable service; quantized KV is provided through
+speed-mode profiles when the priority is context capacity or throughput.
+
+Detailed benchmark notes are kept in
+[MTP Task Sensitivity](docs/mtp-task-sensitivity.md) and
+[Qwen3.6 KV Throughput Sweep](docs/qwen36-kv-throughput-sweep.md).
 
 ## ❓ Hardware Q&A
 

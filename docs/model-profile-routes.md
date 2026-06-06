@@ -15,6 +15,10 @@ Profile names encode the launcher mode:
 - `speed-*`: speed mode, used for quantized KV, capacity, and high-performance
   routes. This is the default evidence mode for future profile validation.
 
+Active deployment profiles live directly under `profiles/`. Experimental
+profiles live under `profiles/experimental/` so they stay visible without being
+listed in the launcher's default menu.
+
 The table schema is:
 
 `Profile | Mode | Weight precision | KV | Context | GPU util | Batch tokens | Seqs | MTP | Message | Note`
@@ -54,16 +58,19 @@ These routes are intentionally not active deployment profiles:
 | FP8 INT8 256K | Demoted | 256K started but returned an empty stream; 240K is the strict pass. |
 | FP8 INT8 + YaRN 512K | Demoted | 512K failed KV admission; the current strict pass is 216K. |
 | FP8 TQK8V4 256K | Experimental | Speed-mode probe failed startup at 256K and 248K; 240K opened the request but became GPU-idle/CPU-bound, so it is not a strict pass. |
-| Qwen INT4 TQ4NC workspace4 | Demoted | 128K down to 64K returned empty streams under strict request validation. |
-| Qwen INT4 / FP8 multimodal TQ4NC | Demoted | No strict image route currently exists; previous long-prompt probes failed or were not strict evidence. |
-| Qwen INT4 TQ4NC + YaRN 1M | Demoted | No strict large-prompt pass; not an active capacity profile. |
+| Qwen INT4 TurboQuant workspace4 | Demoted | 128K down to 64K returned empty streams under strict request validation. |
+| Qwen INT4 / FP8 multimodal TurboQuant | Demoted | No strict image route currently exists; previous long-prompt probes failed or were not strict evidence. |
+| Qwen INT4 TurboQuant + YaRN 1M | Demoted | No strict large-prompt pass; not an active capacity profile. |
 | Gemma4 FP16/default KV | Demoted | 100K and lower large-context startup probes failed; keep only short-context speed evidence. |
 | Gemma4 INT8 KV | Demoted | 256K down to 64K failed startup with the page-size unification error. |
-| Gemma4 TQ4NC KV | Demoted | 43K startup could be reached after fixes, but the real request produced no completion tokens. |
+| Gemma4 TurboQuant KV | Demoted | 43K startup could be reached after fixes, but the real request produced no completion tokens. |
 
 ## Current Conclusion
 
 - Active deployment profiles are limited to the five files listed above.
+- Experimental profile snippets are kept in `profiles/experimental/`; set the
+  launcher Profile directory there only when intentionally testing an
+  experimental route.
 - Qwen remains the mature route. MTP3 stays in the active profile set because it
   has shown useful decode speedup and has strict large-prompt evidence in these
   profile shapes.

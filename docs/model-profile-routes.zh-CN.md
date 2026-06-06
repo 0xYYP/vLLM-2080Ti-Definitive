@@ -15,6 +15,10 @@ Profile 名称直接编码 launcher 模式：
 - `speed-*`：高性能模式，用于量化 KV、容量路线和性能路线。后续 profile
   验证默认按这个模式推进。
 
+Active deployment profile 直接放在 `profiles/` 顶层。实验 profile 放在
+`profiles/experimental/`，这样它仍然在同一个 profile 树里，但不会进入 launcher
+默认菜单。
+
 表格字段统一为：
 
 `Profile | Mode | 权重精度 | KV | Context | GPU util | Batch tokens | Seqs | MTP | Message | Note`
@@ -53,16 +57,18 @@ Profile 家族。
 | FP8 INT8 256K | 已降级 | 256K 可以启动但返回空 stream；严格通过值是 240K。 |
 | FP8 INT8 + YaRN 512K | 已降级 | 512K KV admission 失败；当前严格通过值是 216K。 |
 | FP8 TQK8V4 256K | 实验路线 | speed 模式下 256K 和 248K 启动失败；240K 进入请求后变成 GPU idle / CPU-bound，不算严格通过。 |
-| Qwen INT4 TQ4NC workspace4 | 已降级 | 从 128K 降到 64K 都是空 stream，未通过严格请求验证。 |
-| Qwen INT4 / FP8 多模态 TQ4NC | 已降级 | 当前没有严格 image 路线；之前长 prompt 探针失败或证据不够严格。 |
-| Qwen INT4 TQ4NC + YaRN 1M | 已降级 | 没有真实大 prompt 严格通过，不是 active 容量 profile。 |
+| Qwen INT4 TurboQuant workspace4 | 已降级 | 从 128K 降到 64K 都是空 stream，未通过严格请求验证。 |
+| Qwen INT4 / FP8 多模态 TurboQuant | 已降级 | 当前没有严格 image 路线；之前长 prompt 探针失败或证据不够严格。 |
+| Qwen INT4 TurboQuant + YaRN 1M | 已降级 | 没有真实大 prompt 严格通过，不是 active 容量 profile。 |
 | Gemma4 FP16/default KV | 已降级 | 100K 及更低大上下文启动探针失败；只保留短上下文速度证据。 |
 | Gemma4 INT8 KV | 已降级 | 256K 降到 64K 都启动失败，触发 page-size unification 错误。 |
-| Gemma4 TQ4NC KV | 已降级 | 修复后 43K 可以进到请求阶段，但真实请求没有生成 completion token。 |
+| Gemma4 TurboQuant KV | 已降级 | 修复后 43K 可以进到请求阶段，但真实请求没有生成 completion token。 |
 
 ## 当前结论
 
 - Active deployment profiles 只保留上面 5 个文件。
+- 实验 profile 片段保留在 `profiles/experimental/`；只有明确要测试实验路线时，
+  才在 launcher 里把 Profile directory 指向这个子目录。
 - Qwen 仍然是成熟路线。MTP3 保留在 active profile 中，因为它有明确 decode
   加速收益，并且这些 profile 形态已经有严格大 prompt 证据。
 - Gemma 仍然是支持的测速/实验 checkpoint，但在真实大 prompt 请求严格通过前，
