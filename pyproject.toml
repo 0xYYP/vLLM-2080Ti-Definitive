@@ -47,7 +47,7 @@ lora_filesystem_resolver = "vllm.plugins.lora_resolvers.filesystem_resolver:regi
 lora_hf_hub_resolver = "vllm.plugins.lora_resolvers.hf_hub_resolver:register_hf_hub_resolver"
 
 [tool.setuptools_scm]
-fallback_version = "0.21.0+2080ti"
+fallback_version = "0.1.4+2080ti"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -120,12 +120,9 @@ python = "./.venv"
 
 [tool.typos.files]
 # these files may be written in non english words
-extend-exclude = ["tests/models/fixtures/*", "tests/prompts/*", "tests/tokenizers_/*",
-    "benchmarks/sonnet.txt", "tests/lora/data/*", "build/*",
-    "examples/pooling/token_embed/*", "tests/models/language/pooling/*",
-    "vllm/third_party/*", "vllm/entrypoints/serve/instrumentator/static/*", "tests/entrypoints/openai/speech_to_text/test_transcription_validation.py",
-    "docs/governance/process.md", "docs/assets/contributing/vllm_bench_serve_timeline.html", 
-    "tests/v1/engine/test_fast_incdec_prefix_err.py", ".git/*", "csrc/cpu/sgl-kernels/*"]
+extend-exclude = ["build/*", "vllm/third_party/*",
+    "vllm/entrypoints/serve/instrumentator/static/*", ".git/*",
+    "csrc/cpu/sgl-kernels/*"]
 ignore-hidden = false
 
 [tool.typos.default]

@@ -644,7 +644,6 @@ class precompiled_wheel_utils:
                 "Failed to fetch precompiled wheel metadata"
             )
             # The metadata.json has the following format:
-            # see .buildkite/scripts/generate-nightly-index.py for details
             """[{
     "package_name": "vllm",
     "version": "0.11.2.dev278+gdbc3d9991",
@@ -797,7 +796,7 @@ class precompiled_wheel_utils:
             upstream_main_commit = json.loads(resp_json)["sha"]
             print(f"Upstream main branch latest commit: {upstream_main_commit}")
 
-            # In Docker build context, .git may be immutable or missing.
+            # In isolated build contexts, .git may be immutable or missing.
             if envs.VLLM_DOCKER_BUILD_CONTEXT:
                 return upstream_main_commit
 
@@ -1143,9 +1142,6 @@ setup(
         "video": [],  # Kept for backwards compatibility
         "flashinfer": [],  # Kept for backwards compatibility
         # Optional deps for Helion kernel development
-        # NOTE: When updating helion version, also update CI files:
-        #   - .buildkite/test_areas/kernels.yaml
-        #   - .buildkite/test-amd.yaml
         "helion": ["helion==1.0.0"],
         # Optional deps for gRPC server (vllm serve --grpc)
         "grpc": ["smg-grpc-servicer[vllm] >= 0.5.2"],

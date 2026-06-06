@@ -1,84 +1,71 @@
 # 模型 Profile 路线
 
-本文记录双 RTX 2080 Ti / SM75 runtime 的模型部署 Profile 选择。限制条件放在
-Profile 矩阵前面，因为它决定每条路线适合用在哪里。
+本文记录双 RTX 2080 Ti / SM75 runtime 的用户侧 Profile 矩阵。`Profile`
+就是 `start.sh` 选择的 `.env` 文件；具体 checkpoint 仍然通过 `MODEL_DIR`
+单独选择。
+
+Active profile 矩阵采用证据门槛：上下文大小只有在真实大 prompt 请求返回 HTTP 200、
+stream 正常结束、并且至少生成 1 个 completion token 后，才会进入 active
+profile。只 load 成功、READY、health 通过、小窗口 smoke、空 stream，都不算容量
+证据。
+
+Profile 名称直接编码 launcher 模式：
+
+- `stable-*`：稳定模式，只允许 FP16/default KV。
+- `speed-*`：高性能模式，用于量化 KV、容量路线和性能路线。后续 profile
+  验证默认按这个模式推进。
+
+表格字段统一为：
+
+`Profile | Mode | 权重精度 | KV | Context | GPU util | Batch tokens | Seqs | MTP | Message | Note`
+
+`256K` 这类标签是便于阅读的档位；精确 token 数写在 profile 文件里。
 
 吞吐细节见
 [Qwen3.6 KV 吞吐 Sweep](qwen36-kv-throughput-sweep.zh-CN.md) 和
 [MTP 任务敏感性](mtp-task-sensitivity.md)。
 
-## Qwen3.6 27B
+## Qwen3.6 27B - FP8
 
-### 限制条件
+| Profile | Mode | 权重精度 | KV | Context | GPU util | Batch tokens | Seqs | MTP | Message | Note |
+|---|---|---|---|---:|---:|---:|---:|---|---|---|
+| stable-qwen27-fp8-fp16kv-mtp3-100k.env | stable | FP8 | FP16/default | 100K | 0.92 | 2048 | 1 | MTP3 | text | 100K 真实大 prompt 严格通过；默认 FP8 质量/稳定路线。 |
+| speed-qwen27-fp8-int8kv-mtp3-240k.env | speed | FP8 | INT8 | 240K | 0.95 | 2048 | 1 | MTP3 | text | 240K 真实大 prompt 严格通过。旧 256K 行返回空 stream，不再 active。 |
+| speed-qwen27-fp8-int8kv-yarn-mtp3-216k.env | speed | FP8 | INT8 + YaRN | 216K | 0.94 | 2048 | 1 | MTP3 | text | 216K 真实大 prompt 严格通过。224K 和 512K admission 失败，因此不是 512K 路线。 |
 
-- INT8 KV 是纯文本容量路线，不推荐用于图像多模态。已验证的多模态 INT8
-  路线可以 READY，但输出会退化成标点或异常文本重复，而不是稳定图像回答。
-- FP16/default KV 只有 noMTP 模式真实通过了 `PP262000/TG1`。MTP3 的 262K
-  服务可以 READY，但真实 262K prompt 会在 prefill 阶段 OOM，所以 FP16 下
-  MTP3 仍然只作为短上下文速度路线。
-- 多工作区 Profile 用于排队式工作区隔离，不代表真正并行长 prefill 吞吐；
-  在这个 TP=2 runtime 下，重型长上下文任务实际仍会被串行化。
-- YaRN 524K 是离线容量 Profile。正常低延迟交互服务仍以原生 262K 路线为默认。
-- FP8 是权重路线，不是 KV 精度路线。SM75 上走的是 weight-only FP8，不是
-  原生 FP8 tensor-core compute；因此它是最高质量的实用 8bit Qwen 路线，
-  AWQ/GPTQ-INT4 仍然是默认性能 / 容量路线。
-- 更大的 MTP 可以在纯吞吐测试中得到更高数字。MTP3 是接受率和真实任务总体
-  吞吐率更平衡的部署参考。
+## Qwen3.6 27B - INT4
 
-### Profile 矩阵
+FP8 和 INT4 checkpoint 在这个 runtime 中通过 Marlin weight path 承接。AWQ、
+GPTQ，以及后续兼容的 INT4 类格式，都是 checkpoint 封装选择，不拆成独立
+Profile 家族。
 
-| 使用场景 | 权重量化 | KV 精度 | 上下文大小 | 投机解码 | 消息类型 | 并发上限 |
-|---|---|---|---|---|---|---|
-| 最高质量 8bit 文本路线 | FP8 | FP16 | 已验证 8K-64K | Native MTP3 | 纯文本 | 1 请求 |
-| 高质量原生上下文路线 | AWQ/GPTQ-INT4 | FP16 | 原生 262K | 无 | 纯文本 | 1 请求 |
-| 短上下文峰值速度路线 | AWQ/GPTQ-INT4 | FP16 | 8K-16K | Native MTP3 | 纯文本 | 1 请求 |
-| 高压缩路线 | AWQ/GPTQ-INT4 | TQ4NC | 原生 262K | Native MTP3 | 纯文本 | 1 请求 / 排队 |
-| 超长上下文 | AWQ/GPTQ-INT4 | INT8 | 524K YaRN | Native MTP3 | 纯文本 | 1 离线请求 |
-| 多工作区 | AWQ/GPTQ-INT4 | INT8 或 TQ4NC | 64K-262K caps | Native MTP3 | 纯文本 | 4 x 64K 排队 / 2 x 262K 排队 |
-| 多模态 | AWQ/GPTQ-INT4 | TQ4NC | 原生 262K | Native MTP3 | 文本 + 图像 | 1 请求 |
+| Profile | Mode | 权重精度 | KV | Context | GPU util | Batch tokens | Seqs | MTP | Message | Note |
+|---|---|---|---|---:|---:|---:|---:|---|---|---|
+| stable-qwen27-int4-fp16kv-mtp3-256k.env | stable | INT4 | FP16/default | 256K | 0.90 | 2048 | 1 | MTP3 | text | 原生满血上下文真实大 prompt 严格通过；INT4 主力满血上下文路线。 |
+| speed-qwen27-int4-int8kv-workspace2-mtp3.env | speed | INT4 | INT8 | 128K x 2 | 0.90 | 2048 | 2 | MTP3 | text | 双 seq 下 128K 真实大 prompt 严格通过；这是工作区隔离，不是并行长 prefill 吞吐。 |
 
-### Launcher 预设
+## 已降级路线
 
-- `qwen27-awq-mtp3`：常规 Qwen 系 FP16/default KV + Native MTP3 路线。
-- `qwen27-gptq-mtp3`：Qwen 系 GPTQ-INT4 FP16/default KV + Native MTP3 路线。
-- `qwen27-fp8-mtp3`：Qwen 系 FP8 FP16/default KV + Native MTP3 路线。
-- `qwen27-awq-mtp3-peak`：短上下文峰值速度文本路线。
-- `qwen27-awq-mtp3-tq4nc-fi`：TQ4NC 压缩容量路线。
-- `qwen27-awq-mtp3-int8kv`：INT8 KV 容量 / YaRN 路线。
-- `qwen27-awq-mm-*` 和 `heretic27-gptq-mm-*`：Qwen 系模型变体的图像多模态
-  实验预设。
+以下路线不进入 active deployment profiles：
 
-## Gemma4 31B
+| 路线 | 状态 | 原因 |
+|---|---|---|
+| FP8 INT8 256K | 已降级 | 256K 可以启动但返回空 stream；严格通过值是 240K。 |
+| FP8 INT8 + YaRN 512K | 已降级 | 512K KV admission 失败；当前严格通过值是 216K。 |
+| FP8 TQK8V4 256K | 实验路线 | speed 模式下 256K 和 248K 启动失败；240K 进入请求后变成 GPU idle / CPU-bound，不算严格通过。 |
+| Qwen INT4 TQ4NC workspace4 | 已降级 | 从 128K 降到 64K 都是空 stream，未通过严格请求验证。 |
+| Qwen INT4 / FP8 多模态 TQ4NC | 已降级 | 当前没有严格 image 路线；之前长 prompt 探针失败或证据不够严格。 |
+| Qwen INT4 TQ4NC + YaRN 1M | 已降级 | 没有真实大 prompt 严格通过，不是 active 容量 profile。 |
+| Gemma4 FP16/default KV | 已降级 | 100K 及更低大上下文启动探针失败；只保留短上下文速度证据。 |
+| Gemma4 INT8 KV | 已降级 | 256K 降到 64K 都启动失败，触发 page-size unification 错误。 |
+| Gemma4 TQ4NC KV | 已降级 | 修复后 43K 可以进到请求阶段，但真实请求没有生成 completion token。 |
 
-### 限制条件
+## 当前结论
 
-- Gemma4 是 head_dim=512 且带异构/GQA attention。在 SM75 上，压缩 KV 路线
-  暂时没有已验证的 FlashAttention/FlashInfer 快速 prefill；262K INT8 目前
-  回落到 SDPA/GQA，明显慢于 FP16/default KV。
-- 在同样双 22GB 显存下，Gemma 的实际可用上下文明显小于 Qwen。head_dim=512、
-  GQA/异构 attention，以及压缩 KV 分组效率不足，会让“能启动压缩 KV”不等于
-  “能得到高效的 262K 满血服务 Profile”。
-- FP16/default KV 是速度和质量最好的路线，但双 22GB 卡无法支撑完整原生
-  262K 上下文。已验证服务 Profile 是 16K；`105216` 文本和 `97152` 图像
-  只是 262K 失败探针里的启动估算值，不是真实请求通过的实用上限。
-- TQ4NC 保留为快速压缩短上下文路线：真实 prompt 实用边界约 `43K`，
-  `43005`-token prompt 通过，`43505`/`44005` admission 失败。`64K` 只是
-  READY 证据，不是真实长 prompt 通过证据。
-- Gemma 多模态保留在 default KV。INT8/TQ4NC 多模态不推荐，因为异构 head
-  的多模态后端会拒绝或破坏这些压缩 KV 路线。
-
-### Profile 矩阵
-
-| 使用场景 | 权重量化 | KV 精度 | 上下文大小 | 投机解码 | 消息类型 | 并发上限 |
-|---|---|---|---|---|---|---|
-| 高质量路线 | GPTQ-INT4 | FP16 | 16K 已验证文本服务；105K 仅估算 | Assistant MTP5 | 纯文本 | 1 请求 |
-| 快速压缩路线 | GPTQ-INT4 | TQ4NC | 43K 真实 prompt 实用边界 | 无 | 纯文本 | 1 请求 |
-| 长上下文路线 | GPTQ-INT4 | INT8 | 原生 262K，慢速离线 | 无 | 纯文本 | 1 个慢速离线请求 |
-| 多模态兼容 | GPTQ-INT4 | FP16 | 8K 图像已验证 | Assistant MTP3 兼容 | 文本 + 图像 | 1 请求 |
-
-### Launcher 预设
-
-- `gemma4-gptq-tq4nc-mtp3`：TQ4NC + assistant MTP3 兼容路线。
-- `gemma4-gptq-tq4nc-nomtp`：TQ4NC no-MTP 短上下文路线。
-- `gemma4-gptq-mm-nomtp`：default-KV 图像多模态兼容路线。
-- `gemma4-gptq-mm-mtp3`：default-KV + assistant MTP3 图像多模态路线。
+- Active deployment profiles 只保留上面 5 个文件。
+- Qwen 仍然是成熟路线。MTP3 保留在 active profile 中，因为它有明确 decode
+  加速收益，并且这些 profile 形态已经有严格大 prompt 证据。
+- Gemma 仍然是支持的测速/实验 checkpoint，但在真实大 prompt 请求严格通过前，
+  不再提供 active 容量 profile。
+- 压缩 KV 路线如果只是能 load、报告容量、或返回空 stream，只能算实验记录，
+  不能算部署 profile。

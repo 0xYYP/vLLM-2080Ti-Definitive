@@ -37,9 +37,8 @@ else:
 # Python 3.11+ sre_parse and sre_constants
 # are deprecated, so we must import them from re
 if sys.version_info >= (3, 11):
-    # Hack to get around pre-commit regex module rule
-    # because going through re is the only way to get sre_parse
-    # and sre_constants in Python 3.11+
+    # Going through re is the only way to get sre_parse and sre_constants in
+    # Python 3.11+.
     _re = importlib.import_module("re")
     sre_parse = _re._parser
     sre_constants = _re._constants

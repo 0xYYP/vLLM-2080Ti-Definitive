@@ -162,8 +162,7 @@ class MultiModalConfig:
     mm_encoder_attn_dtype: Literal["fp8"] | None = None
     """Optional dtype override for ViT encoder attention. Set to `"fp8"` to
     enable FP8 quantization via the FlashInfer cuDNN backend. When set to
-    `"fp8"` without a scale file, dynamic scaling is used automatically.
-    See docs/features/quantization/fp8_vit_attn.md for details."""
+    `"fp8"` without a scale file, dynamic scaling is used automatically."""
     mm_encoder_fp8_scale_path: str | None = None
     """Path to a JSON file containing per-layer FP8 Q/K/V scales for ViT
     encoder attention. When provided (with `mm_encoder_attn_dtype="fp8"`),

@@ -3,10 +3,6 @@
 本文记录同一套双 RTX 2080 Ti TP=2 runtime 下，FP8 和 GPTQ-INT4
 checkpoint 的 KV 精度吞吐 sweep。吞吐统一写成 `prefill / decode tok/s`。
 
-![Qwen3.6 FP8 KV 吞吐分组柱状图](assets/qwen36-kv-throughput-fp8-bars.svg)
-
-![Qwen3.6 GPTQ-INT4 KV 吞吐分组柱状图](assets/qwen36-kv-throughput-gptq-bars.svg)
-
 ## 测试矩阵
 
 | Checkpoint 路线 | 模式 | KV 精度 | PP4096/TG128 prefill / decode | PP65536/TG512 prefill / decode |

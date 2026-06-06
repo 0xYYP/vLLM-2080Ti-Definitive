@@ -8,7 +8,7 @@ The definitive vLLM runtime for dual RTX 2080 Ti / SM75 serving.
 This is a hardware-focused fork that preserves the patched source, launch
 profiles, and runtime notes needed to reproduce the working 2080 Ti vLLM stack.
 
-Fork release: `v0.1.3`
+Fork release: `v0.1.4`
 Base vLLM: `0.21.0`
 
 Headline evidence: Qwen3.6 27B reaches `100+ tok/s` single-request decode, and
@@ -64,41 +64,44 @@ supported.
 ### Qwen3.6 27B Mature Route
 
 Qwen-family 27B is the primary production route for this fork. It has the most
-complete coverage across Marlin weights, native MTP, FP16/INT8/TQ4NC KV, 262K
-native context, YaRN capacity experiments, and image-serving compatibility.
+complete coverage across weight-only FP8/INT4 routes, native MTP,
+FP16/INT8 KV, native 256K context, and strict long-prompt profile validation.
+The FP8 and INT4 checkpoint routes are served through the Marlin weight path;
+the concrete checkpoint is selected by `MODEL_DIR`.
 Fast path: Qwen uses FlashQLA-SM70-SM75 for Gated DeltaNet / linear-attention
 prefill, FlashInfer / FA2 for full-attention prefill, head_dim=256 fast-path
 controls, and native MTP with CUDAGraph for decode.
 
 | Feature | FP16 KV | INT8 KV | TQ4NC KV |
 |---|---|---|---|
-| Marlin weight route | 🟢 FP8/AWQ/GPTQ | 🟢 FP8/AWQ/GPTQ | 🟢 FP8/AWQ/GPTQ |
-| Native MTP3 decoding | 🟢 short-context speed route | 🟢 capacity + speed route | 🟢 compressed-capacity route |
-| Native 262K context | 🟢 noMTP real prompt supported | 🟡 capacity/speed candidate | 🟢 real prompt/service supported |
-| YaRN 524K extension | ⚪ not the target route | 🟢 supported capacity route | 🟡 capacity candidate |
-| No-eager / CUDAGraph | 🟢 supported | 🟢 supported | 🟢 graph-safety fixed |
-| Fast prefill path | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟢 TurboQuant FlashInfer path |
-| Multimodal image serving | 🟢 default-KV route | 🔴 output corruption observed | 🟢 recommended image route |
+| Weight route | 🟢 FP8 / INT4 | 🟢 FP8 / INT4 | 🟡 experimental |
+| Native MTP3 decoding | 🟢 stable route | 🟢 speed route | 🔴 strict long-prompt profiles demoted |
+| Strict context evidence | 🟢 FP8 100K / INT4 256K | 🟢 FP8 240K / INT4 128K x2 | 🔴 empty-stream long-prompt failures |
+| YaRN extension | ⚪ not a FP16 route | 🟡 FP8 216K strict pass, not 512K | 🔴 no active route |
+| No-eager / CUDAGraph | 🟢 supported | 🟢 supported | 🟢 graph-safety fixed, not promoted |
+| Fast prefill path | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟡 TurboQuant experiments |
+| Multimodal image serving | ⚪ no active profile | ⚪ no active profile | 🔴 previous strict route failed |
 | Peak MTP3 PP4096/TG128 | 🟢 1747.52 / 100.98 tok/s | 🟢 1744.06 / 81.12 tok/s | 🟢 1746.32 / 85.94 tok/s |
 
 ### Gemma4 31B Experimental Route
 
 Gemma4 31B is kept as a secondary experimental route. The FP16/default-KV path
-is fast and useful, but Gemma's head_dim=512 and heterogeneous/GQA attention
-make compressed-KV and long-context routes much less mature than Qwen.
-Fast path: Gemma uses the default-KV fast route for short-context FP16 service;
-compressed long-context paths still fall back to SDPA/GQA compatibility, and
-assistant MTP is compatible but more workload-sensitive.
+has strong short-context speed evidence, but Gemma's head_dim=512 and
+heterogeneous/GQA attention made the current large-context probes fail strict
+capacity validation. Gemma has no active capacity profile yet.
+Fast path: Gemma uses the default-KV fast route for speed tests. Compressed KV
+routes still fall back heavily or return invalid long-prompt results, and
+assistant MTP is workload-sensitive.
 
 | Feature | FP16 KV | INT8 KV | TQ4NC KV |
 |---|---|---|---|
-| Marlin weight route | 🟢 GPTQ target | 🟢 GPTQ target | 🟢 GPTQ target |
+| Weight route | 🟢 INT4 target | 🟢 INT4 target | 🟢 INT4 target |
 | Assistant MTP decoding | 🟢 MTP5 peak route | 🔴 experimental | 🔴 MTP regression |
-| Native 262K context | ⚪ capacity-negative | 🟡 slow offline route | ⚪ not enough practical capacity |
-| YaRN 524K extension | ⚪ not supported | ⚪ not supported | ⚪ not supported |
-| No-eager / CUDAGraph | 🟢 supported | 🔴 fallback-heavy | 🟢 repaired for compatibility |
-| Fast prefill path | 🟢 default-KV fast path | 🔴 SDPA/GQA fallback cost | 🟡 short-context fast, long-context limited |
-| Multimodal image serving | 🟢 default-KV route | ⚪ not supported | ⚪ not supported |
+| Native 256K context | 🔴 strict probe failed | 🔴 strict probe failed | ⚪ not enough practical capacity |
+| YaRN 512K extension | ⚪ not supported | ⚪ not supported | ⚪ not supported |
+| No-eager / CUDAGraph | 🟢 speed tests supported | 🔴 fallback-heavy | 🟢 repaired for compatibility |
+| Fast prefill path | 🟢 default-KV speed path | 🔴 SDPA/GQA fallback cost | 🟡 compression path, long-context failed strict validation |
+| Multimodal image serving | ⚪ no active profile | ⚪ not supported | ⚪ not supported |
 | Peak PP4096/TG128 | 🟢 MTP5 1655.65 / 99.64 tok/s | 🔴 not a serving profile | 🟡 noMTP 1596.15 / 31.70 tok/s |
 
 ## 🧪 Tested Model Checkpoints
@@ -107,18 +110,19 @@ This section records checkpoint-level validation. It is intentionally stricter
 than "vLLM can load it": a supported checkpoint can start and generate, while a
 recommended checkpoint also has a useful speed/context tradeoff on dual 2080 Ti.
 
-| Model route | Weight quantization | Model cards | Status |
+| Model route | Weight route | Model cards | Status |
 |---|---|---|---|
 | Qwen3.6 27B FP8 | FP8 | [Jackrong/Qwopus3.6-27B-v2-FP8](https://huggingface.co/Jackrong/Qwopus3.6-27B-v2-FP8) | 🟢 Recommended |
-| Qwen3.6 27B AWQ | AWQ-INT4 | [mconcat/Qwopus3.6-27B-v2-AWQ-4bit](https://huggingface.co/mconcat/Qwopus3.6-27B-v2-AWQ-4bit)<br>[QuantTrio/Qwen3.6-27B-AWQ](https://huggingface.co/QuantTrio/Qwen3.6-27B-AWQ) | 🟢 Recommended |
-| Qwen3.6 27B GPTQ | GPTQ-INT4 | [llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4) | 🟢 Recommended |
+| Qwen3.6 27B INT4 | INT4 | [mconcat/Qwopus3.6-27B-v2-AWQ-4bit](https://huggingface.co/mconcat/Qwopus3.6-27B-v2-AWQ-4bit)<br>[QuantTrio/Qwen3.6-27B-AWQ](https://huggingface.co/QuantTrio/Qwen3.6-27B-AWQ)<br>[llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4) | 🟢 Recommended |
 | Qwen3.6 27B AutoRound | AutoRound INT8 | [Minachist/Qwen3.6-27B-INT8-AutoRound W8A16-GS128](https://huggingface.co/Minachist/Qwen3.6-27B-INT8-AutoRound/tree/W8A16-GS128) | 🟡 Supported |
 | Gemma4 31B GPTQ | GPTQ-INT4 + assistant draft | [ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ](https://huggingface.co/ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ) | 🟡 Supported |
 
 FP8 and AutoRound INT8 conclusion: FP8 is the recommended high-quality 8-bit
 Qwen route when quality is prioritized over maximum 4-bit throughput. It uses
-weight-only FP8 on SM75 instead of native FP8 compute, so 4-bit AWQ/GPTQ remains
-the default performance/capacity route. AutoRound GS128 has too little KV
+weight-only FP8 on SM75 instead of native FP8 compute, so INT4 remains the
+default performance/capacity route. AWQ, GPTQ, and future compatible formats
+such as NVFP4 are checkpoint packaging choices under the same INT4 profile
+family; select the concrete checkpoint with `MODEL_DIR`. AutoRound GS128 has too little KV
 capacity; the main branch improves capacity but loses too much speculative-decode
 speed, so only GS128 is kept in the tested-model list.
 The original Qwen3.6 AWQ checkpoint remains a useful baseline and can be
@@ -130,7 +134,7 @@ quality route.
 - Validated GPU profile: dual RTX 2080 Ti 22GB, SM75, NVLink, tensor parallel
   size 2
 - CUDA/PyTorch: CUDA 12.8, `torch 2.11.0+cu128`
-- Fork release: `v0.1.3`
+- Fork release: `v0.1.4`
 - Base vLLM: `0.21.0`
 - Repository identity: `vllm-2080ti-definitive`
 - Main stable runtime identity: `vllm-sm75-tp2-cu128`
@@ -140,83 +144,56 @@ quality route.
 
 ## 🚀 MTP And KV Precision
 
-MTP/speculative decoding is not a fixed multiplier. Its speedup depends on how
-many drafted tokens the target model accepts, so the best `MTP_K` changes with
-task type. In our sweeps, code and scientific-analysis prompts benefited much
-more than natural prose; very high K values could win synthetic throughput tests
-but regress on realistic long-generation prompts.
+Use the bundled profiles instead of hand-tuning MTP and KV settings first.
+MTP is already set to the best practical value for each route. FP16/default KV
+is the safest choice for stable service; quantized KV is provided through
+speed-mode profiles when the priority is context capacity or throughput.
 
-KV precision changes the same decode path in a different way. With MTP enabled,
-FP16/default KV keeps the best long-context decode speed. Without MTP, FP16 and
-INT8 KV do not show a clear decode-speed drop in the current Qwen3.6 sweep.
-TurboQuant KV remains fast in short-context tests, but it falls off clearly at
-long context and should be used when the priority is larger KV capacity rather
-than maximum long-context decode speed.
-
-For the current stable profiles, Qwen3.6 uses MTP3 as the conservative mixed
-agent default, while Gemma4 uses higher MTP values only for specific FP16
-speed-oriented profiles. See [MTP Task Sensitivity](docs/mtp-task-sensitivity.md)
-for task acceptance data, and
-[Qwen3.6 KV Throughput Sweep](docs/qwen36-kv-throughput-sweep.md) for the FP8
-and GPTQ-INT4 KV precision A/B tables.
-
-![Qwen3.6 FP8 KV throughput grouped bar chart](docs/assets/qwen36-kv-throughput-fp8-bars.svg)
-
-![Qwen3.6 GPTQ-INT4 KV throughput grouped bar chart](docs/assets/qwen36-kv-throughput-gptq-bars.svg)
+Detailed benchmark notes are kept in
+[MTP Task Sensitivity](docs/mtp-task-sensitivity.md) and
+[Qwen3.6 KV Throughput Sweep](docs/qwen36-kv-throughput-sweep.md).
 
 ## 🧭 Profiles
 
-Production profile selection is documented separately in
-[docs/model-profile-routes.md](docs/model-profile-routes.md). Use it as the
-single entry point for route limits, recommended Qwen/Gemma profiles, KV
-precision choices, context-window targets, MTP settings, multimodal constraints,
-concurrency assumptions, and the launcher aliases expected by
-`bench_tools/stable_profile.sh`.
+Start from [Model Profile Routes](docs/model-profile-routes.md). Pick the model
+family and weight precision first, then choose one of two profile classes:
+
+- `stable-*`: recommended daily service profiles. These use stable mode and
+  FP16/default KV only.
+- `speed-*`: high-performance profiles for INT8 KV, TurboQuant KV, YaRN, and
+  other context-capacity or throughput-first routes.
+
+The launcher applies the mode from the selected profile and refuses stable mode
+with quantized KV, so profile names and runtime behavior stay aligned.
 
 ## 🚀 How To Use
 
-This fork is intended to be used as a pinned runtime tree on a validated SM75
-host, not as a drop-in `pip install vllm` replacement.
+For a source checkout:
 
-1. Put the patched runtime on the target machine and keep the stable root
-   stable. Use your own install path:
+```bash
+./build.sh
+./start.sh
+```
 
-   ```bash
-   export STABLE_ROOT=/path/to/vllm-sm75-tp2-cu128
-   ```
+Then choose three things in the launcher:
 
-2. Put model checkpoints under a stable model root. The launcher expects profile
-   aliases such as:
+1. Checkpoint directory
+2. Profile, usually `stable-*` first
+3. Port and local/LAN access
 
-   ```text
-   $MODEL_ROOT/qwen-family-27b-awq
-   $MODEL_ROOT/qwen-family-27b-gptq-int4
-   $MODEL_ROOT/qwen-family-27b-fp8
-   $MODEL_ROOT/gemma4-family-31b-gptq
-   $MODEL_ROOT/gemma4-family-assistant
-   ```
+A successful launch prints an OpenAI-compatible API URL. For scripted use:
 
-   You can also override `MODEL_DIR` directly when using a different checkpoint.
+```bash
+MODEL_DIR=/path/to/qwen-or-gemma-checkpoint \
+PROFILE=stable-qwen27-int4-fp16kv-mtp3-256k.env \
+PORT=8000 \
+SERVICE_SCOPE=lan \
+CUDA_VISIBLE_DEVICES=0,1 \
+./start.sh --non-interactive
+```
 
-3. Start one of the validated profiles:
-
-   ```bash
-   cd "$STABLE_ROOT"
-
-   PROFILE=qwen27-awq-mtp3-peak \
-   MODEL_ROOT=/path/to/models \
-   PORT=8000 \
-   CUDA_VISIBLE_DEVICES=1,2 \
-   RUN_USER=vllm \
-   RUN_HOME=/var/lib/vllm \
-   ./bench_tools/stable_profile.sh
-   ```
-
-4. Check the OpenAI-compatible endpoint:
-
-   ```bash
-   curl http://127.0.0.1:8000/v1/models
-   ```
+When `PROFILE` is set, the profile supplies the launch mode. Use custom `MODE`
+only for no-profile experiments.
 
 ## ❓ Hardware Q&A
 
