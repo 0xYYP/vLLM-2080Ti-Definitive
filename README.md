@@ -63,8 +63,8 @@ supported.
 
 ### Qwen3.6 27B Mature Route
 
-Qwen-family 27B is the mature route. This matrix uses the Speed/high-performance
-capability view; production-safe launcher profiles are listed later.
+Qwen-family 27B is the mature route. This matrix is a capability overview;
+deployment presets are listed later in Profiles.
 Qwen combines Marlin weight loading, FlashQLA/FlashInfer/FA2 prefill, native
 MTP, and CUDAGraph decode.
 
@@ -78,6 +78,9 @@ MTP, and CUDAGraph decode.
 | Fast prefill path | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟢 TurboQuant speed path |
 | Multimodal image serving | ⚪ no active profile | ⚪ no active profile | 🟡 experimental route |
 | Peak MTP3 PP4096/TG128 | 🟢 1747.52 / 100.98 tok/s | 🟢 1744.06 / 81.12 tok/s | 🟢 1746.32 / 85.94 tok/s |
+
+Mode note: FP16 KV is the stable service path. INT8 KV and TurboQuant KV are
+speed-mode paths for capacity, YaRN, workspace isolation, and experiments.
 
 ### Gemma4 31B Experimental Route
 
@@ -109,8 +112,7 @@ recommended checkpoint also has a useful speed/context tradeoff on dual 2080 Ti.
 | Gemma4 31B GPTQ | GPTQ-INT4 + assistant draft | [ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ](https://huggingface.co/ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ) | 🟡 Supported |
 
 FP8 is the recommended high-quality Qwen 8-bit route; INT4 remains the default
-performance/capacity route. AutoRound INT8 is supported as an experimental
-checkpoint route, not a default profile.
+performance/capacity route. AutoRound INT8 is experimental.
 
 ## 🛠️ Target Hardware & Runtime
 

@@ -64,8 +64,8 @@ FlashQLA/FlashInfer/FA2、TurboQuant/INT8 KV、MTP 和 CUDAGraph 集成，
 
 ### Qwen3.6 27B 成熟主线
 
-Qwen 系 27B 是成熟主线。这个矩阵按 Speed / 高性能能力口径展示；稳定生产
-profile 放在后面的 Profile 章节。
+Qwen 系 27B 是成熟主线。这个矩阵是能力总览；具体部署预设放在后面的 Profile
+章节。
 Qwen 路线整合 Marlin 权重加载、FlashQLA/FlashInfer/FA2 prefill、Native MTP
 和 CUDAGraph decode。
 
@@ -79,6 +79,9 @@ Qwen 路线整合 Marlin 权重加载、FlashQLA/FlashInfer/FA2 prefill、Native
 | 快速 prefill 路线 | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟢 TurboQuant speed 路线 |
 | 图像多模态 | ⚪ 无 active profile | ⚪ 无 active profile | 🟡 实验路线 |
 | Peak MTP3 PP4096/TG128 | 🟢 1747.52 / 100.98 tok/s | 🟢 1744.06 / 81.12 tok/s | 🟢 1746.32 / 85.94 tok/s |
+
+Mode 说明：FP16 KV 是 stable 服务路径；INT8 KV 和 TurboQuant KV 只在 speed
+模式下使用，用于容量、YaRN、工作区隔离和实验路线。
 
 ### Gemma4 31B 实验路线
 
@@ -110,7 +113,7 @@ KV 路线还不成熟。
 | Gemma4 31B GPTQ | GPTQ-INT4 + assistant draft | [ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ](https://huggingface.co/ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ) | 🟡 支持 |
 
 FP8 是推荐的高质量 Qwen 8bit 路线；INT4 仍然是默认性能 / 容量路线。
-AutoRound INT8 保留为实验 checkpoint 路线，不作为默认 profile。
+AutoRound INT8 是实验 checkpoint 路线。
 
 ## 🛠️ 目标硬件与运行环境
 
