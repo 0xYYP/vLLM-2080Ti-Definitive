@@ -8,7 +8,7 @@
 这是一个硬件定向的 vLLM fork，用来保存已经跑通的 2080 Ti vLLM
 栈：补丁源码、启动 profile、运行时说明和稳定环境记录。
 
-Fork 发布版本：`v0.1.4`
+Fork 发布版本：`v0.1.5`
 基础 vLLM：`0.21.0`
 
 核心实测：同一套双 2080 Ti TP=2 runtime 下，Qwen3.6 27B 单请求 decode
@@ -65,7 +65,7 @@ FlashQLA/FlashInfer/FA2、TurboQuant/INT8 KV、MTP 和 CUDAGraph 集成，
 ### Qwen3.6 27B 成熟主线
 
 Qwen 系 27B 是这个 fork 的主要生产路线。它在 Marlin 权重、Native MTP、
-FP16/INT8/TurboQuant KV、原生 256K 上下文、YaRN 容量实验和图像多模态兼容性上
+FP16/INT8 KV、原生 256K 上下文、YaRN 容量 profile 和图像多模态兼容性上
 覆盖最完整。
 快速路径：Qwen 使用 FlashQLA-SM70-SM75 处理 Gated DeltaNet /
 linear-attention prefill，full-attention prefill 走 FlashInfer / FA2，
@@ -74,36 +74,34 @@ head_dim=256 路线完整保留，decode 侧使用 Native MTP + CUDAGraph 策略
 | 功能 | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
 | Marlin 权重路线 | 🟢 FP8/INT4 | 🟢 FP8/INT4 | 🟢 FP8/INT4 |
-| Native MTP3 解码 | 🟢 短上下文速度路线 | 🟢 容量 + 速度路线 | 🟢 压缩容量路线 |
-| 原生 256K 上下文 | 🟢 noMTP 真实 prompt 已通过 | 🟡 容量/速度候选 | 🟢 真实 prompt / service 已通过 |
-| YaRN 512K 扩展 | ⚪ 非目标路线 | 🟢 容量路线 | 🟡 容量候选 |
+| Native MTP3 解码 | 🟢 支持 | 🟢 fast 模式 | 🟡 实验路线 |
+| 原生 256K 上下文 | 🟢 文本路线 | 🟢 文本路线 | 🟡 不作为预设 |
+| YaRN 512K 扩展 | ⚪ 非目标路线 | 🟢 容量路线 | ⚪ 已验证，不作为预设 |
 | No-eager / CUDAGraph | 🟢 支持 | 🟢 支持 | 🟢 graph-safety 已修复 |
-| 快速 prefill 路线 | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟢 TurboQuant FlashInfer path |
-| 图像多模态 | 🟢 default-KV 路线 | 🔴 已观察到输出退化 | 🟢 推荐图像路线 |
-| Peak MTP3 PP4096/TG128 | 🟢 1747.52 / 100.98 tok/s | 🟢 1744.06 / 81.12 tok/s | 🟢 1746.32 / 85.94 tok/s |
+| 快速 prefill 路线 | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟡 依赖具体路线 |
+| 图像多模态 | 🟢 FP8/INT4 路线 | 🟡 仅 INT4 路线 | 🔴 不晋升 |
+| 当前预设状态 | 🟢 推荐 | 🟢 推荐 | 🟡 仅实验 |
 
-Mode 说明：FP16 KV 是 stable 服务路径；INT8 KV 和 TurboQuant KV 只在 speed
-模式下使用，用于容量、YaRN、工作区隔离和实验路线。
+Mode 说明：FP16 KV 是 safe 服务路径；INT8 KV 是推荐的 fast 容量 / 性能路线。
+TurboQuant KV 保留给特定实验，不作为默认 YaRN 预设。具体 profile 名称、实测
+吞吐和容量证据统一维护在 [Profile 导引](profiles/README.zh-CN.md)。
 
 ### Gemma4 31B 实验路线
 
-Gemma4 31B 保留为第二路线和实验路线。FP16/default KV 路线速度很好，也有
-实用价值；但 Gemma 的 head_dim=512 和异构/GQA attention 让压缩 KV 和长上下文
-路线成熟度明显低于 Qwen。
-快速路径：Gemma 的 FP16/default KV 短上下文服务可以走快速路线；压缩 KV
-长上下文目前仍会回落到 SDPA/GQA 兼容路线，assistant MTP 能兼容但收益更依赖
-具体任务。
+Gemma4 31B 保留为第二路线和实验路线。当前实测 profile 远不如 Qwen 成熟：
+这个 runtime 下 native MTP 不支持，FP16/default KV 可以 noMTP 跑通 64K，
+压缩 KV 256K 路线不晋升。
 
 | 功能 | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
 | Marlin 权重路线 | 🟢 GPTQ target | 🟢 GPTQ target | 🟢 GPTQ target |
-| Assistant MTP 解码 | 🟢 MTP5 峰值路线 | 🔴 实验路径 | 🔴 MTP 性能退化 |
-| 原生 256K 上下文 | ⚪ 显存不足 | 🟡 慢速离线路线 | ⚪ 实用容量不足 |
+| Native MTP 解码 | ⚪ 不支持 | ⚪ 不支持 | ⚪ 不支持 |
+| 原生 256K 上下文 | ⚪ 未验证通过 | 🔴 不支持 | 🔴 不支持 |
 | YaRN 512K 扩展 | ⚪ 不支持 | ⚪ 不支持 | ⚪ 不支持 |
-| No-eager / CUDAGraph | 🟢 支持 | 🔴 fallback 很重 | 🟢 兼容性已修复 |
-| 快速 prefill 路线 | 🟢 default-KV 快速路径 | 🔴 SDPA/GQA fallback 代价大 | 🟡 短上下文快，长上下文受限 |
-| 图像多模态 | 🟢 default-KV 路线 | ⚪ 不支持 | ⚪ 不支持 |
-| Peak PP4096/TG128 | 🟢 MTP5 1655.65 / 99.64 tok/s | 🔴 非服务 profile | 🟡 noMTP 1596.15 / 31.70 tok/s |
+| No-eager / CUDAGraph | 🟢 noMTP 路线 | 🔴 初始化 / fallback 问题 | 🔴 admission 受限 |
+| 快速 prefill 路线 | 🟡 慢速 64K 路线 | 🔴 不晋升 | 🔴 不晋升 |
+| 图像多模态 | ⚪ 不晋升 | ⚪ 不支持 | ⚪ 不支持 |
+| 当前预设状态 | 🟡 仅实验 | 🔴 不晋升 | 🔴 不晋升 |
 
 ## 🧪 已测试模型权重
 
@@ -126,10 +124,10 @@ AutoRound INT8 是实验 checkpoint 路线。
 - 已验证 GPU profile：双 RTX 2080 Ti 22GB，SM75，NVLink，tensor parallel
   size 2
 - CUDA/PyTorch：CUDA 12.8，`torch 2.11.0+cu128`
-- Fork 发布版本：`v0.1.4`
+- Fork 发布版本：`v0.1.5`
 - 基础 vLLM：`0.21.0`
 - 仓库身份：`vllm-2080ti-definitive`
-- 稳定运行时身份：`vllm-sm75-tp2-cu128`
+- 运行时身份：`vllm-sm75-tp2-cu128`
 - 兼容目标：NVIDIA Turing / SM75 显卡。其它 Turing 显卡仍需要按显存容量、
   P2P/NVLink 行为、模型 head_dim、KV dtype、CUDAGraph/MTP 设置重新验证
   profile。
@@ -140,51 +138,61 @@ AutoRound INT8 是实验 checkpoint 路线。
 
 ```bash
 ./build.sh
-./start.sh
+./launcher.sh
 ```
 
 然后在 launcher 里选择三件事：
 
 1. checkpoint 目录
-2. Profile，通常先选 `stable-*`
+2. Profile 路径，先看 [profiles/README.zh-CN.md](profiles/README.zh-CN.md)
 3. 端口和仅本地 / 局域网访问
 
 启动成功后会打印 OpenAI-compatible API 地址。非交互启动示例：
 
 ```bash
 MODEL_DIR=/path/to/qwen-or-gemma-checkpoint \
-PROFILE=stable-qwen27-int4-fp16kv-mtp3-256k.env \
+PROFILE=qwen27b/safe/int4/fp16kv-256K-mtp3-text-only.env \
+MODE=safe \
 PORT=8000 \
 SERVICE_SCOPE=lan \
 CUDA_VISIBLE_DEVICES=0,1 \
-./start.sh --non-interactive
+./launcher.sh --non-interactive
 ```
 
-设置 `PROFILE` 时，profile 会自动提供启动模式；只有无 profile 实验才需要手动传
-`MODE`。
+Profile 只声明兼容模式，不再提供推荐启动模式。需要指定模式时，显式传
+`MODE=safe`、`MODE=normal` 或 `MODE=fast`；launcher 会根据 profile 做二次校验。
 
 ## 🧭 Profile 与推荐路线
 
-从 [模型 Profile 路线](docs/model-profile-routes.zh-CN.md) 开始选。先选模型
-家族和权重精度，再在两类 profile 里选择：
+从 [Profile 导引](profiles/README.zh-CN.md) 开始选。Profile 按
+`profiles/<model>/<mode>/<weight>/<route>.env` 组织，例如
+`qwen27b/safe/fp8/fp16kv-128K-mtp3-text-only.env` 和
+`qwen27b/fast/int4/int8kv-256K-mtp3-text-only.env`。
 
-- `stable-*`：推荐日常服务使用。使用 stable 模式，只走 FP16/default KV。
-- `speed-*`：高性能路线。用于 INT8 KV、TurboQuant KV、YaRN，以及其它优先
-  追求上下文容量或吞吐的路线。
+KV 精度按这个口径理解：FP16/default KV 是质量路线，INT8 KV 是平衡路线，
+TQ4NC 是压缩路线。TQK8V4 目前没有在已验证 profile 中体现出优于 INT8 KV
+的容量或速度优势，所以不作为正式路线。
 
-launcher 会使用 profile 自带的模式，并拒绝 stable 模式搭配量化 KV，避免
-profile 名称和实际运行行为不一致。
+模式名称只保留三档：
 
-实验 profile 放在 `profiles/experimental/`。它仍然属于同一个 `profiles`
-目录树，方便查找；但 launcher 默认只扫描 `profiles/*.env`，不会把实验路线混进
-正式菜单。需要尝试实验路线时，在 launcher 里把 Profile directory 指到
-`profiles/experimental`。
+- `safe`：默认生产模式。优先保证输出稳定性；FP16/default KV 可以使用 MTP，
+  量化 KV 必须关闭 MTP。
+- `normal`：中间档，主要用于诊断和手动对比。
+- `fast`：高性能模式。量化 KV + MTP 走这个模式，但显存和质量风险更高。
+
+实验 profile 放在每个模型目录下，例如
+`profiles/qwen27b/experimental/fp8/`。launcher 默认隐藏实验路线；需要尝试时，
+把 Profile directory 指到该 experimental 子目录，或设置
+`PROFILE_INCLUDE_EXPERIMENTAL=1`。
+
+后续目标 profile 和实测进度记录在
+[Profile 蓝图草案](docs/profile-blueprint.zh-CN.md)。
 
 ## 🚀 MTP 与 KV 精度
 
 优先使用项目自带 profile，不建议一开始手动调 MTP 和 KV 参数。每条路线的
-MTP 已按当前实测选择了更适合部署的值。FP16/default KV 是稳定服务的首选；
-量化 KV 通过 speed profile 提供，主要用于追求更大的上下文容量或更高吞吐。
+MTP 已按当前实测选择了更适合部署的值。KV 先按目标选择：FP16/default KV
+追求质量，INT8 KV 追求质量 / 容量平衡，TQ4NC 追求最大压缩。
 
 详细 benchmark 记录见
 [MTP 任务敏感性](docs/mtp-task-sensitivity.md) 和
@@ -216,10 +224,10 @@ Turing 卡可以跑小模型，但不是这个 stack 的主要目标。
 
 **Q：已验证的 CUDA、PyTorch 和驱动版本是什么？**
 
-A：stable runtime 是 CUDA 12.8 + `torch 2.11.0+cu128`。请使用支持目标
-GPU、并且兼容该 CUDA runtime 的较新 NVIDIA driver。不要随意混用
-build/runtime 假设：PyTorch CUDA 版本、本地 CUDA toolkit、FlashInfer/FlashQLA
-构建和启动 profile 应保持一致。
+A：已验证 runtime 是 CUDA 12.8 + `torch 2.11.0+cu128`。请使用支持目标 GPU、
+并且兼容该 CUDA runtime 的较新 NVIDIA driver。不要随意混用 build/runtime
+假设：PyTorch CUDA 版本、本地 CUDA toolkit、FlashInfer/FlashQLA 构建和启动
+profile 应保持一致。
 
 **Q：还有哪些硬件风险需要注意？**
 
@@ -238,7 +246,7 @@ A：散热、供电稳定性，以及给模型文件和 compile cache 留够 SSD
 fork，遵循 Apache-2.0 license。仓库保留上游项目结构，并加入面向双
 2080 Ti / SM75 路线的本地运行时补丁、启动 profile 和验证记录。
 
-稳定运行时使用或集成的加速组件包括：
+当前 runtime 使用或集成的加速组件包括：
 
 - [vLLM](https://github.com/vllm-project/vllm)：基础推理引擎和 serving
   框架。
@@ -247,7 +255,7 @@ fork，遵循 Apache-2.0 license。仓库保留上游项目结构，并加入面
 - [QwenLM/FlashQLA](https://github.com/QwenLM/FlashQLA)：上游 FlashQLA
   Gated DeltaNet / Qwen3.5 linear-attention 实现。
 - [weicj/FlashQLA-SM70-SM75](https://github.com/weicj/FlashQLA-SM70-SM75)：
-  面向 SM70/SM75 的适配版本，稳定 Qwen3.6 prefill profile 会用到。
+  面向 SM70/SM75 的适配版本，已验证 Qwen3.6 prefill profile 会用到。
 - FlashAttention / FA2、TurboQuant、Marlin、CUTLASS、Triton 以及 vLLM
   相关加速 kernel：这些都是已有开源加速工作，本项目将它们整合、适配并在
   目标硬件上验证。

@@ -159,6 +159,11 @@ class OpenAIServingChatBatch(OpenAIServingChat):
                 self.override_max_tokens,
             )
             single_request = single_requests[i]
+            if (
+                single_request.thinking_token_budget is None
+                and self.default_thinking_token_budget is not None
+            ):
+                single_request.thinking_token_budget = self.default_thinking_token_budget
             sampling_params = single_request.to_sampling_params(
                 max_tokens, self.default_sampling_params
             )

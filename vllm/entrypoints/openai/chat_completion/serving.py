@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import os
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from collections.abc import Sequence as GenericSequence
@@ -79,6 +80,19 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+def _default_thinking_token_budget() -> int | None:
+    value = os.environ.get("VLLM_DEFAULT_THINKING_TOKEN_BUDGET", "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning_once(
+            "Ignoring invalid VLLM_DEFAULT_THINKING_TOKEN_BUDGET=%r", value
+        )
+        return None
+
+
 class OpenAIServingChat(OpenAIServing):
     def __init__(
         self,
@@ -148,6 +162,7 @@ class OpenAIServingChat(OpenAIServing):
         self.enable_prompt_tokens_details = enable_prompt_tokens_details
         self.enable_force_include_usage = enable_force_include_usage
         self.default_sampling_params = self.model_config.get_diff_sampling_param()
+        self.default_thinking_token_budget = _default_thinking_token_budget()
         mc = self.model_config
         self.override_max_tokens = (
             self.default_sampling_params.get("max_tokens")
@@ -303,6 +318,11 @@ class OpenAIServingChat(OpenAIServing):
                     max_tokens, self.default_sampling_params
                 )
             else:
+                if (
+                    request.thinking_token_budget is None
+                    and self.default_thinking_token_budget is not None
+                ):
+                    request.thinking_token_budget = self.default_thinking_token_budget
                 sampling_params = request.to_sampling_params(
                     max_tokens,
                     self.default_sampling_params,

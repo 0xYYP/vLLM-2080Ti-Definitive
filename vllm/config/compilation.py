@@ -1298,6 +1298,57 @@ class CompilationConfig:
         assert "none" in self.custom_ops
         return f"+{op}" in self.custom_ops
 
+    @staticmethod
+    def _iter_kv_cache_leaf_specs(kv_cache_config: "KVCacheConfig"):
+        for group in getattr(kv_cache_config, "kv_cache_groups", ()):
+            spec = getattr(group, "kv_cache_spec", None)
+            if spec is None:
+                continue
+            nested_specs = getattr(spec, "kv_cache_specs", None)
+            if nested_specs is not None:
+                yield from nested_specs.values()
+            else:
+                yield spec
+
+    @classmethod
+    def _has_quantized_attention_kv(cls, kv_cache_config: "KVCacheConfig") -> bool:
+        from vllm.v1.kv_cache_interface import AttentionSpec
+
+        for spec in cls._iter_kv_cache_leaf_specs(kv_cache_config):
+            if not isinstance(spec, AttentionSpec):
+                continue
+
+            kv_quant_mode = getattr(spec, "kv_quant_mode", None)
+            if kv_quant_mode is not None:
+                try:
+                    if int(kv_quant_mode) != 0:
+                        return True
+                except (TypeError, ValueError):
+                    if str(kv_quant_mode).split(".")[-1] != "NONE":
+                        return True
+
+            tq_slot_size = getattr(spec, "tq_slot_size", 0)
+            try:
+                if int(tq_slot_size) > 0:
+                    return True
+            except (TypeError, ValueError):
+                pass
+
+            cache_dtype_str = getattr(spec, "cache_dtype_str", None)
+            if isinstance(cache_dtype_str, str):
+                cache_dtype = cache_dtype_str.lower()
+                if cache_dtype not in (
+                    "",
+                    "auto",
+                    "fp16",
+                    "float16",
+                    "half",
+                    "bf16",
+                    "bfloat16",
+                ):
+                    return True
+        return False
+
     def resolve_cudagraph_mode_and_sizes(
         self,
         min_cg_support: "AttentionCGSupport",
@@ -1314,6 +1365,25 @@ class CompilationConfig:
         if cudagraph_mode is None or cudagraph_mode == CUDAGraphMode.NONE:
             self.cudagraph_mode = CUDAGraphMode.NONE
             return CUDAGraphMode.NONE
+
+        allow_mamba_spec_full_cudagraph = (
+            uniform_decode_query_len > 1
+            and kv_cache_config is not None
+            and kv_cache_config.has_mamba_layers
+            and envs.VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH
+            and self._has_quantized_attention_kv(kv_cache_config)
+        )
+        if (
+            allow_mamba_spec_full_cudagraph
+            and cudagraph_mode.decode_mode() == CUDAGraphMode.FULL
+            and min_cg_support.value < AttentionCGSupport.UNIFORM_BATCH.value
+        ):
+            logger.warning(
+                "Allowing spec-decode full CUDA graph replay for Mamba/GDN "
+                "KV cache layers because "
+                "VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=1. This is a fast "
+                "mode opt-in and may reduce output stability."
+            )
 
         # Check cudagraph for mixed batch is supported
         if (
@@ -1375,6 +1445,7 @@ class CompilationConfig:
             cudagraph_mode.decode_mode() == CUDAGraphMode.FULL
             and uniform_decode_query_len > 1
             and min_cg_support.value < AttentionCGSupport.UNIFORM_BATCH.value
+            and not allow_mamba_spec_full_cudagraph
         ):
             msg = (
                 f"CUDAGraphMode.{cudagraph_mode.name} is not supported"
@@ -1398,10 +1469,10 @@ class CompilationConfig:
         # paths.
         if (
             cudagraph_mode.decode_mode() == CUDAGraphMode.FULL
+            and not allow_mamba_spec_full_cudagraph
             and uniform_decode_query_len > 1
             and kv_cache_config is not None
             and kv_cache_config.has_mamba_layers
-            and not envs.VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH
         ):
             msg = (
                 f"CUDAGraphMode.{cudagraph_mode.name} is not supported with "

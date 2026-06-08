@@ -490,10 +490,21 @@ def _get_tile_size(
     element_size: int,
     is_prefill: bool,
 ) -> int:
-    """Select tile size with Gemma3-specific optimization."""
+    """Select tile size with SM75-safe overrides for wide-head attention."""
     if _is_gemma3_attention(head_size, sliding_window):
         # Gemma3: use 32 for decode (default is 16)
         return 32
+
+    if (
+        is_prefill
+        and head_size >= 512
+        and element_size >= 2
+        and current_platform.is_device_capability(75)
+    ):
+        # SM75 has a 64 KiB shared-memory limit. The default prefill tile of
+        # 32 exceeds that limit for Gemma4 global attention heads with
+        # head_dim=512, so cap the tile to keep the Triton kernel launchable.
+        return 16
 
     # Default behavior
     if is_prefill:

@@ -3,14 +3,27 @@
 This changelog tracks the fork release version for vLLM 2080 Ti Definitive
 Edition. It is separate from the upstream vLLM package version.
 
+## v0.1.5 - 2026-06-08
+
+- Renames the public service manager to `launcher.sh` and keeps `build.sh` as
+  the one-click source build entry point.
+- Updates launcher modes to `safe`, `normal`, and `fast`, with route profiles
+  split by model, mode, and weight precision.
+- Adds chat template presets and service-level thinking budget defaults while
+  keeping global runtime controls out of route profile files.
+- Refreshes the Qwen3.6 profile documentation and restores the KV throughput
+  sweep SVG charts.
+
 ## v0.1.4 - 2026-06-06
 
 - Slims the public repository down to the focused SM75 runtime source tree,
   launcher scripts, validated profiles, and project documentation.
 - Keeps Docker artifacts out of this source release; Docker packaging remains a
   separate future deployment layer.
-- Adds the interactive `start.sh` service manager and one-click `build.sh`
+- Adds the interactive `launcher.sh` service manager and one-click `build.sh`
   source build entry point.
+- Uses the public launcher modes `safe`, `normal`, and `fast`, with validated
+  profiles organized under model-specific profile directories.
 - Carries forward the `v0.1.3` graph-safety runtime fixes while removing
   upstream CI/docs/test bulk from the public source tree.
 

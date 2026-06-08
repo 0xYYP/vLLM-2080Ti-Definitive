@@ -8,7 +8,7 @@ The definitive vLLM runtime for dual RTX 2080 Ti / SM75 serving.
 This is a hardware-focused fork that preserves the patched source, launch
 profiles, and runtime notes needed to reproduce the working 2080 Ti vLLM stack.
 
-Fork release: `v0.1.4`
+Fork release: `v0.1.5`
 Base vLLM: `0.21.0`
 
 Headline evidence: Qwen3.6 27B reaches `100+ tok/s` single-request decode, and
@@ -17,7 +17,7 @@ TP=2 runtime.
 
 Language: English | [简体中文](README.zh-CN.md)
 
-![Live single-request speed demo](docs/assets/vllmspeed.gif)
+![Live single-request throughput demo](docs/assets/vllmspeed.gif)
 
 ## 💡 Why RTX 2080 Ti for LLM Inference?
 
@@ -64,8 +64,8 @@ supported.
 ### Qwen3.6 27B Mature Route
 
 Qwen-family 27B is the primary production route for this fork. It has the most
-complete coverage across Marlin weights, native MTP, FP16/INT8/TurboQuant KV,
-native 256K context, YaRN capacity experiments, and image-serving compatibility.
+complete coverage across FP8/INT4 Marlin weights, native MTP, FP16/INT8 KV,
+native 256K context, YaRN capacity profiles, and image-serving compatibility.
 Fast path: Qwen uses FlashQLA-SM70-SM75 for Gated DeltaNet / linear-attention
 prefill, FlashInfer / FA2 for full-attention prefill, head_dim=256 fast-path
 controls, and native MTP with CUDAGraph for decode.
@@ -73,42 +73,42 @@ controls, and native MTP with CUDAGraph for decode.
 | Feature | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
 | Marlin weight route | 🟢 FP8/INT4 | 🟢 FP8/INT4 | 🟢 FP8/INT4 |
-| Native MTP3 decoding | 🟢 short-context speed route | 🟢 capacity + speed route | 🟢 compressed-capacity route |
-| Native 256K context | 🟢 noMTP real prompt supported | 🟡 capacity/speed candidate | 🟢 real prompt/service supported |
-| YaRN 512K extension | ⚪ not the target route | 🟢 supported capacity route | 🟡 capacity candidate |
+| Native MTP3 decoding | 🟢 supported | 🟢 fast mode | 🟡 experimental |
+| Native 256K context | 🟢 text route | 🟢 text route | 🟡 not a preset |
+| YaRN 512K extension | ⚪ not the target route | 🟢 supported capacity route | ⚪ not a preset |
 | No-eager / CUDAGraph | 🟢 supported | 🟢 supported | 🟢 graph-safety fixed |
-| Fast prefill path | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟢 TurboQuant FlashInfer path |
-| Multimodal image serving | 🟢 default-KV route | 🔴 output corruption observed | 🟢 recommended image route |
-| Peak MTP3 PP4096/TG128 | 🟢 1747.52 / 100.98 tok/s | 🟢 1744.06 / 81.12 tok/s | 🟢 1746.32 / 85.94 tok/s |
+| Fast prefill path | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟡 route-specific |
+| Multimodal image serving | 🟢 FP8/INT4 routes | 🟡 INT4 route only | 🔴 not promoted |
+| Current preset status | 🟢 recommended | 🟢 recommended | 🟡 experimental only |
 
-Mode note: FP16 KV is the stable service path. INT8 KV and TurboQuant KV are
-speed-mode paths for capacity, YaRN, workspace isolation, and experiments.
+Mode note: FP16 KV is the safe service path. INT8 KV is the recommended fast
+capacity/performance path. TurboQuant KV is kept for selected experiments, not
+as the default YaRN preset. Exact profile names, measured throughput, and
+capacity evidence are maintained in [Profile Guide](profiles/README.md).
 
 ### Gemma4 31B Experimental Route
 
-Gemma4 31B is kept as a secondary experimental route. The FP16/default-KV path
-is fast and useful, but Gemma's head_dim=512 and heterogeneous/GQA attention
-make compressed-KV and long-context routes much less mature than Qwen.
-Fast path: Gemma uses the default-KV fast route for short-context FP16 service;
-compressed long-context paths still fall back to SDPA/GQA compatibility, and
-assistant MTP is compatible but more workload-sensitive.
+Gemma4 31B is kept as a secondary experimental route. Current validated
+profiles are much less mature than Qwen: native MTP is not supported by this
+runtime, FP16/default KV can run 64K noMTP, and compressed-KV 256K routes are not
+promoted.
 
 | Feature | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
 | Marlin weight route | 🟢 GPTQ target | 🟢 GPTQ target | 🟢 GPTQ target |
-| Assistant MTP decoding | 🟢 MTP5 peak route | 🔴 experimental | 🔴 MTP regression |
-| Native 256K context | ⚪ capacity-negative | 🟡 slow offline route | ⚪ not enough practical capacity |
+| Native MTP decoding | ⚪ unsupported | ⚪ unsupported | ⚪ unsupported |
+| Native 256K context | ⚪ not validated | 🔴 not supported | 🔴 not supported |
 | YaRN 512K extension | ⚪ not supported | ⚪ not supported | ⚪ not supported |
-| No-eager / CUDAGraph | 🟢 supported | 🔴 fallback-heavy | 🟢 repaired for compatibility |
-| Fast prefill path | 🟢 default-KV fast path | 🔴 SDPA/GQA fallback cost | 🟡 short-context fast, long-context limited |
-| Multimodal image serving | 🟢 default-KV route | ⚪ not supported | ⚪ not supported |
-| Peak PP4096/TG128 | 🟢 MTP5 1655.65 / 99.64 tok/s | 🔴 not a serving profile | 🟡 noMTP 1596.15 / 31.70 tok/s |
+| No-eager / CUDAGraph | 🟢 noMTP route | 🔴 init/fallback issues | 🔴 admission limited |
+| Fast prefill path | 🟡 slow 64K route | 🔴 not promoted | 🔴 not promoted |
+| Multimodal image serving | ⚪ not promoted | ⚪ not supported | ⚪ not supported |
+| Current preset status | 🟡 experimental only | 🔴 not promoted | 🔴 not promoted |
 
 ## 🧪 Tested Model Checkpoints
 
 This section records checkpoint-level validation. It is intentionally stricter
 than "vLLM can load it": a supported checkpoint can start and generate, while a
-recommended checkpoint also has a useful speed/context tradeoff on dual 2080 Ti.
+recommended checkpoint also has a useful throughput/context tradeoff on dual 2080 Ti.
 
 | Model route | Weight route | Model cards | Status |
 |---|---|---|---|
@@ -125,10 +125,10 @@ performance/capacity route. AutoRound INT8 is experimental.
 - Validated GPU profile: dual RTX 2080 Ti 22GB, SM75, NVLink, tensor parallel
   size 2
 - CUDA/PyTorch: CUDA 12.8, `torch 2.11.0+cu128`
-- Fork release: `v0.1.4`
+- Fork release: `v0.1.5`
 - Base vLLM: `0.21.0`
 - Repository identity: `vllm-2080ti-definitive`
-- Main stable runtime identity: `vllm-sm75-tp2-cu128`
+- Runtime identity: `vllm-sm75-tp2-cu128`
 - Compatibility target: NVIDIA Turing / SM75 GPUs. Other Turing cards still
   need profile validation for VRAM capacity, P2P/NVLink behavior, model
   head_dim, KV dtype, and CUDAGraph/MTP settings.
@@ -139,53 +139,62 @@ For a source checkout:
 
 ```bash
 ./build.sh
-./start.sh
+./launcher.sh
 ```
 
 Then choose three things in the launcher:
 
 1. Checkpoint directory
-2. Profile, usually `stable-*` first
+2. Profile path, starting from [profiles/README.md](profiles/README.md)
 3. Port and local/LAN access
 
 A successful launch prints an OpenAI-compatible API URL. For scripted use:
 
 ```bash
 MODEL_DIR=/path/to/qwen-or-gemma-checkpoint \
-PROFILE=stable-qwen27-int4-fp16kv-mtp3-256k.env \
+PROFILE=qwen27b/safe/int4/fp16kv-256K-mtp3-text-only.env \
+MODE=safe \
 PORT=8000 \
 SERVICE_SCOPE=lan \
 CUDA_VISIBLE_DEVICES=0,1 \
-./start.sh --non-interactive
+./launcher.sh --non-interactive
 ```
 
-When `PROFILE` is set, the profile supplies the launch mode. Use custom `MODE`
-only for no-profile experiments.
+Profiles declare compatible modes, not a recommended launch mode. Set
+`MODE=safe`, `MODE=normal`, or `MODE=fast` explicitly when you want a specific
+mode; the launcher validates that choice against the profile.
 
 ## 🧭 Profiles
 
-Start from [Model Profile Routes](docs/model-profile-routes.md). Pick the model
-family and weight precision first, then choose one of two profile classes:
+Start from [Profile Guide](profiles/README.md). Profiles are organized as
+`profiles/<model>/<mode>/<weight>/<route>.env`, for example
+`qwen27b/safe/fp8/fp16kv-128K-mtp3-text-only.env` and
+`qwen27b/fast/int4/int8kv-256K-mtp3-text-only.env`.
 
-- `stable-*`: recommended daily service profiles. These use stable mode and
-  FP16/default KV only.
-- `speed-*`: high-performance profiles for INT8 KV, TurboQuant KV, YaRN, and
-  other context-capacity or throughput-first routes.
+KV precision is positioned as: FP16/default KV for quality, INT8 KV for the
+balanced route, and TQ4NC for compression. TQK8V4 is not a formal route right
+now because it has not shown a practical capacity or throughput advantage over INT8
+KV in the validated profiles.
 
-The launcher applies the mode from the selected profile and refuses stable mode
-with quantized KV, so profile names and runtime behavior stay aligned.
+Mode names are intentionally simple:
 
-Experimental profiles live under `profiles/experimental/`. They are kept in the
-same `profiles` tree for discoverability, but the launcher only scans
-`profiles/*.env` by default. To try an experimental route, set the launcher
-Profile directory to `profiles/experimental`.
+- `safe`: production default. It favors output stability and allows
+  FP16/default KV with MTP; quantized KV must use noMTP.
+- `normal`: middle mode for diagnostics and manual checks.
+- `fast`: high-performance mode. Use it for quantized KV with MTP; it has
+  higher memory and quality risk.
+
+Experimental profiles live under each model directory, such as
+`profiles/qwen27b/experimental/fp8/`. The launcher hides experimental routes
+by default unless you point Profile directory at that subdirectory or set
+`PROFILE_INCLUDE_EXPERIMENTAL=1`.
 
 ## 🚀 MTP And KV Precision
 
 Use the bundled profiles instead of hand-tuning MTP and KV settings first.
-MTP is already set to the best practical value for each route. FP16/default KV
-is the safest choice for stable service; quantized KV is provided through
-speed-mode profiles when the priority is context capacity or throughput.
+MTP is already set to the best practical value for each route. Choose KV by
+intent first: FP16/default KV for maximum output quality, INT8 KV for the best
+quality/capacity balance, and TQ4NC when compression is the priority.
 
 Detailed benchmark notes are kept in
 [MTP Task Sensitivity](docs/mtp-task-sensitivity.md) and
@@ -220,10 +229,11 @@ for this stack.
 
 **Q: Which CUDA, PyTorch, and driver versions are validated?**
 
-A: The stable runtime is CUDA 12.8 + `torch 2.11.0+cu128`. Use a recent NVIDIA
-driver that supports your host GPUs and is compatible with the CUDA runtime. Do
-not mix build/runtime assumptions casually: keep the PyTorch CUDA lane, local
-CUDA toolkit, FlashInfer/FlashQLA builds, and launch profile aligned.
+A: The validated runtime is CUDA 12.8 + `torch 2.11.0+cu128`. Use a recent
+NVIDIA driver that supports your host GPUs and is compatible with the CUDA
+runtime. Do not mix build/runtime assumptions casually: keep the PyTorch CUDA
+lane, local CUDA toolkit, FlashInfer/FlashQLA builds, and launch profile
+aligned.
 
 **Q: What other hardware risks matter?**
 
@@ -245,7 +255,7 @@ This repository is a hardware-focused fork of upstream
 fork keeps the upstream project structure and adds local SM75 runtime patches,
 launch profiles, and validation notes for the dual 2080 Ti route.
 
-Acceleration components used or integrated by the stable runtime include:
+Acceleration components used or integrated by this runtime include:
 
 - [vLLM](https://github.com/vllm-project/vllm): base inference engine and
   serving stack.
@@ -254,7 +264,7 @@ Acceleration components used or integrated by the stable runtime include:
 - [QwenLM/FlashQLA](https://github.com/QwenLM/FlashQLA): upstream FlashQLA
   Gated DeltaNet / Qwen3.5 linear-attention implementation.
 - [weicj/FlashQLA-SM70-SM75](https://github.com/weicj/FlashQLA-SM70-SM75):
-  SM70/SM75 adaptation used by the stable Qwen3.6 prefill profile.
+  SM70/SM75 adaptation used by the validated Qwen3.6 prefill profile.
 - FlashAttention / FA2, TurboQuant, Marlin, CUTLASS, Triton, and related vLLM
   acceleration kernels: existing open-source acceleration work integrated and
   profiled for this hardware target.

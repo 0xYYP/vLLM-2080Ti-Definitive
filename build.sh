@@ -8,11 +8,12 @@ LOG="$LOG_DIR/build-$STAMP.log"
 TOTAL_STEPS=8
 STEP_INDEX=0
 BUILD_STARTED_AT=$(date +%s)
+VERSION=${VERSION:-0.1.5}
 
 banner() {
-  cat <<'EOF'
+  cat <<EOF
 ============================================================
- vLLM 2080 Ti Definitive Edition
+ vLLM 2080 Ti Definitive Edition v$VERSION
  One-click source build
  Author: github.com/weicj
 ============================================================
@@ -311,5 +312,5 @@ echo "BUILD OK"
 echo "Total elapsed: $(format_seconds "$(( $(date +%s) - BUILD_STARTED_AT ))")"
 echo "Log: $LOG"
 echo "Next step:"
-echo "  ./start.sh"
+echo "  ./launcher.sh"
 echo

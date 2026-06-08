@@ -5,7 +5,7 @@ when the draft tokens are accepted by the target model. More speculative tokens
 can improve synthetic decode throughput, but they can also waste work when the
 task causes low acceptance.
 
-The stable deployment rule for this fork is therefore:
+The safe deployment rule for this fork is therefore:
 
 - Use conservative MTP settings for mixed agent workloads.
 - Treat higher MTP values as profile-specific speed options.

@@ -60,6 +60,8 @@ csrc/moe/marlin_moe_wna16/kernel_*
 
 # Local tool/editor files
 .DS_Store
+.omx/
+backups/
 .cache/
 .pytest_cache/
 .mypy_cache/
