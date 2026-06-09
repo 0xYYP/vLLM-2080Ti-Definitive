@@ -14,6 +14,9 @@ Edition. It is separate from the upstream vLLM package version.
   cache-usage metrics; otherwise the launcher reports total cache capacity only.
 - Improves launcher startup preflight for large single-file checkpoints and
   cleans up residual vLLM processes after failed launches.
+- Fixes launcher stop handling so orphaned vLLM API servers, worker processes,
+  and resource trackers are discovered and cleaned up instead of leaving VRAM
+  occupied.
 
 ## v0.1.5 - 2026-06-08
 

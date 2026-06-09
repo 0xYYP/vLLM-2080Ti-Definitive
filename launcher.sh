@@ -1946,11 +1946,16 @@ stop_pid_file() {
 stop_pid_tree() {
   local pid=${1:-}
   local mode=${2:-term}
-  local pgid signal
+  local pgid signal children child
 
   pid_is_running "$pid" || return 0
   signal=TERM
   [[ "$mode" == "force" ]] && signal=KILL
+  children=$(pgrep -P "$pid" 2>/dev/null || true)
+  for child in $children; do
+    stop_pid_tree "$child" "$mode" || true
+  done
+
   pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)
   if [[ -n "$pgid" && "$pgid" == "$pid" ]]; then
     kill "-$signal" -- "-$pgid" 2>/dev/null || true
@@ -1980,6 +1985,30 @@ cleanup_vllm_residuals() {
   done < <(pgrep -f 'vllm.entrypoints.openai.api_server' 2>/dev/null || true)
 }
 
+cleanup_vllm_worker_residuals() {
+  local mode=${1:-term}
+  local signal owner pid user comm
+
+  signal=TERM
+  [[ "$mode" == "force" ]] && signal=KILL
+  owner=$(id -un)
+  while read -r pid user comm; do
+    [[ -n "$pid" && "$pid" != "$$" ]] || continue
+    [[ "$user" == "$owner" ]] || continue
+    case "$comm" in
+      VLLM::*|python)
+        ;;
+      *)
+        continue
+        ;;
+    esac
+    if [[ "$comm" != VLLM::* ]]; then
+      tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'multiprocessing.resource_tracker' || continue
+    fi
+    kill "-$signal" "$pid" 2>/dev/null || true
+  done < <(ps -eo pid=,user=,comm= 2>/dev/null)
+}
+
 cleanup_failed_launch() {
   local pid_file=${1:-}
   local pid
@@ -1992,6 +2021,9 @@ cleanup_failed_launch() {
     rm -f "$pid_file"
   fi
   cleanup_vllm_residuals "${PORT:-}" "${SERVED_NAME:-}" "${MODEL_DIR:-}" || true
+  cleanup_vllm_worker_residuals || true
+  sleep 1
+  cleanup_vllm_worker_residuals force || true
 }
 
 stop_all_managed_services() {
@@ -2067,17 +2099,44 @@ stop_service() {
   fi
   banner
   mkdir -p "$LOG_DIR"
-  local pid_files=() choices=() pid_file selected pid answer
+  local pid_files=() target_pids=() choices=() seen_pids=() pid_file selected pid answer cmd port served_name
   while IFS= read -r pid_file; do
     [[ -n "$pid_file" ]] || continue
     pid=$(cat "$pid_file" 2>/dev/null || true)
     if [[ -n "$pid" && -d "/proc/$pid" ]]; then
       pid_files+=("$pid_file")
+      target_pids+=("$pid")
+      seen_pids+=("$pid")
       choices+=("$(basename "$pid_file" .pid) pid=$pid")
     fi
   done < <(find "$LOG_DIR" -maxdepth 1 -type f -name '*.pid' -print 2>/dev/null | sort)
+  while IFS= read -r pid; do
+    [[ -n "$pid" && "$pid" != "$$" ]] || continue
+    if ((${#seen_pids[@]} > 0)) && printf '%s\n' "${seen_pids[@]}" | grep -qx "$pid"; then
+      continue
+    fi
+    cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+    [[ "$cmd" == *"vllm.entrypoints.openai.api_server"* ]] || continue
+    port=$(pid_arg_value "$pid" --port 2>/dev/null || true)
+    served_name=$(pid_arg_value "$pid" --served-model-name 2>/dev/null || true)
+    pid_files+=("")
+    target_pids+=("$pid")
+    choices+=("orphan-vllm ${served_name:-unknown} port=${port:-unknown} pid=$pid")
+  done < <(pgrep -f 'vllm.entrypoints.openai.api_server' 2>/dev/null || true)
   if ((${#choices[@]} == 0)); then
-    echo "No running services found from $LOG_DIR pid files."
+    while read -r pid user comm; do
+      [[ -n "$pid" && "$pid" != "$$" ]] || continue
+      [[ "$user" == "$(id -un)" ]] || continue
+      if [[ "$comm" != VLLM::* ]]; then
+        tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'multiprocessing.resource_tracker' || continue
+      fi
+      pid_files+=("")
+      target_pids+=("$pid")
+      choices+=("orphan-vllm-worker ${comm:-unknown} pid=$pid")
+    done < <(ps -eo pid=,user=,comm= 2>/dev/null)
+  fi
+  if ((${#choices[@]} == 0)); then
+    echo "No running services found from pid files or vLLM process scan."
     echo
     pause_enter
     return 0
@@ -2092,10 +2151,10 @@ stop_service() {
   done
   (( index >= 0 )) || return 0
   pid_file="${pid_files[$index]}"
-  pid=$(cat "$pid_file" 2>/dev/null || true)
+  pid="${target_pids[$index]}"
   if [[ -z "$pid" || ! -d "/proc/$pid" ]]; then
     echo "Service is no longer running."
-    rm -f "$pid_file"
+    [[ -n "$pid_file" ]] && rm -f "$pid_file"
     pause_enter
     return 0
   fi
@@ -2107,7 +2166,17 @@ stop_service() {
   }
   case "$answer" in
     y|Y)
-      if stop_pid_file "$pid_file"; then
+      if [[ -n "$pid_file" ]]; then
+        stop_pid_file "$pid_file"
+      else
+        stop_pid_tree "$pid" || true
+        sleep 1
+        stop_pid_tree "$pid" force || true
+      fi
+      cleanup_vllm_worker_residuals || true
+      sleep 1
+      cleanup_vllm_worker_residuals force || true
+      if ! pid_is_running "$pid"; then
         if [[ "${LAST_PID_FILE:-}" == "$pid_file" ]]; then
           clear_last_service_state
         fi
