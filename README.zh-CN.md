@@ -64,7 +64,7 @@ FlashQLA/FlashInfer/FA2、TurboQuant/INT8 KV、MTP 和 CUDAGraph 集成，
 
 ### Qwen3.6 27B 成熟主线
 
-Qwen 系 27B 是这个 fork 的主要生产路线。它在 Marlin 权重、MTP、
+Qwen 系 27B 是这个 fork 的主要生产路线。它在 FP8/INT4/NVFP4 Marlin 系权重、MTP、
 FP16/INT8 KV、原生 256K 上下文、YaRN 容量 profile 和图像多模态兼容性上
 覆盖最完整。
 快速路径：Qwen 使用 FlashQLA-SM70-SM75 处理 Gated DeltaNet /
@@ -73,7 +73,7 @@ head_dim=256 路线完整保留，decode 侧使用 MTP + CUDAGraph 策略。
 
 | 功能 | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
-| Marlin 权重路线 | 🟢 FP8/INT4 | 🟢 FP8/INT4 | 🟢 FP8/INT4 |
+| Marlin 权重路线 | 🟢 FP8/INT4/NVFP4 | 🟢 FP8/INT4/NVFP4 | 🟢 FP8/INT4/NVFP4 |
 | MTP 解码 | 🟢 支持 | 🟢 fast 模式 | 🟡 实验路线 |
 | 原生 256K 上下文 | 🟢 文本路线 | 🟢 文本路线 | 🟡 不作为预设 |
 | YaRN 512K 扩展 | ⚪ 非目标路线 | 🟢 容量路线 | ⚪ 已验证，不作为预设 |
@@ -113,10 +113,12 @@ FP16/default KV 的 GPTQ + assistant 路线已经有 MTP 与快速 prefill 测�
 |---|---|---|---|
 | Qwen3.6 27B FP8 | FP8 | [Jackrong/Qwopus3.6-27B-v2-FP8](https://huggingface.co/Jackrong/Qwopus3.6-27B-v2-FP8) | 🟢 推荐 |
 | Qwen3.6 27B INT4 | INT4 | [mconcat/Qwopus3.6-27B-v2-AWQ-4bit](https://huggingface.co/mconcat/Qwopus3.6-27B-v2-AWQ-4bit)<br>[QuantTrio/Qwen3.6-27B-AWQ](https://huggingface.co/QuantTrio/Qwen3.6-27B-AWQ)<br>[llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4) | 🟢 推荐 |
+| Qwen3.6 27B NVFP4 | NVFP4 | [unsloth/Qwen3.6-27B-NVFP4](https://huggingface.co/unsloth/Qwen3.6-27B-NVFP4) | 🟡 支持 |
 | Qwen3.6 27B AutoRound | AutoRound INT8 | [Minachist/Qwen3.6-27B-INT8-AutoRound W8A16-GS128](https://huggingface.co/Minachist/Qwen3.6-27B-INT8-AutoRound/tree/W8A16-GS128) | 🟡 支持 |
 | Gemma4 31B GPTQ | GPTQ-INT4 + assistant draft | [ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ](https://huggingface.co/ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ) | 🟡 支持 |
 
 FP8 是推荐的高质量 Qwen 8bit 路线；INT4 仍然是默认性能 / 容量路线。
+NVFP4 已在 SM75 上验证为支持的 Marlin 系路线，但不优先于 FP8 或 INT4。
 AutoRound INT8 是实验 checkpoint 路线。
 
 ## 🛠️ 目标硬件与运行环境

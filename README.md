@@ -64,7 +64,7 @@ failure or clear regression; ⚪ not a target preset or not yet validated.
 ### Qwen3.6 27B Mature Route
 
 Qwen-family 27B is the primary production route for this fork. It has the most
-complete coverage across FP8/INT4 Marlin weights, MTP, FP16/INT8 KV,
+complete coverage across FP8/INT4/NVFP4 Marlin-family weights, MTP, FP16/INT8 KV,
 native 256K context, YaRN capacity profiles, and image-serving compatibility.
 Fast path: Qwen uses FlashQLA-SM70-SM75 for Gated DeltaNet / linear-attention
 prefill, FlashInfer / FA2 for full-attention prefill, head_dim=256 fast-path
@@ -72,7 +72,7 @@ controls, and MTP with CUDAGraph for decode.
 
 | Feature | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
-| Marlin weight route | 🟢 FP8/INT4 | 🟢 FP8/INT4 | 🟢 FP8/INT4 |
+| Marlin weight route | 🟢 FP8/INT4/NVFP4 | 🟢 FP8/INT4/NVFP4 | 🟢 FP8/INT4/NVFP4 |
 | MTP decoding | 🟢 supported | 🟢 fast mode | 🟡 experimental |
 | Native 256K context | 🟢 text route | 🟢 text route | 🟡 not a preset |
 | YaRN 512K extension | ⚪ not the target route | 🟢 supported capacity route | ⚪ not a preset |
@@ -114,11 +114,14 @@ recommended checkpoint also has a useful throughput/context tradeoff on dual 208
 |---|---|---|---|
 | Qwen3.6 27B FP8 | FP8 | [Jackrong/Qwopus3.6-27B-v2-FP8](https://huggingface.co/Jackrong/Qwopus3.6-27B-v2-FP8) | 🟢 Recommended |
 | Qwen3.6 27B INT4 | INT4 | [mconcat/Qwopus3.6-27B-v2-AWQ-4bit](https://huggingface.co/mconcat/Qwopus3.6-27B-v2-AWQ-4bit)<br>[QuantTrio/Qwen3.6-27B-AWQ](https://huggingface.co/QuantTrio/Qwen3.6-27B-AWQ)<br>[llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4) | 🟢 Recommended |
+| Qwen3.6 27B NVFP4 | NVFP4 | [unsloth/Qwen3.6-27B-NVFP4](https://huggingface.co/unsloth/Qwen3.6-27B-NVFP4) | 🟡 Supported |
 | Qwen3.6 27B AutoRound | AutoRound INT8 | [Minachist/Qwen3.6-27B-INT8-AutoRound W8A16-GS128](https://huggingface.co/Minachist/Qwen3.6-27B-INT8-AutoRound/tree/W8A16-GS128) | 🟡 Supported |
 | Gemma4 31B GPTQ | GPTQ-INT4 + assistant draft | [ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ](https://huggingface.co/ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ) | 🟡 Supported |
 
 FP8 is the recommended high-quality Qwen 8-bit route; INT4 remains the default
-performance/capacity route. AutoRound INT8 is experimental.
+performance/capacity route. NVFP4 is validated as a supported Marlin-family
+route on SM75, but it is not promoted over FP8 or INT4. AutoRound INT8 is
+experimental.
 
 ## 🛠️ Target Hardware & Runtime
 
