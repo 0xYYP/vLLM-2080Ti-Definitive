@@ -58,6 +58,6 @@ profile 不需要重测。
 
 | Profile | 状态 | 实测结果 | 结论 |
 |---|---|---|---|
-| `gemma31b/experimental/int4/fp16kv-64K-nomtp-text-only.env` | 🧪 | Native MTP 不支持；noMTP 64K 完整通过。uncached 合成首轮 586.64 / 26.99；重复 measured prefill 命中 prefix cache，不作可比吞吐。长输出质量测试有明显重复。 | 仅实验。 |
+| `gemma31b/experimental/int4/fp16kv-64K-nomtp-text-only.env` | 🧪 | 该 profile 是 noMTP 路线；noMTP 64K 完整通过。uncached 合成首轮 586.64 / 26.99；重复 measured prefill 命中 prefix cache，不作可比吞吐。长输出质量测试有明显重复。 | 仅实验。 |
 | `gemma31b/experimental/int4/int8kv-256K-nomtp-text-only.env` | 🔴 | 原 profile KV page-size 初始化失败；关闭 hybrid KV 后 FlashInfer 报 `Unsupported max_mma_kv: 0`；慢速 fallback 估算最大约 47K。 | 不晋升。 |
 | `gemma31b/experimental/int4/tq4nc-256K-nomtp-text-only.env` | 🔴 | 256K admission 失败；估算最大约 59,632 tokens。 | 不晋升。 |

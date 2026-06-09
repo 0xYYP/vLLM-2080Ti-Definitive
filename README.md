@@ -58,22 +58,22 @@ Serving shape:
   prefill work is capacity-safe when tuned, but it is effectively serialized by
   the runtime scheduler on this TP=2 profile.
 
-Status: 🟢 full support; 🟡 partial support; 🔴 performance regression; ⚪ not
-supported.
+Status: 🟢 validated support; 🟡 experimental or partial support; 🔴 known
+failure or clear regression; ⚪ not a target preset or not yet validated.
 
 ### Qwen3.6 27B Mature Route
 
 Qwen-family 27B is the primary production route for this fork. It has the most
-complete coverage across FP8/INT4 Marlin weights, native MTP, FP16/INT8 KV,
+complete coverage across FP8/INT4 Marlin weights, MTP, FP16/INT8 KV,
 native 256K context, YaRN capacity profiles, and image-serving compatibility.
 Fast path: Qwen uses FlashQLA-SM70-SM75 for Gated DeltaNet / linear-attention
 prefill, FlashInfer / FA2 for full-attention prefill, head_dim=256 fast-path
-controls, and native MTP with CUDAGraph for decode.
+controls, and MTP with CUDAGraph for decode.
 
 | Feature | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
 | Marlin weight route | 🟢 FP8/INT4 | 🟢 FP8/INT4 | 🟢 FP8/INT4 |
-| Native MTP3 decoding | 🟢 supported | 🟢 fast mode | 🟡 experimental |
+| MTP decoding | 🟢 supported | 🟢 fast mode | 🟡 experimental |
 | Native 256K context | 🟢 text route | 🟢 text route | 🟡 not a preset |
 | YaRN 512K extension | ⚪ not the target route | 🟢 supported capacity route | ⚪ not a preset |
 | No-eager / CUDAGraph | 🟢 supported | 🟢 supported | 🟢 graph-safety fixed |
@@ -88,21 +88,21 @@ capacity evidence are maintained in [Profile Guide](profiles/README.md).
 
 ### Gemma4 31B Experimental Route
 
-Gemma4 31B is kept as a secondary experimental route. Current validated
-profiles are much less mature than Qwen: native MTP is not supported by this
-runtime, FP16/default KV can run 64K noMTP, and compressed-KV 256K routes are not
-promoted.
+Gemma4 31B is kept as a secondary experimental route. Capability support and
+profile promotion are separated here: MTP and fast prefill have benchmark
+evidence on the FP16/default-KV GPTQ + assistant route, but Gemma profiles are
+not promoted as production presets yet. FP16/default KV can run 64K noMTP,
+while compressed-KV 256K routes are still blocked by upstream Gemma KV behavior.
 
 | Feature | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
 | Marlin weight route | 🟢 GPTQ target | 🟢 GPTQ target | 🟢 GPTQ target |
-| Native MTP decoding | ⚪ unsupported | ⚪ unsupported | ⚪ unsupported |
-| Native 256K context | ⚪ not validated | 🔴 not supported | 🔴 not supported |
-| YaRN 512K extension | ⚪ not supported | ⚪ not supported | ⚪ not supported |
-| No-eager / CUDAGraph | 🟢 noMTP route | 🔴 init/fallback issues | 🔴 admission limited |
-| Fast prefill path | 🟡 slow 64K route | 🔴 not promoted | 🔴 not promoted |
-| Multimodal image serving | ⚪ not promoted | ⚪ not supported | ⚪ not supported |
-| Current preset status | 🟡 experimental only | 🔴 not promoted | 🔴 not promoted |
+| MTP decoding | 🟢 tested route | ⚪ no preset | ⚪ no preset |
+| Validated context | 🟡 64K text route | 🔴 init issue | 🔴 capacity shortfall |
+| No-eager / CUDAGraph | 🟢 supported | 🟡 fallback issue | 🟡 admission limited |
+| Fast prefill path | 🟢 FlashInfer / FA2 | 🟡 backend-dependent | 🟡 backend-dependent |
+| Multimodal image serving | ⚪ no validated preset | ⚪ no validated preset | ⚪ no validated preset |
+| Current preset status | 🟡 experimental only | ⚪ no preset | ⚪ no preset |
 
 ## 🧪 Tested Model Checkpoints
 

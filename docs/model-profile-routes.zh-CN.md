@@ -34,8 +34,9 @@
   MTP。normal 是中间诊断档，只用于兼容 profile 的手动对比。
 - 实验片段放在每个模型目录下，例如
   `profiles/qwen27b/experimental/fp8/`。
-- Gemma profile 保持实验口径。当前 noMTP FP16 路线可以跑 64K，但速度慢且
-  输出重复；INT8 KV 和 TurboQuant 256K 路线不晋升。
+- Gemma profile 保持实验口径。FP16/default KV 的 MTP 和快速 prefill 路线都有
+  benchmark 证据，但还没有 Gemma 预设晋升为生产路线。当前 noMTP FP16 路线
+  可以跑 64K，但速度慢且输出重复；INT8 KV 和 TurboQuant 256K 路线不晋升。
 - `two256K` 已测试但不采用：可以 admission 两个请求，但 INT8-KV prefill
   workspace 分配时 OOM，并返回空 stream。正式双工作区路线提升为 `two250K`。
 - TurboQuant YaRN 也测试过 448K 和 440K。两者都在约 449,280-token 估算边界

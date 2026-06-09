@@ -60,21 +60,21 @@ FlashQLA/FlashInfer/FA2、TurboQuant/INT8 KV、MTP 和 CUDAGraph 集成，
   而不是并行长 prefill 吞吐。长上下文并发在调好参数后可以安全排队，
   但在这个 TP=2 profile 下实际会被 runtime scheduler 串行化。
 
-状态：🟢 完整支持；🟡 部分支持；🔴 性能退化；⚪ 不支持。
+状态：🟢 已验证支持；🟡 实验或部分支持；🔴 已知失败或明显退化；⚪ 非目标预设或尚未验证。
 
 ### Qwen3.6 27B 成熟主线
 
-Qwen 系 27B 是这个 fork 的主要生产路线。它在 Marlin 权重、Native MTP、
+Qwen 系 27B 是这个 fork 的主要生产路线。它在 Marlin 权重、MTP、
 FP16/INT8 KV、原生 256K 上下文、YaRN 容量 profile 和图像多模态兼容性上
 覆盖最完整。
 快速路径：Qwen 使用 FlashQLA-SM70-SM75 处理 Gated DeltaNet /
 linear-attention prefill，full-attention prefill 走 FlashInfer / FA2，
-head_dim=256 路线完整保留，decode 侧使用 Native MTP + CUDAGraph 策略。
+head_dim=256 路线完整保留，decode 侧使用 MTP + CUDAGraph 策略。
 
 | 功能 | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
 | Marlin 权重路线 | 🟢 FP8/INT4 | 🟢 FP8/INT4 | 🟢 FP8/INT4 |
-| Native MTP3 解码 | 🟢 支持 | 🟢 fast 模式 | 🟡 实验路线 |
+| MTP 解码 | 🟢 支持 | 🟢 fast 模式 | 🟡 实验路线 |
 | 原生 256K 上下文 | 🟢 文本路线 | 🟢 文本路线 | 🟡 不作为预设 |
 | YaRN 512K 扩展 | ⚪ 非目标路线 | 🟢 容量路线 | ⚪ 已验证，不作为预设 |
 | No-eager / CUDAGraph | 🟢 支持 | 🟢 支持 | 🟢 graph-safety 已修复 |
@@ -88,20 +88,20 @@ TurboQuant KV 保留给特定实验，不作为默认 YaRN 预设。具体 profi
 
 ### Gemma4 31B 实验路线
 
-Gemma4 31B 保留为第二路线和实验路线。当前实测 profile 远不如 Qwen 成熟：
-这个 runtime 下 native MTP 不支持，FP16/default KV 可以 noMTP 跑通 64K，
-压缩 KV 256K 路线不晋升。
+Gemma4 31B 保留为第二路线和实验路线。这里把能力支持和 profile 晋升分开：
+FP16/default KV 的 GPTQ + assistant 路线已经有 MTP 与快速 prefill 测试证据，
+但 Gemma profile 还没有晋升为生产预设。FP16/default KV 可以 noMTP 跑通
+64K，压缩 KV 256K 路线仍受上游 Gemma KV 行为限制。
 
 | 功能 | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
 | Marlin 权重路线 | 🟢 GPTQ target | 🟢 GPTQ target | 🟢 GPTQ target |
-| Native MTP 解码 | ⚪ 不支持 | ⚪ 不支持 | ⚪ 不支持 |
-| 原生 256K 上下文 | ⚪ 未验证通过 | 🔴 不支持 | 🔴 不支持 |
-| YaRN 512K 扩展 | ⚪ 不支持 | ⚪ 不支持 | ⚪ 不支持 |
-| No-eager / CUDAGraph | 🟢 noMTP 路线 | 🔴 初始化 / fallback 问题 | 🔴 admission 受限 |
-| 快速 prefill 路线 | 🟡 慢速 64K 路线 | 🔴 不晋升 | 🔴 不晋升 |
-| 图像多模态 | ⚪ 不晋升 | ⚪ 不支持 | ⚪ 不支持 |
-| 当前预设状态 | 🟡 仅实验 | 🔴 不晋升 | 🔴 不晋升 |
+| MTP 解码 | 🟢 已测试路线 | ⚪ 无预设 | ⚪ 无预设 |
+| 实测上下文 | 🟡 64K 文本路线 | 🔴 初始化问题 | 🔴 容量不足 |
+| No-eager / CUDAGraph | 🟢 支持 | 🟡 fallback 问题 | 🟡 admission 受限 |
+| 快速 prefill 路线 | 🟢 FlashInfer / FA2 | 🟡 依赖后端路线 | 🟡 依赖后端路线 |
+| 图像多模态 | ⚪ 无已验证预设 | ⚪ 无已验证预设 | ⚪ 无已验证预设 |
+| 当前预设状态 | 🟡 仅实验 | ⚪ 无预设 | ⚪ 无预设 |
 
 ## 🧪 已测试模型权重
 

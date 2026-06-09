@@ -37,9 +37,10 @@ are not capacity evidence.
   available as a middle diagnostic mode for compatible profiles.
 - Experimental snippets live under each model directory, for example
   `profiles/qwen27b/experimental/fp8/`.
-- Gemma profiles remain experimental. The currently validated noMTP FP16 route
-  can run 64K but is slow/repetitive; INT8 KV and TurboQuant 256K routes are not
-  promoted.
+- Gemma profiles remain experimental. FP16/default-KV MTP and fast-prefill
+  routes have benchmark evidence, but no Gemma preset is promoted as a
+  production route yet. The currently validated noMTP FP16 route can run 64K but
+  is slow/repetitive; INT8 KV and TurboQuant 256K routes are not promoted.
 - `two256K` was tested but rejected: it admitted two requests, then OOMed during
   INT8-KV prefill workspace allocation and returned empty streams. The promoted
   two-workspace route is `two250K`.
