@@ -9,8 +9,9 @@ Edition. It is separate from the upstream vLLM package version.
   including the tested `nameistoken/Qwen3.6-27B-Quark-W8A8-INT8` checkpoint.
 - Updates the launcher display to separate the real vLLM `--quantization`
   value from the display-only W/A type (`W4A16`, `W8A16`, `W8A8`).
-- Adds launcher service-status KV cache reporting for running services, with
-  automatic 30-second refresh while the service manager is open.
+- Adds launcher service-status cache reporting for running services. Live
+  `used` values and 30-second refresh are shown only when vLLM exposes real
+  cache-usage metrics; otherwise the launcher reports total cache capacity only.
 - Improves launcher startup preflight for large single-file checkpoints and
   cleans up residual vLLM processes after failed launches.
 
