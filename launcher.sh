@@ -13,7 +13,7 @@ TEMPLATE_DIR=${TEMPLATE_DIR:-"$PROFILE_DIR/templates"}
 LOG_DIR=${LOG_DIR:-"$MANAGER_ROOT/run-logs"}
 STATE_FILE=${STATE_FILE:-"$LOG_DIR/start-manager.state"}
 STAMP=$(date +%Y%m%d-%H%M%S)
-VERSION=${VERSION:-0.1.5}
+VERSION=${VERSION:-0.1.6}
 
 banner() {
   cat <<EOF
@@ -63,6 +63,130 @@ current_service_info() {
   return 1
 }
 
+pid_arg_value() {
+  local pid=$1
+  local flag=$2
+  local part want_next=0
+
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+  while IFS= read -r -d '' part; do
+    if (( want_next )); then
+      printf '%s\n' "$part"
+      return 0
+    fi
+    if [[ "$part" == "$flag" ]]; then
+      want_next=1
+    fi
+  done <"/proc/$pid/cmdline"
+  return 1
+}
+
+service_api_root() {
+  local pid_file=$1
+  local pid=$2
+  local api port
+
+  if [[ -n "${LAST_API_LOCAL:-}" && "$pid_file" == "${LAST_PID_FILE:-}" ]]; then
+    api=${LAST_API_LOCAL%/}
+    printf '%s\n' "${api%/v1}"
+    return 0
+  fi
+
+  port=$(pid_arg_value "$pid" --port 2>/dev/null || true)
+  port=${port:-${PORT:-8000}}
+  printf 'http://127.0.0.1:%s\n' "$port"
+}
+
+service_log_file() {
+  local pid_file=$1
+  local name=$2
+  local log_file
+
+  if [[ -n "${LAST_LOG_FILE:-}" && -f "${LAST_LOG_FILE:-}" && "$pid_file" == "${LAST_PID_FILE:-}" ]]; then
+    printf '%s\n' "$LAST_LOG_FILE"
+    return 0
+  fi
+
+  log_file=$(
+    find "$LOG_DIR" -maxdepth 1 -type f -name "vllm-${name}-*.log" -printf '%T@ %p\n' 2>/dev/null |
+      sort -nr |
+      awk 'NR == 1 { $1=""; sub(/^ /, ""); print }'
+  )
+  [[ -n "$log_file" ]] || return 1
+  printf '%s\n' "$log_file"
+}
+
+kv_cache_total_tokens_from_log() {
+  local log_file=$1
+  local total
+
+  [[ -f "$log_file" ]] || return 1
+  total=$(sed -n 's/.*GPU KV cache size:[[:space:]]*\([0-9,]\+\) tokens.*/\1/p' "$log_file" | tail -n 1)
+  total=${total//,/}
+  [[ "$total" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$total"
+}
+
+kv_cache_usage_ratio_from_metrics() {
+  local api_root=$1
+  local metrics ratio
+
+  metrics=$(curl -fsS --max-time 2 "${api_root%/}/metrics" 2>/dev/null || true)
+  [[ -n "$metrics" ]] || return 1
+  ratio=$(
+    awk '
+      /^#/ { next }
+      $1 ~ /^vllm:kv_cache_usage_perc(\{|$)/ { print $NF; exit }
+      $1 ~ /^vllm:gpu_cache_usage_perc(\{|$)/ { print $NF; exit }
+    ' <<<"$metrics"
+  )
+  [[ "$ratio" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+  printf '%s\n' "$ratio"
+}
+
+render_kv_cache_status() {
+  local pid_file=$1
+  local pid=$2
+  local name=$3
+  local label_width=${4:-8}
+  local api_root log_file total ratio used pct
+
+  api_root=$(service_api_root "$pid_file" "$pid")
+  log_file=$(service_log_file "$pid_file" "$name" 2>/dev/null || true)
+  if [[ -n "$log_file" ]]; then
+    total=$(kv_cache_total_tokens_from_log "$log_file" 2>/dev/null || true)
+  fi
+  ratio=$(kv_cache_usage_ratio_from_metrics "$api_root" 2>/dev/null || true)
+
+  if [[ -n "$total" && -n "$ratio" ]]; then
+    read -r used pct < <(
+      awk -v total="$total" -v ratio="$ratio" 'BEGIN {
+        r = ratio + 0
+        if (r > 1) {
+          r = r / 100
+        }
+        printf "%.0f %.1f\n", total * r, r * 100
+      }'
+    )
+    printf '  %-*s %s used | %s total tokens (%s%%)\n' "$label_width" "Cache:" "$used" "$total" "$pct"
+  elif [[ -n "$total" ]]; then
+    printf '  %-*s %s total tokens\n' "$label_width" "Cache:" "$total"
+  elif [[ -n "$ratio" ]]; then
+    pct=$(awk -v ratio="$ratio" 'BEGIN { r = ratio + 0; if (r <= 1) r *= 100; printf "%.1f", r }')
+    printf '  %-*s %s%% used\n' "$label_width" "Cache:" "$pct"
+  fi
+}
+
+service_has_live_kv_cache_usage() {
+  local info pid_file pid name api_root ratio
+
+  info=$(current_service_info) || return 1
+  IFS=$'\t' read -r pid_file pid name <<< "$info"
+  api_root=$(service_api_root "$pid_file" "$pid")
+  ratio=$(kv_cache_usage_ratio_from_metrics "$api_root" 2>/dev/null || true)
+  [[ -n "$ratio" ]]
+}
+
 render_service_status() {
   local info pid_file pid name api
 
@@ -74,6 +198,7 @@ render_service_status() {
     printf '  Model:   %s\n' "${SERVED_NAME:-$name}"
     printf '  API:     %s\n' "$api"
     printf '  PID:     %s\n' "$pid"
+    render_kv_cache_status "$pid_file" "$pid" "$name" 8
   else
     printf '  Status:  STOPPED\n'
   fi
@@ -241,11 +366,7 @@ save_manager_state() {
 
 list_profiles() {
   [[ -d "$PROFILE_DIR" ]] || return 0
-  find "$PROFILE_DIR" -type f -name '*.env' -printf '%P\n' |
-    awk -v include_experimental="${PROFILE_INCLUDE_EXPERIMENTAL:-0}" '
-      include_experimental == "1" || $0 !~ /(^|\/)experimental\//
-    ' |
-    sort
+  find "$PROFILE_DIR" -type f -name '*.env' -printf '%P\n' | sort
 }
 
 list_profiles_for_model() {
@@ -1474,7 +1595,7 @@ edit_runtime_parameters() {
   PROFILE_GROUP=$(prompt_optional "Profile group" "${PROFILE_GROUP:-}") || return 0
   MODEL_VARIANT=$(prompt_optional "Weight precision/profile variant" "${MODEL_VARIANT:-}") || return 0
   SERVED_NAME=$(prompt_default "Served model name" "${SERVED_NAME:-${MODEL_DIR:+$(basename "$MODEL_DIR")}}") || return 0
-  QUANTIZATION=$(prompt_default "Weight quantization (empty/auto, fp8, gptq_marlin, awq_marlin, compressed-tensors)" "${QUANTIZATION:-$(guess_quantization "${MODEL_DIR:-}")}") || return 0
+  QUANTIZATION=$(prompt_default "vLLM --quantization (empty/auto, fp8, gptq_marlin, awq_marlin, compressed-tensors, quark)" "${QUANTIZATION:-$(guess_quantization "${MODEL_DIR:-}")}") || return 0
 
   kv_choice=$(menu_select "KV precision" "${KV_CACHE_DTYPE:-fp16}" fp16 int8_per_token_head turboquant_k8v4 turboquant_4bit_nc) || return 0
   if [[ "$kv_choice" == "fp16" ]]; then
@@ -1570,7 +1691,7 @@ runtime_parameter_menu() {
       "Profile group: $profile_group_value"
       "Weight variant: $model_variant_value"
       "Served name: $served_name_value"
-      "Weight quantization: $quantization_value"
+      "vLLM --quantization: $quantization_value"
       "KV precision: $kv_value"
       "Context tokens: $context_value"
       "GPU util: $gpu_util_value"
@@ -1602,8 +1723,8 @@ runtime_parameter_menu() {
         SERVED_NAME=$(prompt_default "Served model name" "${SERVED_NAME:-${MODEL_DIR:+$(basename "$MODEL_DIR")}}") || continue
         save_manager_state
         ;;
-      "Weight quantization:"*)
-        QUANTIZATION=$(prompt_default "Weight quantization (empty/auto, fp8, gptq_marlin, awq_marlin, compressed-tensors)" "${QUANTIZATION:-$(guess_quantization "${MODEL_DIR:-}")}") || continue
+      "vLLM --quantization:"*)
+        QUANTIZATION=$(prompt_default "vLLM --quantization (empty/auto, fp8, gptq_marlin, awq_marlin, compressed-tensors, quark)" "${QUANTIZATION:-$(guess_quantization "${MODEL_DIR:-}")}") || continue
         save_manager_state
         ;;
       "KV precision:"*)
@@ -1747,6 +1868,7 @@ show_launch_status() {
     clear >/dev/tty 2>/dev/null || true
   fi
   banner
+  local info pid_file pid name
   echo "Service status"
   echo
   echo "  Status:       START OK"
@@ -1761,6 +1883,10 @@ show_launch_status() {
   fi
   echo "  PID file:     ${LAST_PID_FILE:-unknown}"
   echo "  Log file:     ${LAST_LOG_FILE:-unknown}"
+  if info=$(current_service_info); then
+    IFS=$'\t' read -r pid_file pid name <<< "$info"
+    render_kv_cache_status "$pid_file" "$pid" "$name" 13
+  fi
   if [[ -n "${LAST_SMOKE_OUTPUT:-}" ]]; then
     echo "  Smoke:        $LAST_SMOKE_OUTPUT"
   fi
@@ -1796,7 +1922,16 @@ stop_pid_file() {
     return 0
   fi
 
-  kill "$pid" 2>/dev/null || true
+  stop_pid_tree "$pid" || true
+  for _ in {1..20}; do
+    pid_is_running "$pid" || {
+      rm -f "$pid_file"
+      return 0
+    }
+    sleep 0.5
+  done
+
+  stop_pid_tree "$pid" force || true
   for _ in {1..20}; do
     pid_is_running "$pid" || {
       rm -f "$pid_file"
@@ -1806,6 +1941,57 @@ stop_pid_file() {
   done
 
   return 1
+}
+
+stop_pid_tree() {
+  local pid=${1:-}
+  local mode=${2:-term}
+  local pgid signal
+
+  pid_is_running "$pid" || return 0
+  signal=TERM
+  [[ "$mode" == "force" ]] && signal=KILL
+  pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)
+  if [[ -n "$pgid" && "$pgid" == "$pid" ]]; then
+    kill "-$signal" -- "-$pgid" 2>/dev/null || true
+  else
+    kill "-$signal" "$pid" 2>/dev/null || true
+  fi
+}
+
+cleanup_vllm_residuals() {
+  local port=${1:-}
+  local served_name=${2:-}
+  local model_dir=${3:-}
+  local pid cmd
+
+  while IFS= read -r pid; do
+    [[ -n "$pid" && "$pid" != "$$" ]] || continue
+    cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+    [[ "$cmd" == *"vllm.entrypoints.openai.api_server"* ]] || continue
+    if [[ -n "$port" && "$cmd" != *"--port $port"* && "$cmd" != *"--port=${port}"* ]]; then
+      if [[ -z "$served_name" || "$cmd" != *"$served_name"* ]]; then
+        if [[ -z "$model_dir" || "$cmd" != *"$model_dir"* ]]; then
+          continue
+        fi
+      fi
+    fi
+    stop_pid_tree "$pid" || true
+  done < <(pgrep -f 'vllm.entrypoints.openai.api_server' 2>/dev/null || true)
+}
+
+cleanup_failed_launch() {
+  local pid_file=${1:-}
+  local pid
+
+  if [[ -n "$pid_file" && -f "$pid_file" ]]; then
+    pid=$(cat "$pid_file" 2>/dev/null || true)
+    stop_pid_tree "$pid" || true
+    sleep 1
+    stop_pid_tree "$pid" force || true
+    rm -f "$pid_file"
+  fi
+  cleanup_vllm_residuals "${PORT:-}" "${SERVED_NAME:-}" "${MODEL_DIR:-}" || true
 }
 
 stop_all_managed_services() {
@@ -1955,8 +2141,32 @@ guess_quantization() {
     echo gptq_marlin
   elif [[ "$dir" == *awq* ]]; then
     echo awq_marlin
+  elif [[ "$dir" == *quark* ]]; then
+    echo quark
   else
     echo ""
+  fi
+}
+
+guess_precision_scheme() {
+  local dir=${1:-${MODEL_DIR:-}}
+  local quantization=${2:-${QUANTIZATION:-$(guess_quantization "$dir")}}
+  dir=${dir,,}
+
+  if [[ "$dir" == *w8a8* || "$quantization" == "quark" ]]; then
+    echo W8A8
+  elif [[ "$dir" == *nvfp4* || "$dir" == *mxfp4* ]]; then
+    echo W4A16
+  elif [[ "$dir" == *fp8* || "$quantization" == "fp8" ]]; then
+    echo W8A16
+  elif [[ "$dir" == *w8a16* || "$dir" == *int8* ]]; then
+    echo W8A16
+  elif [[ "$dir" == *w4a16* || "$dir" == *int4* || "$dir" == *4bit* || "$dir" == *awq* ]]; then
+    echo W4A16
+  elif [[ "$quantization" == "awq_marlin" || "$quantization" == "gptq_marlin" ]]; then
+    echo W4A16
+  else
+    echo auto
   fi
 }
 
@@ -1964,6 +2174,8 @@ default_context_tokens() {
   local quantization=${QUANTIZATION:-$(guess_quantization "${MODEL_DIR:-}")}
   if [[ "$quantization" == "fp8" ]]; then
     echo 102400
+  elif [[ "$quantization" == "quark" ]]; then
+    echo 8192
   else
     echo 131072
   fi
@@ -2083,6 +2295,12 @@ set_sm75_runtime_env() {
   export PYTHONPATH="$RUNTIME_ROOT${FLASHQLA_ROOT:+:$FLASHQLA_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
   export PATH="$RUNTIME_ROOT/.venv/bin:${CUDA_HOME}/bin:$PATH"
   export FLASHINFER_ENABLE_AOT=${FLASHINFER_ENABLE_AOT:-1}
+  if [[ "${KV_CACHE_DTYPE:-}" == "int8_per_token_head" ]]; then
+    export VLLM_INT8KV_FA_PREFILL=${VLLM_INT8KV_FA_PREFILL:-1}
+    export VLLM_INT8KV_FA_CONTINUATION_DEQUANT=${VLLM_INT8KV_FA_CONTINUATION_DEQUANT:-1}
+    export VLLM_INT8KV_FA_CASCADE_DEQUANT=${VLLM_INT8KV_FA_CASCADE_DEQUANT:-1}
+    export VLLM_INT8KV_FA_CASCADE_TILE_TOKENS=${VLLM_INT8KV_FA_CASCADE_TILE_TOKENS:-65536}
+  fi
   # Keep generated kernels inside this runtime tree. Reusing cache dirs from
   # experiment worktrees can leave absolute paths to deleted environments.
   export TORCHINDUCTOR_CACHE_DIR="$MANAGER_ROOT/torchinductor-cache"
@@ -2416,6 +2634,8 @@ launch_server() {
     return 0
   fi
 
+  check_checkpoint_mmap_policy || return 1
+
   echo
   echo "Starting server..."
   echo "  Log: $log_file"
@@ -2425,7 +2645,11 @@ launch_server() {
   echo "  Model: $MODEL_DIR"
   echo "  Bind: $host_arg:$PORT"
 
-  nohup "$RUNTIME_ROOT/.venv/bin/python" -m vllm.entrypoints.openai.api_server "${VLLM_ARGS[@]}" >"$log_file" 2>&1 &
+  if command -v setsid >/dev/null 2>&1; then
+    nohup setsid "$RUNTIME_ROOT/.venv/bin/python" -m vllm.entrypoints.openai.api_server "${VLLM_ARGS[@]}" >"$log_file" 2>&1 &
+  else
+    nohup "$RUNTIME_ROOT/.venv/bin/python" -m vllm.entrypoints.openai.api_server "${VLLM_ARGS[@]}" >"$log_file" 2>&1 &
+  fi
   CURRENT_SERVER_PID=$!
   echo "$CURRENT_SERVER_PID" > "$pid_file"
 
@@ -2436,8 +2660,9 @@ launch_server() {
     echo "START FAILED"
     echo "Log: $log_file"
     tail -n 120 "$log_file" || true
-    kill "$(cat "$pid_file" 2>/dev/null)" >/dev/null 2>&1 || true
-    rm -f "$pid_file"
+    echo "Cleaning up failed server processes..."
+    cleanup_failed_launch "$pid_file"
+    restore_overcommit_memory || true
     return 1
   fi
 
@@ -2449,10 +2674,13 @@ launch_server() {
     echo "SMOKE FAILED"
     echo "$smoke_output"
     echo "Log: $log_file"
-    kill "$(cat "$pid_file" 2>/dev/null)" >/dev/null 2>&1 || true
-    rm -f "$pid_file"
+    echo "Cleaning up failed server processes..."
+    cleanup_failed_launch "$pid_file"
+    restore_overcommit_memory || true
     return 1
   fi
+
+  restore_overcommit_memory || true
 
   local api_local="http://127.0.0.1:${PORT}/v1"
   local api_lan=""
@@ -2479,6 +2707,119 @@ launch_server() {
   if is_tty; then
     show_launch_status
   fi
+}
+
+set_overcommit_memory_one() {
+  if [[ -w /proc/sys/vm/overcommit_memory ]]; then
+    echo 1 >/proc/sys/vm/overcommit_memory
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    sudo sysctl -w vm.overcommit_memory=1 >/dev/null
+    return 0
+  fi
+  return 1
+}
+
+restore_overcommit_memory() {
+  local value=${OVERCOMMIT_RESTORE_VALUE:-}
+  [[ "${OVERCOMMIT_CHANGED:-0}" == "1" && -n "$value" ]] || return 0
+
+  if [[ -w /proc/sys/vm/overcommit_memory ]]; then
+    echo "$value" >/proc/sys/vm/overcommit_memory
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo sysctl -w "vm.overcommit_memory=$value" >/dev/null
+  else
+    echo "WARNING: could not restore vm.overcommit_memory=$value; missing sudo/root permission." >&2
+    return 1
+  fi
+
+  OVERCOMMIT_CHANGED=0
+  OVERCOMMIT_RESTORE_VALUE=""
+  echo "INFO: Restored vm.overcommit_memory=$value."
+}
+
+trap 'restore_overcommit_memory >/dev/null 2>&1 || true' EXIT
+
+meminfo_kib() {
+  local key=$1
+  awk -v key="$key:" '$1 == key { print $2; exit }' /proc/meminfo 2>/dev/null
+}
+
+commit_headroom_bytes() {
+  local limit_kib committed_kib
+  limit_kib=$(meminfo_kib CommitLimit)
+  committed_kib=$(meminfo_kib Committed_AS)
+  [[ "$limit_kib" =~ ^[0-9]+$ && "$committed_kib" =~ ^[0-9]+$ ]] || return 1
+  if (( limit_kib <= committed_kib )); then
+    echo 0
+  else
+    echo $(((limit_kib - committed_kib) * 1024))
+  fi
+}
+
+bytes_to_gib() {
+  local bytes=${1:-0}
+  awk -v bytes="$bytes" 'BEGIN { printf "%.2f GiB", bytes / 1024 / 1024 / 1024 }'
+}
+
+largest_safetensors_file() {
+  find "$MODEL_DIR" -maxdepth 1 -type f -name '*.safetensors' -printf '%s\t%p\n' 2>/dev/null |
+    sort -nr |
+    head -n 1
+}
+
+check_checkpoint_mmap_policy() {
+  local overcommit largest_line largest_bytes largest_path headroom_bytes answer
+
+  [[ -r /proc/sys/vm/overcommit_memory ]] || return 0
+  overcommit=$(cat /proc/sys/vm/overcommit_memory 2>/dev/null || true)
+  [[ "$overcommit" == "0" ]] || return 0
+
+  largest_line=$(largest_safetensors_file)
+  [[ -n "$largest_line" ]] || return 0
+  largest_bytes=${largest_line%%$'\t'*}
+  largest_path=${largest_line#*$'\t'}
+  [[ "$largest_bytes" =~ ^[0-9]+$ ]] || return 0
+  headroom_bytes=$(commit_headroom_bytes 2>/dev/null || true)
+  [[ "$headroom_bytes" =~ ^[0-9]+$ ]] || return 0
+  (( largest_bytes > headroom_bytes )) || return 0
+
+  echo
+  echo "Checkpoint mmap preflight"
+  echo "  Largest safetensors: $(bytes_to_gib "$largest_bytes")"
+  echo "  Commit headroom:     $(bytes_to_gib "$headroom_bytes")"
+  echo "  File:                $largest_path"
+  echo
+  echo "This host is using vm.overcommit_memory=0, and the largest checkpoint"
+  echo "file is bigger than the current commit headroom. vLLM may fail with:"
+  echo "  unable to mmap ... Cannot allocate memory (12)"
+  echo
+
+  if is_tty; then
+    answer=$(read_line_with_esc "Enable vm.overcommit_memory=1 with sudo now? [y/N]: ") || return 1
+    case "$answer" in
+      y|Y)
+        ;;
+      *)
+        echo "Start cancelled. vm.overcommit_memory was not changed." >&2
+        return 1
+        ;;
+    esac
+  elif ! [[ -w /proc/sys/vm/overcommit_memory ]]; then
+    echo "ERROR: checkpoint mmap needs vm.overcommit_memory=1, but non-interactive launcher cannot prompt for sudo." >&2
+    return 1
+  fi
+
+  if set_overcommit_memory_one; then
+    OVERCOMMIT_RESTORE_VALUE="$overcommit"
+    OVERCOMMIT_CHANGED=1
+    echo "INFO: Enabled vm.overcommit_memory=1 temporarily for this launch."
+    return 0
+  fi
+
+  echo "ERROR: could not enable vm.overcommit_memory=1. The current user needs sudo/root permission." >&2
+  return 1
 }
 
 prepare_runtime_defaults() {
@@ -2543,7 +2884,8 @@ Launch summary:
   Model directory:      $MODEL_DIR
   Served name:          $SERVED_NAME
   Model family:         $MODEL_FAMILY
-  Weight quantization:  ${QUANTIZATION:-auto}
+  vLLM --quantization:  ${QUANTIZATION:-auto}
+  W/A type:             $(guess_precision_scheme "$MODEL_DIR" "${QUANTIZATION:-}")
   GPU devices:          ${GPU_DEVICES:-$(detect_default_gpu_devices)}
   KV precision:         ${KV_CACHE_DTYPE:-fp16}
   Context tokens:       $MAX_MODEL_LEN
@@ -2636,7 +2978,8 @@ render_main_menu() {
   render_main_menu_item 2 "$current" "2. Profile:          $(current_profile_label)"
   printf '     Model family:     %s\n' "$(menu_value "${MODEL_FAMILY:-}")"
   printf '     Served name:      %s\n' "$(menu_value "${SERVED_NAME:-}")"
-  printf '     Weight quant:     %s\n' "$(menu_value "${QUANTIZATION:-auto}")"
+  printf '     vLLM quant:       %s\n' "$(menu_value "${QUANTIZATION:-auto}")"
+  printf '     W/A type:         %s\n' "$(menu_value "$(guess_precision_scheme "${MODEL_DIR:-}" "${QUANTIZATION:-}")")"
   printf '     KV precision:     %s\n' "$(menu_value "${KV_CACHE_DTYPE:-fp16}")"
   printf '     Context tokens:   %s\n' "$(menu_value "${MAX_MODEL_LEN:-$(default_context_tokens)}")"
   printf '     GPU util:         %s\n' "$(menu_value "${GPU_UTIL:-$(default_gpu_util)}")"
@@ -2662,9 +3005,14 @@ render_main_menu() {
 
 read_main_menu_choice() {
   local current=$1
+  local timeout=${2:-}
   local key seq selected_index
 
-  IFS= read -rsn1 key </dev/tty || return 1
+  if [[ -n "$timeout" ]]; then
+    IFS= read -rsn1 -t "$timeout" key </dev/tty || return 124
+  else
+    IFS= read -rsn1 key </dev/tty || return 1
+  fi
   printf '\n' >/dev/tty
 
   [[ "$key" == $'\x04' ]] && return 1
@@ -2713,7 +3061,7 @@ read_main_menu_choice() {
 }
 
 service_manager() {
-  local choice menu_idx=1
+  local choice menu_idx=1 refresh_timeout rc
   load_manager_state
   MODE=${MODE:-safe}
   PORT=${PORT:-8000}
@@ -2722,7 +3070,18 @@ service_manager() {
   while true; do
     render_main_menu "$menu_idx"
     printf 'Select [0-9]: ' >/dev/tty
-    if ! choice=$(read_main_menu_choice "$menu_idx"); then
+    refresh_timeout=""
+    if service_has_live_kv_cache_usage; then
+      refresh_timeout=${STATUS_REFRESH_SECONDS:-30}
+    fi
+    set +e
+    choice=$(read_main_menu_choice "$menu_idx" "$refresh_timeout")
+    rc=$?
+    set -e
+    if (( rc == 124 )); then
+      continue
+    fi
+    if (( rc != 0 )); then
       exit 0
     fi
     case "$choice" in

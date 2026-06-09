@@ -8,7 +8,7 @@ LOG="$LOG_DIR/build-$STAMP.log"
 TOTAL_STEPS=8
 STEP_INDEX=0
 BUILD_STARTED_AT=$(date +%s)
-VERSION=${VERSION:-0.1.5}
+VERSION=${VERSION:-0.1.6}
 
 banner() {
   cat <<EOF

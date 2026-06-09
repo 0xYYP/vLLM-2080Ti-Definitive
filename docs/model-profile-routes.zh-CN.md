@@ -24,7 +24,7 @@
 - FP16/default KV 是质量路线。
 - INT8 KV 是质量 / 容量平衡路线。
 - TQ4NC 是压缩路线。
-- TQK8V4 目前没有证明相对 INT8 KV 有实用优势，保留为实验入口。
+- TQK8V4 目前没有证明相对 INT8 KV 有实用优势，不作为正式路线。
 
 ## 说明
 
@@ -32,9 +32,7 @@
 - 模式目录是预设的一部分，因为 safe 和 fast 的图执行策略、显存压力不同。
   safe 模式允许 FP16/default KV 使用 MTP；量化 KV 在 safe 模式下必须关闭
   MTP。normal 是中间诊断档，只用于兼容 profile 的手动对比。
-- 实验片段放在每个模型目录下，例如
-  `profiles/qwen27b/experimental/fp8/`。
-- Gemma profile 保持实验口径。FP16/default KV 的 MTP 和快速 prefill 路线都有
+- Gemma 保留为第二路线。FP16/default KV 的 MTP 和快速 prefill 路线都有
   benchmark 证据，但还没有 Gemma 预设晋升为生产路线。当前 noMTP FP16 路线
   可以跑 64K，但速度慢且输出重复；INT8 KV 和 TurboQuant 256K 路线不晋升。
 - `two256K` 已测试但不采用：可以 admission 两个请求，但 INT8-KV prefill

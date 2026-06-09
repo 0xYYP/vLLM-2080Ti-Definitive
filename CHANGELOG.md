@@ -3,6 +3,17 @@
 This changelog tracks the fork release version for vLLM 2080 Ti Definitive
 Edition. It is separate from the upstream vLLM package version.
 
+## v0.1.6 - 2026-06-09
+
+- Adds explicit W8A8 checkpoint support documentation for the Quark INT8 route,
+  including the tested `nameistoken/Qwen3.6-27B-Quark-W8A8-INT8` checkpoint.
+- Updates the launcher display to separate the real vLLM `--quantization`
+  value from the display-only W/A type (`W4A16`, `W8A16`, `W8A8`).
+- Adds launcher service-status KV cache reporting for running services, with
+  automatic 30-second refresh while the service manager is open.
+- Improves launcher startup preflight for large single-file checkpoints and
+  cleans up residual vLLM processes after failed launches.
+
 ## v0.1.5 - 2026-06-08
 
 - Renames the public service manager to `launcher.sh` and keeps `build.sh` as

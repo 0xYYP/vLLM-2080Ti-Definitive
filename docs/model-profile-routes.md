@@ -25,7 +25,7 @@ are not capacity evidence.
 - FP16/default KV is the quality route.
 - INT8 KV is the balanced quality/capacity route.
 - TQ4NC is the compression route.
-- TQK8V4 remains experimental because current evidence does not show a
+- TQK8V4 is not a formal route because current evidence does not show a
   practical advantage over INT8 KV.
 
 ## Notes
@@ -35,12 +35,10 @@ are not capacity evidence.
   profiles have different graph behavior and VRAM pressure. Safe mode allows
   FP16/default KV with MTP; quantized KV in safe mode must use noMTP. Normal is
   available as a middle diagnostic mode for compatible profiles.
-- Experimental snippets live under each model directory, for example
-  `profiles/qwen27b/experimental/fp8/`.
-- Gemma profiles remain experimental. FP16/default-KV MTP and fast-prefill
-  routes have benchmark evidence, but no Gemma preset is promoted as a
-  production route yet. The currently validated noMTP FP16 route can run 64K but
-  is slow/repetitive; INT8 KV and TurboQuant 256K routes are not promoted.
+- Gemma remains a second-line route. FP16/default-KV MTP and fast-prefill routes
+  have benchmark evidence, but no Gemma preset is promoted as a production route
+  yet. The currently validated noMTP FP16 route can run 64K but is
+  slow/repetitive; INT8 KV and TurboQuant 256K routes are not promoted.
 - `two256K` was tested but rejected: it admitted two requests, then OOMed during
   INT8-KV prefill workspace allocation and returned empty streams. The promoted
   two-workspace route is `two250K`.

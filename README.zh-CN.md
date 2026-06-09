@@ -8,7 +8,7 @@
 这是一个硬件定向的 vLLM fork，用来保存已经跑通的 2080 Ti vLLM
 栈：补丁源码、启动 profile、运行时说明和稳定环境记录。
 
-Fork 发布版本：`v0.1.5`
+Fork 发布版本：`v0.1.6`
 基础 vLLM：`0.21.0`
 
 核心实测：同一套双 2080 Ti TP=2 runtime 下，Qwen3.6 27B 单请求 decode
@@ -111,22 +111,20 @@ FP16/default KV 的 GPTQ + assistant 路线已经有 MTP 与快速 prefill 测�
 
 | 模型路线 | 权重路线 | 模型卡 | 状态 |
 |---|---|---|---|
-| Qwen3.6 27B FP8 | FP8 | [Jackrong/Qwopus3.6-27B-v2-FP8](https://huggingface.co/Jackrong/Qwopus3.6-27B-v2-FP8) | 🟢 推荐 |
-| Qwen3.6 27B INT4 | INT4 | [mconcat/Qwopus3.6-27B-v2-AWQ-4bit](https://huggingface.co/mconcat/Qwopus3.6-27B-v2-AWQ-4bit)<br>[QuantTrio/Qwen3.6-27B-AWQ](https://huggingface.co/QuantTrio/Qwen3.6-27B-AWQ)<br>[llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4) | 🟢 推荐 |
+| Qwen3.6 27B FP8 | FP8 | [Qwen/Qwen3.6-27B-FP8](https://huggingface.co/Qwen/Qwen3.6-27B-FP8)<br>[Jackrong/Qwopus3.6-27B-v2-FP8](https://huggingface.co/Jackrong/Qwopus3.6-27B-v2-FP8) | 🟢 推荐 |
+| Qwen3.6 27B AWQ | AWQ-INT4 | [mconcat/Qwopus3.6-27B-v2-AWQ-4bit](https://huggingface.co/mconcat/Qwopus3.6-27B-v2-AWQ-4bit)<br>[QuantTrio/Qwen3.6-27B-AWQ](https://huggingface.co/QuantTrio/Qwen3.6-27B-AWQ) | 🟢 推荐 |
+| Qwen3.6 27B GPTQ | GPTQ-INT4 | [llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4) | 🟢 推荐 |
 | Qwen3.6 27B NVFP4 | NVFP4 | [unsloth/Qwen3.6-27B-NVFP4](https://huggingface.co/unsloth/Qwen3.6-27B-NVFP4) | 🟡 支持 |
-| Qwen3.6 27B AutoRound | AutoRound INT8 | [Minachist/Qwen3.6-27B-INT8-AutoRound W8A16-GS128](https://huggingface.co/Minachist/Qwen3.6-27B-INT8-AutoRound/tree/W8A16-GS128) | 🟡 支持 |
+| Qwen3.6 27B Quark INT8 | Quark-INT8 | [nameistoken/Qwen3.6-27B-Quark-W8A8-INT8](https://huggingface.co/nameistoken/Qwen3.6-27B-Quark-W8A8-INT8) | 🟡 支持 |
+| Qwen3.6 27B AutoRound | AutoGPTQ-INT8 | [Minachist/Qwen3.6-27B-INT8-AutoRound](https://huggingface.co/Minachist/Qwen3.6-27B-INT8-AutoRound)<br>[Minachist/Qwen3.6-27B-INT8-AutoRound W8A16-GS128](https://huggingface.co/Minachist/Qwen3.6-27B-INT8-AutoRound/tree/W8A16-GS128) | 🟡 支持 |
 | Gemma4 31B GPTQ | GPTQ-INT4 + assistant draft | [ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ](https://huggingface.co/ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ) | 🟡 支持 |
-
-FP8 是推荐的高质量 Qwen 8bit 路线；INT4 仍然是默认性能 / 容量路线。
-NVFP4 已在 SM75 上验证为支持的 Marlin 系路线，但不优先于 FP8 或 INT4。
-AutoRound INT8 是实验 checkpoint 路线。
 
 ## 🛠️ 目标硬件与运行环境
 
 - 已验证 GPU profile：双 RTX 2080 Ti 22GB，SM75，NVLink，tensor parallel
   size 2
 - CUDA/PyTorch：CUDA 12.8，`torch 2.11.0+cu128`
-- Fork 发布版本：`v0.1.5`
+- Fork 发布版本：`v0.1.6`
 - 基础 vLLM：`0.21.0`
 - 仓库身份：`vllm-2080ti-definitive`
 - 运行时身份：`vllm-sm75-tp2-cu128`
@@ -171,21 +169,12 @@ Profile 只声明兼容模式，不再提供推荐启动模式。需要指定模
 `qwen27b/safe/fp8/fp16kv-128K-mtp3-text-only.env` 和
 `qwen27b/fast/int4/int8kv-256K-mtp3-text-only.env`。
 
-KV 精度按这个口径理解：FP16/default KV 是质量路线，INT8 KV 是平衡路线，
-TQ4NC 是压缩路线。TQK8V4 目前没有在已验证 profile 中体现出优于 INT8 KV
-的容量或速度优势，所以不作为正式路线。
-
-模式名称只保留三档：
+可用模式：
 
 - `safe`：默认生产模式。优先保证输出稳定性；FP16/default KV 可以使用 MTP，
   量化 KV 必须关闭 MTP。
 - `normal`：中间档，主要用于诊断和手动对比。
 - `fast`：高性能模式。量化 KV + MTP 走这个模式，但显存和质量风险更高。
-
-实验 profile 放在每个模型目录下，例如
-`profiles/qwen27b/experimental/fp8/`。launcher 默认隐藏实验路线；需要尝试时，
-把 Profile directory 指到该 experimental 子目录，或设置
-`PROFILE_INCLUDE_EXPERIMENTAL=1`。
 
 后续目标 profile 和实测进度记录在
 [Profile 蓝图草案](docs/profile-blueprint.zh-CN.md)。
