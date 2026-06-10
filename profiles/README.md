@@ -26,7 +26,7 @@ different graph behavior and VRAM pressure.
 
 `profiles/templates/` contains optional chat-template presets. They are selected
 from the launcher as a global service setting; route profiles do not store chat
-templates, GPU devices, ports, or reasoning defaults.
+templates, GPU devices, ports, reasoning defaults, or tool-calling defaults.
 
 File names describe the intended route:
 

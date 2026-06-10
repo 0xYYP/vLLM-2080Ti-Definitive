@@ -246,6 +246,7 @@ profile_key_is_global() {
     MODEL_DIR|PROFILE_DIR|PROFILE|MODE|PORT|SERVICE_SCOPE|GPU_DEVICES|TP_SIZE|\
 CHAT_TEMPLATE_FILE|CHAT_TEMPLATE_PRESET|TEMPLATE_DIR|REASONING_PARSER|\
 DEFAULT_CHAT_TEMPLATE_KWARGS|REASONING_MODE|REASONING_BUDGET|\
+ENABLE_AUTO_TOOL_CHOICE|TOOL_CALL_PARSER|TOOL_PARSER_PLUGIN|\
 VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH)
       return 0
       ;;
@@ -346,6 +347,9 @@ save_manager_state() {
     printf 'REASONING_PARSER=%q\n' "${REASONING_PARSER:-}"
     printf 'REASONING_BUDGET=%q\n' "${REASONING_BUDGET:-}"
     printf 'DEFAULT_CHAT_TEMPLATE_KWARGS=%q\n' "${DEFAULT_CHAT_TEMPLATE_KWARGS:-}"
+    printf 'ENABLE_AUTO_TOOL_CHOICE=%q\n' "${ENABLE_AUTO_TOOL_CHOICE:-0}"
+    printf 'TOOL_CALL_PARSER=%q\n' "${TOOL_CALL_PARSER:-}"
+    printf 'TOOL_PARSER_PLUGIN=%q\n' "${TOOL_PARSER_PLUGIN:-}"
     printf 'ENFORCE_EAGER=%q\n' "${ENFORCE_EAGER:-}"
     printf 'NO_ASYNC_SCHEDULING=%q\n' "${NO_ASYNC_SCHEDULING:-}"
     printf 'DISABLE_HYBRID_KV_CACHE_MANAGER=%q\n' "${DISABLE_HYBRID_KV_CACHE_MANAGER:-}"
@@ -532,6 +536,31 @@ current_reasoning_label() {
   if [[ -n "${REASONING_BUDGET:-}" ]]; then
     label+=" / default budget=$REASONING_BUDGET"
   fi
+  printf '%s\n' "$label"
+}
+
+current_tool_calling_label() {
+  local label plugin_label
+
+  if [[ "${ENABLE_AUTO_TOOL_CHOICE:-0}" == "1" ]]; then
+    label="auto"
+    if [[ -n "${TOOL_CALL_PARSER:-}" ]]; then
+      label+=" / parser=$TOOL_CALL_PARSER"
+    else
+      label+=" / parser=<unset>"
+    fi
+  else
+    label="off"
+    if [[ -n "${TOOL_CALL_PARSER:-}" ]]; then
+      label+=" / parser=$TOOL_CALL_PARSER"
+    fi
+  fi
+
+  if [[ -n "${TOOL_PARSER_PLUGIN:-}" ]]; then
+    plugin_label=${TOOL_PARSER_PLUGIN##*/}
+    label+=" / plugin=$plugin_label"
+  fi
+
   printf '%s\n' "$label"
 }
 
@@ -1039,6 +1068,8 @@ Notes:
   - fast mode is the high-performance mode: nosync MTP with full graph enabled.
   - Chat-template presets live under profiles/templates and are global launcher
     settings, not route-profile fields.
+  - Tool-calling defaults are global launcher settings. Enable automatic tool
+    choice only when a matching --tool-call-parser is selected.
   - thinking_token_budget is a per-request chat parameter in this vLLM runtime.
   - text+image requires a checkpoint that actually supports vision inputs.
   - --print-config prints the final launch summary and exits without starting.
@@ -1436,6 +1467,42 @@ edit_reasoning_defaults_menu() {
   esac
 }
 
+edit_tool_calling_menu() {
+  local selected choices=()
+  choices=(
+    "off"
+    "auto tool choice"
+    "tool call parser"
+    "tool parser plugin"
+    "Return"
+  )
+  selected=$(menu_select "Tool calling defaults" "$(current_tool_calling_label)" "${choices[@]}") || return 0
+  case "$selected" in
+    "off")
+      ENABLE_AUTO_TOOL_CHOICE=0
+      save_manager_state
+      ;;
+    "auto tool choice")
+      ENABLE_AUTO_TOOL_CHOICE=1
+      if [[ -z "${TOOL_CALL_PARSER:-}" ]]; then
+        TOOL_CALL_PARSER=$(prompt_default "Tool call parser" "qwen3_xml") || return 0
+      fi
+      save_manager_state
+      ;;
+    "tool call parser")
+      TOOL_CALL_PARSER=$(prompt_optional "Tool call parser" "${TOOL_CALL_PARSER:-}") || return 0
+      save_manager_state
+      ;;
+    "tool parser plugin")
+      TOOL_PARSER_PLUGIN=$(prompt_optional "Tool parser plugin module path" "${TOOL_PARSER_PLUGIN:-}") || return 0
+      save_manager_state
+      ;;
+    "Return")
+      return 0
+      ;;
+  esac
+}
+
 select_profile_preset() {
   local selected choices=()
 
@@ -1454,12 +1521,14 @@ select_profile_preset() {
     printf '  Template dir:        %s\n' "${TEMPLATE_DIR:-$PROFILE_DIR/templates}"
     printf '  Chat template:       %s\n' "$(current_template_label)"
     printf '  Reasoning default:   %s\n' "$(current_reasoning_label)"
+    printf '  Tool calling:        %s\n' "$(current_tool_calling_label)"
     echo
 
     choices=(
       "Apply profile preset"
       "Chat template preset"
       "Reasoning defaults"
+      "Tool calling defaults"
       "Edit current runtime parameters"
       "Save current profile"
       "Change profile directory"
@@ -1477,6 +1546,9 @@ select_profile_preset() {
         ;;
       "Reasoning defaults")
         edit_reasoning_defaults_menu
+        ;;
+      "Tool calling defaults")
+        edit_tool_calling_menu
         ;;
       "Edit current runtime parameters")
         runtime_parameter_menu
@@ -1662,7 +1734,7 @@ runtime_parameter_menu() {
   local model_family_value profile_group_value model_variant_value served_name_value
   local quantization_value kv_value context_value gpu_util_value
   local batch_tokens_value max_sequences_value mtp_value message_type_value
-  local template_value reasoning_value
+  local template_value reasoning_value tool_calling_value
 
   while true; do
     model_family_value=$(menu_value "${MODEL_FAMILY:-$(guess_model_family "${MODEL_DIR:-}")}")
@@ -1679,6 +1751,7 @@ runtime_parameter_menu() {
     message_type_value=$(menu_value "${MESSAGE_TYPE:-text-only}")
     template_value=$(menu_value "$(current_template_label)")
     reasoning_value=$(menu_value "$(current_reasoning_label)")
+    tool_calling_value=$(menu_value "$(current_tool_calling_label)")
 
     if is_tty; then
       clear >/dev/tty 2>/dev/null || true
@@ -1701,6 +1774,7 @@ runtime_parameter_menu() {
       "Message type: $message_type_value"
       "Chat template: $template_value"
       "Reasoning defaults: $reasoning_value"
+      "Tool calling: $tool_calling_value"
       "Advanced options"
       "Edit all fields"
       "Return"
@@ -1758,6 +1832,9 @@ runtime_parameter_menu() {
         ;;
       "Reasoning defaults:"*)
         edit_reasoning_defaults_menu
+        ;;
+      "Tool calling:"*)
+        edit_tool_calling_menu
         ;;
       "Advanced options")
         edit_advanced_parameters
@@ -2413,6 +2490,9 @@ build_args() {
   [[ -n "${ATTENTION_BACKEND:-}" ]] && VLLM_ARGS+=(--attention-backend "$ATTENTION_BACKEND")
   [[ -n "${REASONING_PARSER:-}" ]] && VLLM_ARGS+=(--reasoning-parser "$REASONING_PARSER")
   [[ -n "${DEFAULT_CHAT_TEMPLATE_KWARGS:-}" ]] && VLLM_ARGS+=(--default-chat-template-kwargs "$DEFAULT_CHAT_TEMPLATE_KWARGS")
+  [[ -n "${TOOL_PARSER_PLUGIN:-}" ]] && VLLM_ARGS+=(--tool-parser-plugin "$TOOL_PARSER_PLUGIN")
+  [[ -n "${TOOL_CALL_PARSER:-}" ]] && VLLM_ARGS+=(--tool-call-parser "$TOOL_CALL_PARSER")
+  [[ "${ENABLE_AUTO_TOOL_CHOICE:-0}" == "1" ]] && VLLM_ARGS+=(--enable-auto-tool-choice)
   [[ -n "${ADDITIONAL_CONFIG_JSON:-}" ]] && VLLM_ARGS+=(--additional-config "$ADDITIONAL_CONFIG_JSON")
   [[ -n "${HF_OVERRIDES_JSON:-}" ]] && VLLM_ARGS+=(--hf-overrides "$HF_OVERRIDES_JSON")
 
@@ -2929,6 +3009,12 @@ prepare_runtime_defaults() {
     LANGUAGE_MODEL_ONLY=1
     SKIP_MM_PROFILING=1
   fi
+  ENABLE_AUTO_TOOL_CHOICE=$(normalize_bool "${ENABLE_AUTO_TOOL_CHOICE:-0}")
+  if [[ "$ENABLE_AUTO_TOOL_CHOICE" == "1" && -z "${TOOL_CALL_PARSER:-}" ]]; then
+    echo "ERROR: auto tool choice requires a tool call parser." >&2
+    echo "       Set Tool calling -> tool call parser, for example qwen3_xml." >&2
+    return 1
+  fi
   validate_mode_kv_policy
 }
 
@@ -2965,6 +3051,7 @@ Launch summary:
   Message type:         $message_type
   Chat template:        $(current_template_label)
   Reasoning default:    $(current_reasoning_label)
+  Tool calling:         $(current_tool_calling_label)
   Mode:                 $MODE
   MTP graph policy:     VLLM_SM75_SPEC_SYNC_MODE=${VLLM_SM75_SPEC_SYNC_MODE:-auto}, VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=${VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH:-0}
   Port:                 $PORT
@@ -3058,6 +3145,7 @@ render_main_menu() {
   printf '     Message type:     %s\n' "$(menu_value "${MESSAGE_TYPE:-text-only}")"
   printf '     Chat template:    %s\n' "$(menu_value "$(current_template_label)")"
   printf '     Reasoning:        %s\n' "$(menu_value "$(current_reasoning_label)")"
+  printf '     Tool calling:     %s\n' "$(menu_value "$(current_tool_calling_label)")"
   render_main_menu_item 3 "$current" "3. GPU/TP setting:  $(menu_value "$gpu_devices") / TP $(menu_value "$tp_size")"
   render_main_menu_item 4 "$current" "4. Launch mode:      ${MODE:-safe}"
   render_main_menu_item 5 "$current" "5. Port:             ${PORT:-8000}"

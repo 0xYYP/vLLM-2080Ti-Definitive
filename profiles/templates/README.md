@@ -4,8 +4,9 @@ These templates are optional launcher presets. Select them from
 `launcher.sh` -> `Profile` -> `Chat template preset`.
 
 Route profiles do not store chat-template paths. A template, reasoning default,
-and default thinking budget are global service settings so the same
-FP8/INT4/KV route can be reused with different prompt rendering behavior.
+default thinking budget, and tool-calling defaults are global service settings
+so the same FP8/INT4/KV route can be reused with different prompt rendering
+behavior.
 
 ## Presets
 
