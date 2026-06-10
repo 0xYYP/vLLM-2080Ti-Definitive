@@ -73,18 +73,13 @@ controls, and MTP with CUDAGraph for decode.
 | Feature | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
 | Marlin weight route | 🟢 FP8/INT4/NVFP4 | 🟢 FP8/INT4/NVFP4 | 🟢 FP8/INT4/NVFP4 |
-| MTP decoding | 🟢 supported | 🟢 fast mode | 🟡 experimental |
+| MTP decoding | 🟢 supported | 🟡 experimental fast mode | 🟡 experimental |
 | Native 256K context | 🟢 text route | 🟢 text route | 🟡 not a preset |
 | YaRN 512K extension | ⚪ not the target route | 🟢 supported capacity route | ⚪ not a preset |
 | No-eager / CUDAGraph | 🟢 supported | 🟢 supported | 🟢 graph-safety fixed |
 | Fast prefill path | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟡 route-specific |
 | Multimodal image serving | 🟢 FP8/INT4 routes | 🟡 INT4 route only | 🔴 not promoted |
 | Current preset status | 🟢 recommended | 🟢 recommended | 🟡 experimental only |
-
-Mode note: FP16 KV is the safe service path. INT8 KV is the recommended fast
-capacity/performance path. TurboQuant KV is kept for selected experiments, not
-as the default YaRN preset. Exact profile names, measured throughput, and
-capacity evidence are maintained in [Profile Guide](profiles/README.md).
 
 ### Gemma4 31B Experimental Route
 

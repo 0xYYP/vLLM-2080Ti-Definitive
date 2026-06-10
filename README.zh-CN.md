@@ -74,17 +74,13 @@ head_dim=256 路线完整保留，decode 侧使用 MTP + CUDAGraph 策略。
 | 功能 | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
 | Marlin 权重路线 | 🟢 FP8/INT4/NVFP4 | 🟢 FP8/INT4/NVFP4 | 🟢 FP8/INT4/NVFP4 |
-| MTP 解码 | 🟢 支持 | 🟢 fast 模式 | 🟡 实验路线 |
+| MTP 解码 | 🟢 支持 | 🟡 fast 实验路线 | 🟡 实验路线 |
 | 原生 256K 上下文 | 🟢 文本路线 | 🟢 文本路线 | 🟡 不作为预设 |
 | YaRN 512K 扩展 | ⚪ 非目标路线 | 🟢 容量路线 | ⚪ 已验证，不作为预设 |
 | No-eager / CUDAGraph | 🟢 支持 | 🟢 支持 | 🟢 graph-safety 已修复 |
 | 快速 prefill 路线 | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟡 依赖具体路线 |
 | 图像多模态 | 🟢 FP8/INT4 路线 | 🟡 仅 INT4 路线 | 🔴 不晋升 |
 | 当前预设状态 | 🟢 推荐 | 🟢 推荐 | 🟡 仅实验 |
-
-Mode 说明：FP16 KV 是 safe 服务路径；INT8 KV 是推荐的 fast 容量 / 性能路线。
-TurboQuant KV 保留给特定实验，不作为默认 YaRN 预设。具体 profile 名称、实测
-吞吐和容量证据统一维护在 [Profile 导引](profiles/README.zh-CN.md)。
 
 ### Gemma4 31B 实验路线
 
