@@ -561,11 +561,14 @@ def _fwd_kernel_stage2(
     BLOCK_DV: tl.constexpr,
     Lv: tl.constexpr,
     OUTPUT_FP16: tl.constexpr = 0,
+    SLIDING_WINDOW: tl.constexpr = 0,
 ):
     cur_batch = tl.program_id(0)
     cur_head = tl.program_id(1)
 
     cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
+    if SLIDING_WINDOW > 0:
+        cur_batch_seq_len = tl.minimum(cur_batch_seq_len, SLIDING_WINDOW)
 
     offs_d = tl.arange(0, BLOCK_DV)
     mask_d = offs_d < Lv

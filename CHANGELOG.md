@@ -9,6 +9,9 @@ Edition. It is separate from the upstream vLLM package version.
   default recommended mode.
 - Fix OpenAI-compatible tool calling, including automatic tool choice and
   structured tool-call output.
+- Fixes SM75 TurboQuant compatibility gaps reported against the legacy
+  `fast` + INT8-KV route: all ubatch workspace reservation, decode
+  `sliding_window` handling, and fork-specific runtime environment variables.
 - Improves the current Qwen and Gemma serving routes with updated stability,
   long-context, and profile validation work.
 - Includes the Gemma4 checkpoint-name remap fix for official QAT and

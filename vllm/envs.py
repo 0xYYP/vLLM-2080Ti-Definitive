@@ -47,6 +47,31 @@ if TYPE_CHECKING:
     VLLM_TRACE_FUNCTION: int = 0
     VLLM_USE_FLASHINFER_SAMPLER: bool = True
     VLLM_SM75_SPEC_SYNC_MODE: Literal["auto", "safe", "nosync"] = "auto"
+    VLLM_QWOPUS_MTP_BF16_DRAFT: bool = False
+    VLLM_INT8KV_FA_PREFILL: bool = False
+    VLLM_INT8KV_FLASHINFER_PREFILL_BACKEND: str = "fa2"
+    VLLM_INT8KV_FA_RAGGED_PREFILL: bool = True
+    VLLM_INT8KV_FA_FIRST_CHUNK_DEQUANT: bool = False
+    VLLM_INT8KV_FA_CONTINUATION_DEQUANT: bool = False
+    VLLM_INT8KV_FA_CONTINUATION_MAX_TOKENS: int = 65536
+    VLLM_INT8KV_FA_CONTINUATION_MIN_Q: int = 128
+    VLLM_INT8KV_FA_CASCADE_DEQUANT: bool = False
+    VLLM_INT8KV_FA_CASCADE_TILE_TOKENS: int = 65536
+    VLLM_INT8KV_FA_DIRECT_PAGED: bool = False
+    VLLM_INT8KV_ALIGNED_HEAD_STRIDE: bool = False
+    VLLM_INT8KV_DEBUG_VERIFY: bool = False
+    VLLM_INT8KV_DEBUG_COMPARE: bool = False
+    VLLM_TURBOQUANT_SPEC_CONTINUATION_DECODE_FASTPATH: bool = False
+    VLLM_TURBOQUANT_FLASHINFER_BACKEND: str = "fa2"
+    VLLM_TURBOQUANT_USE_FLASHINFER_PREFILL: bool = True
+    VLLM_TURBOQUANT_SM75_FLASHINFER_PREFILL_MIN_HEAD_DIM: int = 1024
+    VLLM_TURBOQUANT_FLASHINFER_PREFILL_PLAN_CACHE: bool = True
+    VLLM_TURBOQUANT_FLASHINFER_PREFILL_CUDAGRAPH_SAFE: bool = False
+    VLLM_TURBOQUANT_CONTINUATION_WORKSPACE_RESERVE_TOKENS: int = 0
+    VLLM_TURBOQUANT_CONTINUATION_SDPA_Q_CHUNK: int = 0
+    VLLM_TURBOQUANT_CONTINUATION_SDPA_MAX_QK_CELLS: int = 0
+    VLLM_TURBOQUANT_CUDAGRAPH_SPEC_DECODE_SAFE: bool = False
+    VLLM_TURBOQUANT_SKIP_PREFILL_STORE: bool = False
     VLLM_PP_LAYER_PARTITION: str | None = None
     VLLM_CPU_KVCACHE_SPACE: int | None = 0
     VLLM_CPU_OMP_THREADS_BIND: str = "auto"
@@ -739,6 +764,82 @@ environment_variables: dict[str, Callable[[], Any]] = {
         )()
         or "auto"
     ).lower(),
+    # Fork-specific SM75/Qwen attention and speculative decode controls.
+    "VLLM_QWOPUS_MTP_BF16_DRAFT": lambda: bool(
+        int(os.getenv("VLLM_QWOPUS_MTP_BF16_DRAFT", "0"))
+    ),
+    "VLLM_INT8KV_FA_PREFILL": lambda: bool(
+        int(os.getenv("VLLM_INT8KV_FA_PREFILL", "0"))
+    ),
+    "VLLM_INT8KV_FLASHINFER_PREFILL_BACKEND": lambda: os.getenv(
+        "VLLM_INT8KV_FLASHINFER_PREFILL_BACKEND", "fa2"
+    ),
+    "VLLM_INT8KV_FA_RAGGED_PREFILL": lambda: bool(
+        int(os.getenv("VLLM_INT8KV_FA_RAGGED_PREFILL", "1"))
+    ),
+    "VLLM_INT8KV_FA_FIRST_CHUNK_DEQUANT": lambda: bool(
+        int(os.getenv("VLLM_INT8KV_FA_FIRST_CHUNK_DEQUANT", "0"))
+    ),
+    "VLLM_INT8KV_FA_CONTINUATION_DEQUANT": lambda: bool(
+        int(os.getenv("VLLM_INT8KV_FA_CONTINUATION_DEQUANT", "0"))
+    ),
+    "VLLM_INT8KV_FA_CONTINUATION_MAX_TOKENS": lambda: int(
+        os.getenv("VLLM_INT8KV_FA_CONTINUATION_MAX_TOKENS", "65536")
+    ),
+    "VLLM_INT8KV_FA_CONTINUATION_MIN_Q": lambda: int(
+        os.getenv("VLLM_INT8KV_FA_CONTINUATION_MIN_Q", "128")
+    ),
+    "VLLM_INT8KV_FA_CASCADE_DEQUANT": lambda: bool(
+        int(os.getenv("VLLM_INT8KV_FA_CASCADE_DEQUANT", "0"))
+    ),
+    "VLLM_INT8KV_FA_CASCADE_TILE_TOKENS": lambda: int(
+        os.getenv("VLLM_INT8KV_FA_CASCADE_TILE_TOKENS", "65536")
+    ),
+    "VLLM_INT8KV_FA_DIRECT_PAGED": lambda: bool(
+        int(os.getenv("VLLM_INT8KV_FA_DIRECT_PAGED", "0"))
+    ),
+    "VLLM_INT8KV_ALIGNED_HEAD_STRIDE": lambda: bool(
+        int(os.getenv("VLLM_INT8KV_ALIGNED_HEAD_STRIDE", "0"))
+    ),
+    "VLLM_INT8KV_DEBUG_VERIFY": lambda: bool(
+        int(os.getenv("VLLM_INT8KV_DEBUG_VERIFY", "0"))
+    ),
+    "VLLM_INT8KV_DEBUG_COMPARE": lambda: bool(
+        int(os.getenv("VLLM_INT8KV_DEBUG_COMPARE", "0"))
+    ),
+    "VLLM_TURBOQUANT_SPEC_CONTINUATION_DECODE_FASTPATH": lambda: bool(
+        int(os.getenv("VLLM_TURBOQUANT_SPEC_CONTINUATION_DECODE_FASTPATH", "0"))
+    ),
+    "VLLM_TURBOQUANT_FLASHINFER_BACKEND": lambda: os.getenv(
+        "VLLM_TURBOQUANT_FLASHINFER_BACKEND", "fa2"
+    ),
+    "VLLM_TURBOQUANT_USE_FLASHINFER_PREFILL": lambda: bool(
+        int(os.getenv("VLLM_TURBOQUANT_USE_FLASHINFER_PREFILL", "1"))
+    ),
+    "VLLM_TURBOQUANT_SM75_FLASHINFER_PREFILL_MIN_HEAD_DIM": lambda: int(
+        os.getenv("VLLM_TURBOQUANT_SM75_FLASHINFER_PREFILL_MIN_HEAD_DIM", "1024")
+    ),
+    "VLLM_TURBOQUANT_FLASHINFER_PREFILL_PLAN_CACHE": lambda: bool(
+        int(os.getenv("VLLM_TURBOQUANT_FLASHINFER_PREFILL_PLAN_CACHE", "1"))
+    ),
+    "VLLM_TURBOQUANT_FLASHINFER_PREFILL_CUDAGRAPH_SAFE": lambda: bool(
+        int(os.getenv("VLLM_TURBOQUANT_FLASHINFER_PREFILL_CUDAGRAPH_SAFE", "0"))
+    ),
+    "VLLM_TURBOQUANT_CONTINUATION_WORKSPACE_RESERVE_TOKENS": lambda: int(
+        os.getenv("VLLM_TURBOQUANT_CONTINUATION_WORKSPACE_RESERVE_TOKENS", "0")
+    ),
+    "VLLM_TURBOQUANT_CONTINUATION_SDPA_Q_CHUNK": lambda: int(
+        os.getenv("VLLM_TURBOQUANT_CONTINUATION_SDPA_Q_CHUNK", "0")
+    ),
+    "VLLM_TURBOQUANT_CONTINUATION_SDPA_MAX_QK_CELLS": lambda: int(
+        os.getenv("VLLM_TURBOQUANT_CONTINUATION_SDPA_MAX_QK_CELLS", "0")
+    ),
+    "VLLM_TURBOQUANT_CUDAGRAPH_SPEC_DECODE_SAFE": lambda: bool(
+        int(os.getenv("VLLM_TURBOQUANT_CUDAGRAPH_SPEC_DECODE_SAFE", "0"))
+    ),
+    "VLLM_TURBOQUANT_SKIP_PREFILL_STORE": lambda: bool(
+        int(os.getenv("VLLM_TURBOQUANT_SKIP_PREFILL_STORE", "0"))
+    ),
     # Allow hybrid Mamba/GDN speculative decode to keep full decode CUDA
     # graphs. This is unsafe for production because accepted speculative
     # lengths can change recurrent state update patterns, but it is useful for

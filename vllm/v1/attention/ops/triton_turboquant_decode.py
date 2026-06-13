@@ -77,6 +77,7 @@ def _tq_decode_stage1(
     VAL_DATA_BYTES: tl.constexpr,  # ceil(D * vqb / 8) or D for FP8
     # Score constants
     ATTN_SCALE: tl.constexpr,  # 1/sqrt(D)
+    SLIDING_WINDOW: tl.constexpr,  # 0 disables windowing; otherwise left window
     # Block tile sizes
     BLOCK_D: tl.constexpr,  # next_power_of_2(HEAD_DIM)
     BLOCK_KV: tl.constexpr,  # tokens per tile (16)
@@ -92,10 +93,14 @@ def _tq_decode_stage1(
 
     # Sequence length for this batch
     seq_len = tl.load(Seq_lens_ptr + bid)
+    kv_start = 0
+    if SLIDING_WINDOW > 0:
+        kv_start = tl.maximum(0, seq_len - SLIDING_WINDOW)
 
     # KV split range
-    split_len = tl.cdiv(seq_len, NUM_KV_SPLITS)
-    split_start = split_len * sid
+    active_len = seq_len - kv_start
+    split_len = tl.cdiv(active_len, NUM_KV_SPLITS)
+    split_start = kv_start + split_len * sid
     split_end = tl.minimum(split_start + split_len, seq_len)
 
     if split_start >= split_end:
@@ -503,6 +508,7 @@ def triton_turboquant_decode_attention(
     lse_buf: torch.Tensor | None = None,
     buf_holder: Any = None,
     max_num_kv_splits: int = 32,  # fixed split count (must be constant for cudagraph)
+    sliding_window: int = 0,
 ) -> torch.Tensor:
     """Launch fused TQ decode attention (Triton stage1 + stage2).
 
@@ -528,6 +534,7 @@ def triton_turboquant_decode_attention(
         q_rot = (q_float @ PiT).contiguous()
 
     NUM_KV_SPLITS = max_num_kv_splits
+    sliding_window = max(0, int(sliding_window))
 
     if (
         mid_o_buf is not None
@@ -578,6 +585,7 @@ def triton_turboquant_decode_attention(
         VQB=value_quant_bits,
         VAL_DATA_BYTES=cfg["val_data_bytes"],
         ATTN_SCALE=scale,
+        SLIDING_WINDOW=sliding_window,
         BLOCK_D=cfg["BLOCK_D"],
         BLOCK_KV=BLOCK_KV,
         KEY_FP8=1 if key_fp8 else 0,
@@ -623,6 +631,7 @@ def triton_turboquant_decode_attention(
         BLOCK_DV=cfg["BLOCK_D"],
         Lv=D,
         OUTPUT_FP16=1 if out_dtype == torch.float16 else 0,
+        SLIDING_WINDOW=sliding_window,
         num_warps=4,
         num_stages=2,
     )

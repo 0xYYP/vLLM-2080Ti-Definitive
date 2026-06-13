@@ -43,6 +43,8 @@ are not capacity evidence.
   The image route uses GPU util 0.96.
 - fast + INT8KV is not kept: capacity or synthetic throughput may pass, but
   Chinese quality smoke showed repeated or broken output.
+- Legacy `fast` + INT8KV compatibility issues should be reported and fixed, but
+  those fixes do not promote the route back into the shipped fast catalog.
 - Throughput background is kept in
   [Qwen3.6 KV Throughput Sweep](qwen36-kv-throughput-sweep.md) and
   [MTP Task Sensitivity](mtp-task-sensitivity.md).

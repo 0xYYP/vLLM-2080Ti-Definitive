@@ -37,6 +37,8 @@
 - FP8 + TQK8V4 已验证 256K 纯文本和 240K 图文；图文路线使用 GPU util 0.96。
 - fast + INT8KV 不保留：容量或合成速度可以成立，但中文质量 smoke 出现重复或
   残缺输出。
+- 旧 `fast` + INT8KV 的兼容问题仍应修复，但这不代表把该路线重新晋升为
+  fast 正式 profile。
 - 吞吐背景记录见
   [Qwen3.6 KV 吞吐 Sweep](qwen36-kv-throughput-sweep.zh-CN.md) 和
   [MTP 任务敏感性](mtp-task-sensitivity.md)。
