@@ -115,6 +115,8 @@ class ToolParser:
                         request.structured_outputs.structural_tag = json.dumps(
                             structure_tag.model_dump()
                         )
+                    request.response_format = None
+                    request.skip_special_tokens = False
                     return request
 
         # Step 2: set structured output params when tool constraints are

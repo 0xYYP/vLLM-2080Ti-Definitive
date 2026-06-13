@@ -11,35 +11,32 @@
 
 ## 证据口径
 
-完整通过表示真实大 prompt 请求返回 HTTP 200、stream 正常结束，并且至少生成
-1 个 completion token。
+完整通过表示真实请求返回 HTTP 200、stream 正常结束，并且中文质量 smoke 没有
+重复、残缺、乱码或明显答非所问。
 
-平台期通过表示真实大 prompt 进入 prefill，显存达到稳定平台，后端持续处理高
-上下文 chunk，并且在主动停止测试前没有 OOM 或空 stream。
+平台期通过只说明容量风险较低；如果质量 smoke 失败，即使容量或合成吞吐可用，
+也不晋升 profile。
 
 只 load 成功、READY、health 通过、小窗口 smoke、空 stream，都不算容量证据。
 
 ## KV 精度定位
 
 - FP16/default KV 是质量路线。
-- INT8 KV 是质量 / 容量平衡路线。
-- TQ4NC 是压缩路线。
-- TQK8V4 目前没有证明相对 INT8 KV 有实用优势，不作为正式路线。
+- INT8 KV 是容量 / 平衡路线；当前只保留 `normal` / piecewise profile。
+- TQK8V4 是 TurboQuant 压缩路线；当前只保留质量通过的 `fast` profile。
+- TQ4NC 有过容量实验，但当前正式 profile 不采用。
 
 ## 说明
 
 - Profile 按 `profiles/<model>/<mode>/<weight>/<route>.env` 组织。
-- 模式目录是预设的一部分，因为 safe 和 fast 的图执行策略、显存压力不同。
-  safe 模式允许 FP16/default KV 使用 MTP；量化 KV 在 safe 模式下必须关闭
-  MTP。normal 是中间诊断档，只用于兼容 profile 的手动对比。
-- Gemma 保留为第二路线。FP16/default KV 的 MTP 和快速 prefill 路线都有
-  benchmark 证据，但还没有 Gemma 预设晋升为生产路线。当前 noMTP FP16 路线
-  可以跑 64K，但速度慢且输出重复；INT8 KV 和 TurboQuant 256K 路线不晋升。
-- `two256K` 已测试但不采用：可以 admission 两个请求，但 INT8-KV prefill
-  workspace 分配时 OOM，并返回空 stream。正式双工作区路线提升为 `two250K`。
-- TurboQuant YaRN 也测试过 448K 和 440K。两者都在约 449,280-token 估算边界
-  附近 admission 失败；400K 虽然完整通过，但容量和质量都不如 INT8 KV YaRN
-  512K，因此不作为预设 profile。
+- `normal` 是当前推荐生产路线；`fast` 只保留质量 smoke 通过的高性能路线；
+  `safe` 是 launcher 的 eager 回退档，不作为当前正式 profile 目录。
+- FP8 + FP16KV 在 `normal` 模式下正式上下文为 128K；当前 `fast` 路线为
+  112K：120K admission 失败，128K 短质量 smoke 可过但 PP4096/TG128 吞吐
+  稳定性未通过。
+- FP8 + TQK8V4 已验证 256K 纯文本和 240K 图文；图文路线使用 GPU util 0.96。
+- fast + INT8KV 不保留：容量或合成速度可以成立，但中文质量 smoke 出现重复或
+  残缺输出。
 - 吞吐背景记录见
   [Qwen3.6 KV 吞吐 Sweep](qwen36-kv-throughput-sweep.zh-CN.md) 和
   [MTP 任务敏感性](mtp-task-sensitivity.md)。

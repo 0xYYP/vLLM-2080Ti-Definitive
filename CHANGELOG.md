@@ -3,6 +3,18 @@
 This changelog tracks the fork release version for vLLM 2080 Ti Definitive
 Edition. It is separate from the upstream vLLM package version.
 
+## v0.1.7 - 2026-06-13
+
+- Updates the `safe`, `normal`, and `fast` launch modes. `normal` is now the
+  default recommended mode.
+- Fix OpenAI-compatible tool calling, including automatic tool choice and
+  structured tool-call output.
+- Improves the current Qwen and Gemma serving routes with updated stability,
+  long-context, and profile validation work.
+- Includes the Gemma4 checkpoint-name remap fix for official QAT and
+  multimodal-style checkpoints.
+
+
 ## v0.1.6 - 2026-06-09
 
 - Adds explicit W8A8 checkpoint support documentation for the Quark INT8 route,

@@ -8,6 +8,9 @@
 import numpy as np
 import torch
 
+from vllm.model_executor.layers.mamba.ops.cpu.causal_conv1d import (
+    causal_conv1d_update_torch,
+)
 from vllm.triton_utils import tl, triton
 from vllm.v1.attention.backends.utils import NULL_BLOCK_ID, PAD_SLOT_ID
 
@@ -1131,6 +1134,46 @@ def causal_conv1d_update(
 
     original_x_dtype = x.dtype
     x = x.to(conv_state.dtype)
+
+    # The Triton single-token update kernel is numerically wrong on the
+    # Qwen/GDN decode path we use on SM75. Keep the generic kernel for longer
+    # sequences and varlen batches, but route the simple decode case through the
+    # tested torch reference so the conv-state update stays correct.
+    if (
+        query_start_loc is None
+        and x.dim() == 2
+        and num_accepted_tokens is None
+        and block_idx_last_scheduled_token is None
+        and initial_state_idx is None
+    ):
+        batch, dim = x.shape
+        _, width = weight.shape
+        state_len = conv_state.size(-1)
+        if state_len >= width - 1:
+            x_3d = x.unsqueeze(-1)
+            if conv_state_indices is None:
+                local_state = conv_state[:batch]
+                out = causal_conv1d_update_torch(
+                    x_3d,
+                    local_state,
+                    weight,
+                    bias,
+                    activation,
+                )
+                return out.squeeze(-1).to(original_x_dtype)
+
+            state_indices = conv_state_indices.to(dtype=torch.long)
+            local_state = conv_state.index_select(0, state_indices).clone()
+            out = causal_conv1d_update_torch(
+                x_3d,
+                local_state,
+                weight,
+                bias,
+                activation,
+            )
+            conv_state.index_copy_(0, state_indices, local_state)
+            return out.squeeze(-1).to(original_x_dtype)
+
     unsqueeze = query_start_loc is None and x.dim() == 2
     if unsqueeze:
         # make it (batch, dim, seqlen) with seqlen == 1

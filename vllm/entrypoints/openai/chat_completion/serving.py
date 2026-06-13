@@ -69,7 +69,11 @@ from vllm.parser import ParserManager
 from vllm.parser.abstract_parser import Parser
 from vllm.reasoning import ReasoningParser
 from vllm.renderers import ChatParams
-from vllm.sampling_params import BeamSearchParams, SamplingParams
+from vllm.sampling_params import (
+    BeamSearchParams,
+    RepetitionDetectionParams,
+    SamplingParams,
+)
 from vllm.tokenizers import TokenizerLike
 from vllm.utils.collection_utils import as_list
 from vllm.utils.mistral import is_mistral_tokenizer, is_mistral_tool_parser
@@ -91,6 +95,14 @@ def _default_thinking_token_budget() -> int | None:
             "Ignoring invalid VLLM_DEFAULT_THINKING_TOKEN_BUDGET=%r", value
         )
         return None
+
+
+def _tool_calling_requested(request: ChatCompletionRequest) -> bool:
+    return bool(request.tools) and (
+        request.tool_choice == "auto"
+        or request.tool_choice == "required"
+        or isinstance(request.tool_choice, ChatCompletionNamedToolChoiceParam)
+    )
 
 
 class OpenAIServingChat(OpenAIServing):
@@ -327,6 +339,15 @@ class OpenAIServingChat(OpenAIServing):
                     max_tokens,
                     self.default_sampling_params,
                 )
+                if (
+                    _tool_calling_requested(request)
+                    and sampling_params.repetition_detection is None
+                ):
+                    sampling_params.repetition_detection = RepetitionDetectionParams(
+                        max_pattern_size=32,
+                        min_pattern_size=1,
+                        min_count=8,
+                    )
 
             self._log_inputs(
                 sub_request_id,

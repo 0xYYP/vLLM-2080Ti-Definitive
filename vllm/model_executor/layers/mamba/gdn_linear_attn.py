@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Inference-only Qwen3-Next/Qwen3.5 model."""
 
+import os
 import torch
 from einops import rearrange
 from torch import nn
@@ -81,6 +82,56 @@ if GDN_AITER_TRITON_AVAILABLE:
     )
 
 logger = init_logger(__name__)
+_GDN_DEBUG_COMPARE = os.getenv("VLLM_GDN_DEBUG_COMPARE", "0") == "1"
+_GDN_DEBUG_COMPARE_USED = 0
+_GDN_DEBUG_SPLIT = os.getenv("VLLM_GDN_DEBUG_SPLIT", "0") == "1"
+_GDN_DEBUG_SPLIT_USED = 0
+_GDN_DEBUG_USE_TORCH_CONV = os.getenv("VLLM_GDN_DEBUG_USE_TORCH_CONV", "0") == "1"
+_GDN_DEBUG_OUTPUT = os.getenv("VLLM_GDN_DEBUG_OUTPUT", "0") == "1"
+_GDN_DEBUG_OUTPUT_USED = 0
+_GDN_DEBUG_PREFILL = os.getenv("VLLM_GDN_DEBUG_PREFILL", "0") == "1"
+_GDN_DEBUG_PREFILL_USED = 0
+
+
+def _torch_single_token_causal_conv_update(
+    x: torch.Tensor,
+    conv_state: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None,
+    activation: str | None,
+) -> torch.Tensor:
+    x_new = torch.cat([conv_state, x.unsqueeze(-1)], dim=-1).to(weight.dtype)
+    out = (x_new * weight.unsqueeze(0)).sum(dim=-1)
+    if bias is not None:
+        out = out + bias.unsqueeze(0)
+    if activation in ("silu", "swish"):
+        out = torch.nn.functional.silu(out)
+    conv_state.copy_(x_new[:, :, 1:].to(conv_state.dtype))
+    return out.to(dtype=x.dtype)
+
+
+def _debug_tensor_stats(name: str, x: torch.Tensor) -> str:
+    flat = x.reshape(-1).float()
+    return (
+        f"{name} shape={tuple(x.shape)} dtype={x.dtype} "
+        f"min={float(flat.min().item()):.6f} "
+        f"max={float(flat.max().item()):.6f} "
+        f"mean={float(flat.mean().item()):.6f} "
+        f"sample={flat[:8].detach().cpu().tolist()}"
+    )
+
+
+def _debug_err_stats(name: str, x: torch.Tensor) -> str:
+    flat = x.reshape(-1).float()
+    return (
+        f"{name}_max={float(flat.max().item()):.6f} "
+        f"{name}_mean={float(flat.mean().item()):.6f}"
+    )
+
+
+def _is_real_request_forward() -> bool:
+    ctx = get_forward_context()
+    return not bool(ctx.additional_kwargs.get("dummy_run", False))
 
 
 def fi_chunk_gated_delta_rule(
@@ -132,6 +183,37 @@ def fi_chunk_gated_delta_rule(
         return result.unsqueeze(0), None
 
 
+def flashqla_legacy_chunk_gated_delta_rule(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+    initial_state: torch.Tensor,
+    output_final_state: bool,
+    use_qk_l2norm_in_kernel: bool = True,
+):
+    from flash_qla.ops.gated_delta_rule.legacy import (
+        chunk_gated_delta_rule_fwd_legacy,
+    )
+
+    if use_qk_l2norm_in_kernel:
+        q = l2norm_fwd(q)
+        k = l2norm_fwd(k)
+
+    scale = q.shape[-1] ** -0.5
+    output, final_state = chunk_gated_delta_rule_fwd_legacy(
+        q.contiguous(),
+        k.contiguous(),
+        v.contiguous(),
+        g.contiguous(),
+        beta.contiguous(),
+        scale,
+        initial_state.contiguous(),
+    )
+    return output, final_state if output_final_state else None
+
+
 @CustomOp.register("chunk_gated_delta_rule")
 class ChunkGatedDeltaRule(CustomOp):
     def __init__(self) -> None:
@@ -144,19 +226,38 @@ class ChunkGatedDeltaRule(CustomOp):
         supports_flashinfer = (
             current_platform.is_cuda() and current_platform.is_device_capability(90)
         )
+        supports_flashqla_legacy = (
+            current_platform.is_cuda()
+            and (
+                current_platform.is_device_capability((7, 0))
+                or current_platform.is_device_capability((7, 5))
+            )
+        )
 
         if backend == "flashinfer":
             use_flashinfer = supports_flashinfer
+            use_flashqla_legacy = False
             if not use_flashinfer:
                 logger.warning_once(
                     "GDN prefill backend 'flashinfer' is selected but "
                     "cannot use this kernel on the current platform. "
                     "Falling back to Triton/FLA."
                 )
+        elif backend == "flashqla_legacy":
+            use_flashinfer = False
+            use_flashqla_legacy = supports_flashqla_legacy
+            if not use_flashqla_legacy:
+                logger.warning_once(
+                    "GDN prefill backend 'flashqla_legacy' is selected but "
+                    "cannot use this kernel on the current platform. "
+                    "Falling back to Triton/FLA."
+                )
         elif backend == "triton":
             use_flashinfer = False
+            use_flashqla_legacy = False
         else:
             use_flashinfer = supports_flashinfer
+            use_flashqla_legacy = False
 
         if use_flashinfer:
             logger.info_once("Using FlashInfer GDN prefill kernel")
@@ -165,12 +266,17 @@ class ChunkGatedDeltaRule(CustomOp):
                 "take a while to compile. Set `--gdn-prefill-backend triton` to "
                 "avoid JIT compile time.",
             )
+        elif use_flashqla_legacy:
+            logger.info_once("Using FlashQLA legacy SM70/SM75 GDN prefill kernel")
         else:
             logger.info_once("Using Triton/FLA GDN prefill kernel")
 
-        self._forward_method = (
-            self.forward_cuda if use_flashinfer else self.forward_native
-        )
+        if use_flashinfer:
+            self._forward_method = self.forward_cuda
+        elif use_flashqla_legacy:
+            self._forward_method = self.forward_flashqla_legacy
+        else:
+            self._forward_method = self.forward_native
 
     def forward_cuda(
         self,
@@ -220,6 +326,66 @@ class ChunkGatedDeltaRule(CustomOp):
         core_attn_out: torch.Tensor | None = None,
     ):
         return fla_chunk_gated_delta_rule(
+            q=q,
+            k=k,
+            v=v,
+            g=g,
+            beta=beta,
+            initial_state=initial_state,
+            output_final_state=output_final_state,
+            cu_seqlens=cu_seqlens,
+            chunk_indices=chunk_indices,
+            chunk_offsets=chunk_offsets,
+            use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+            core_attn_out=core_attn_out,
+        )
+
+    def forward_flashqla_legacy(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+        initial_state: torch.Tensor,
+        output_final_state: bool,
+        cu_seqlens: torch.Tensor | None = None,
+        chunk_indices: torch.Tensor | None = None,
+        chunk_offsets: torch.Tensor | None = None,
+        use_qk_l2norm_in_kernel: bool = True,
+        core_attn_out: torch.Tensor | None = None,
+    ):
+        # The SM70/SM75 FlashQLA legacy extension is a forward-only,
+        # single-contiguous-sequence kernel. Fall back for varlen/chunk-indexed
+        # cases instead of silently producing wrong state updates.
+        if (
+            q.ndim == 4
+            and k.ndim == 4
+            and v.ndim == 4
+            and q.shape[0] == 1
+            and (cu_seqlens is None or int(cu_seqlens.numel()) == 2)
+        ):
+            output, final_state = flashqla_legacy_chunk_gated_delta_rule(
+                q=q,
+                k=k,
+                v=v,
+                g=g,
+                beta=beta,
+                initial_state=initial_state,
+                output_final_state=output_final_state,
+                use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+            )
+            if core_attn_out is not None:
+                out_flat = output.squeeze(0).reshape(-1)
+                core_flat = core_attn_out.reshape(-1)
+                core_flat[: out_flat.numel()].copy_(out_flat)
+            return output, final_state
+
+        logger.warning_once(
+            "FlashQLA legacy GDN prefill received unsupported varlen/chunked "
+            "metadata; falling back to Triton/FLA for this call."
+        )
+        return self.forward_native(
             q=q,
             k=k,
             v=v,
@@ -674,13 +840,32 @@ class GatedDeltaNetAttention(PluggableLayer, MambaBase):
         The RMSNormGated + quant sequence is eligible for fusion
         by the compilation pass when fuse_norm_quant is enabled.
         """
+        global _GDN_DEBUG_OUTPUT_USED
         z_shape_og = z.shape
-        core_attn_out = core_attn_out.reshape(-1, core_attn_out.shape[-1])
-        z = z.reshape(-1, z.shape[-1])
-        core_attn_out = self.norm(core_attn_out, z)
-        core_attn_out = core_attn_out.reshape(z_shape_og)
-        core_attn_out = rearrange(core_attn_out, "... h d -> ... (h d)")
-        output[:num_tokens], _ = self.out_proj(core_attn_out)
+        core_attn_out_2d = core_attn_out.reshape(-1, core_attn_out.shape[-1])
+        z_2d = z.reshape(-1, z.shape[-1])
+        normed = self.norm(core_attn_out_2d, z_2d)
+        normed_3d = normed.reshape(z_shape_og)
+        proj_in = rearrange(normed_3d, "... h d -> ... (h d)")
+        output_chunk, _ = self.out_proj(proj_in)
+        output[:num_tokens] = output_chunk
+
+        if (
+            _GDN_DEBUG_OUTPUT
+            and _GDN_DEBUG_OUTPUT_USED < 16
+            and num_tokens <= 4
+            and _is_real_request_forward()
+        ):
+            _GDN_DEBUG_OUTPUT_USED += 1
+            logger.info(
+                "GDN output count=%d layer=%s %s | %s | %s | %s",
+                _GDN_DEBUG_OUTPUT_USED,
+                self.prefix,
+                _debug_tensor_stats("core", core_attn_out_2d),
+                _debug_tensor_stats("z", z_2d),
+                _debug_tensor_stats("normed", normed),
+                _debug_tensor_stats("out", output_chunk),
+            )
 
     def forward_hip(
         self,
@@ -1271,6 +1456,38 @@ class GatedDeltaNetAttention(PluggableLayer, MambaBase):
             ssm_state[non_spec_state_indices_tensor] = last_recurrent_state.to(
                 ssm_state.dtype
             )
+            global _GDN_DEBUG_PREFILL_USED
+            if (
+                _GDN_DEBUG_PREFILL
+                and _GDN_DEBUG_PREFILL_USED < 8
+                and _is_real_request_forward()
+            ):
+                ref_out, ref_state = fused_sigmoid_gating_delta_rule_update(
+                    A_log=self.A_log,
+                    a=a_non_spec,
+                    b=b_non_spec,
+                    dt_bias=self.dt_bias,
+                    q=query_non_spec,
+                    k=key_non_spec,
+                    v=value_non_spec,
+                    initial_state=initial_state.clone(),
+                    inplace_final_state=False,
+                    cu_seqlens=non_spec_query_start_loc,
+                    use_qk_l2norm_in_kernel=True,
+                )
+                out_err = (core_attn_out_non_spec.squeeze(0) - ref_out).abs()
+                state_err = (last_recurrent_state - ref_state).abs()
+                _GDN_DEBUG_PREFILL_USED += 1
+                logger.info(
+                    "GDN prefill count=%d layer=%s %s | %s | %s | %s | %s",
+                    _GDN_DEBUG_PREFILL_USED,
+                    self.prefix,
+                    _debug_tensor_stats("q", query_non_spec),
+                    _debug_tensor_stats("k", key_non_spec),
+                    _debug_tensor_stats("v", value_non_spec),
+                    _debug_err_stats("out_err", out_err),
+                    _debug_err_stats("state_err", state_err),
+                )
         elif attn_metadata.num_decodes > 0:
             core_attn_out_non_spec, last_recurrent_state = (
                 fused_sigmoid_gating_delta_rule_update(
@@ -1295,6 +1512,19 @@ class GatedDeltaNetAttention(PluggableLayer, MambaBase):
             core_attn_out_non_spec, last_recurrent_state = None, None
 
         # 3. Merge core attention output
+        if (
+            _GDN_DEBUG_PREFILL
+            and core_attn_out_non_spec is not None
+            and attn_metadata.num_prefills > 0
+            and _is_real_request_forward()
+        ):
+            logger.info(
+                "GDN merge pre layer=%s non_spec shape=%s dtype=%s sample=%s",
+                self.prefix,
+                tuple(core_attn_out_non_spec.shape),
+                core_attn_out_non_spec.dtype,
+                core_attn_out_non_spec.reshape(-1)[:8].detach().cpu().tolist(),
+            )
         if spec_sequence_masks is not None and core_attn_out_non_spec is not None:
             merged_out = torch.empty(
                 (1, num_actual_tokens, *core_attn_out_spec.shape[2:]),
@@ -1308,6 +1538,14 @@ class GatedDeltaNetAttention(PluggableLayer, MambaBase):
             core_attn_out[:num_actual_tokens] = core_attn_out_spec.squeeze(0)
         else:
             core_attn_out[:num_actual_tokens] = core_attn_out_non_spec.squeeze(0)
+        if _GDN_DEBUG_PREFILL and attn_metadata.num_prefills > 0 and _is_real_request_forward():
+            logger.info(
+                "GDN merge post layer=%s core shape=%s dtype=%s sample=%s",
+                self.prefix,
+                tuple(core_attn_out[:num_actual_tokens].shape),
+                core_attn_out.dtype,
+                core_attn_out[:num_actual_tokens].reshape(-1)[:8].detach().cpu().tolist(),
+            )
 
     def _forward_core_decode_fast(
         self,
@@ -1401,19 +1639,36 @@ class GatedDeltaNetAttention(PluggableLayer, MambaBase):
         mixed_qkv = mixed_qkv[:num_actual_tokens]
         b = b[:num_actual_tokens]
         a = a[:num_actual_tokens]
+        mixed_qkv_in = mixed_qkv.clone()
 
         conv_weights = self.conv1d.weight.view(
             self.conv1d.weight.size(0), self.conv1d.weight.size(2)
         )
-        mixed_qkv_non_spec = causal_conv1d_update(
-            mixed_qkv,
-            conv_state,
-            conv_weights,
-            self.conv1d.bias,
-            self.activation,
-            conv_state_indices=non_spec_state_indices_tensor[:num_actual_tokens],  # type: ignore[index]
-            validate_data=False,
+        debug_state_indices = non_spec_state_indices_tensor[:num_actual_tokens].to(
+            dtype=torch.long
         )
+        conv_state_before = conv_state.index_select(0, debug_state_indices).clone()
+        ssm_state_before = ssm_state.index_select(0, debug_state_indices).clone()
+        if _GDN_DEBUG_USE_TORCH_CONV:
+            conv_state_local = conv_state_before.clone()
+            mixed_qkv_non_spec = _torch_single_token_causal_conv_update(
+                mixed_qkv,
+                conv_state_local,
+                conv_weights,
+                self.conv1d.bias,
+                self.activation,
+            )
+            conv_state.index_copy_(0, debug_state_indices, conv_state_local)
+        else:
+            mixed_qkv_non_spec = causal_conv1d_update(
+                mixed_qkv,
+                conv_state,
+                conv_weights,
+                self.conv1d.bias,
+                self.activation,
+                conv_state_indices=non_spec_state_indices_tensor[:num_actual_tokens],  # type: ignore[index]
+                validate_data=False,
+            )
         out_buf = core_attn_out[:num_actual_tokens].unsqueeze(1)
         fused_recurrent_gated_delta_rule_packed_decode(
             mixed_qkv=mixed_qkv_non_spec,
@@ -1427,7 +1682,193 @@ class GatedDeltaNetAttention(PluggableLayer, MambaBase):
             ssm_state_indices=non_spec_state_indices_tensor[:num_actual_tokens],  # type: ignore[index]
             use_qk_l2norm_in_kernel=True,
         )
+        self._debug_split_packed_decode(
+            mixed_qkv_in=mixed_qkv_in,
+            mixed_qkv_after_conv=mixed_qkv_non_spec,
+            conv_state_before=conv_state_before,
+            conv_weights=conv_weights,
+            a=a,
+            b=b,
+            core_attn_out=out_buf.squeeze(1),
+            ssm_state_before=ssm_state_before,
+            ssm_state_after=ssm_state.index_select(0, debug_state_indices),
+        )
+        q_ref, k_ref, v_ref = self.rearrange_mixed_qkv(mixed_qkv_non_spec)
+        self._debug_compare_packed_decode(
+            query_non_spec=q_ref,
+            key_non_spec=k_ref,
+            value_non_spec=v_ref,
+            a=a,
+            b=b,
+            core_attn_out=out_buf.squeeze(1),
+            ssm_state_before=ssm_state_before,
+            ssm_state_after=ssm_state.index_select(0, debug_state_indices),
+        )
         return
+
+    def _debug_compare_packed_decode(
+        self,
+        *,
+        query_non_spec: torch.Tensor,
+        key_non_spec: torch.Tensor,
+        value_non_spec: torch.Tensor,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        core_attn_out: torch.Tensor,
+        ssm_state_before: torch.Tensor,
+        ssm_state_after: torch.Tensor,
+    ) -> None:
+        global _GDN_DEBUG_COMPARE_USED
+        if not _GDN_DEBUG_COMPARE or _GDN_DEBUG_COMPARE_USED >= 16:
+            return
+        if core_attn_out.shape[0] > 4:
+            return
+
+        local_state_indices = torch.arange(
+            core_attn_out.shape[0],
+            device=core_attn_out.device,
+            dtype=torch.int32,
+        )
+        ref, _ = fused_sigmoid_gating_delta_rule_update(
+            a=a,
+            b=b,
+            A_log=self.A_log,
+            dt_bias=self.dt_bias,
+            q=query_non_spec,
+            k=key_non_spec,
+            v=value_non_spec,
+            initial_state=ssm_state_before.clone(),
+            inplace_final_state=False,
+            cu_seqlens=torch.arange(
+                0,
+                core_attn_out.shape[0] + 1,
+                device=core_attn_out.device,
+                dtype=torch.int32,
+            ),
+            ssm_state_indices=local_state_indices,
+            use_qk_l2norm_in_kernel=True,
+        )
+        err = (core_attn_out - ref).abs()
+        _, ref_state = fused_sigmoid_gating_delta_rule_update(
+            a=a,
+            b=b,
+            A_log=self.A_log,
+            dt_bias=self.dt_bias,
+            q=query_non_spec,
+            k=key_non_spec,
+            v=value_non_spec,
+            initial_state=ssm_state_before.clone(),
+            inplace_final_state=False,
+            cu_seqlens=torch.arange(
+                0,
+                core_attn_out.shape[0] + 1,
+                device=core_attn_out.device,
+                dtype=torch.int32,
+            ),
+            ssm_state_indices=local_state_indices,
+            use_qk_l2norm_in_kernel=True,
+        )
+        state_err = (ssm_state_after - ref_state).abs()
+        _GDN_DEBUG_COMPARE_USED += 1
+        logger.info(
+            "GDN compare count=%d layer=%s tokens=%d "
+            "out_max_err=%.6f out_mean_err=%.6f "
+            "state_max_err=%.6f state_mean_err=%.6f "
+            "got0=%s ref0=%s",
+            _GDN_DEBUG_COMPARE_USED,
+            self.prefix,
+            core_attn_out.shape[0],
+            float(err.max().item()),
+            float(err.mean().item()),
+            float(state_err.max().item()),
+            float(state_err.mean().item()),
+            core_attn_out[0, :8].detach().cpu().tolist(),
+            ref[0, :8].detach().cpu().tolist(),
+        )
+
+    def _debug_split_packed_decode(
+        self,
+        *,
+        mixed_qkv_in: torch.Tensor,
+        mixed_qkv_after_conv: torch.Tensor,
+        conv_state_before: torch.Tensor,
+        conv_weights: torch.Tensor,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        core_attn_out: torch.Tensor,
+        ssm_state_before: torch.Tensor,
+        ssm_state_after: torch.Tensor,
+    ) -> None:
+        global _GDN_DEBUG_SPLIT_USED
+        if not _GDN_DEBUG_SPLIT or _GDN_DEBUG_SPLIT_USED >= 16:
+            return
+        if mixed_qkv_after_conv.shape[0] > 4:
+            return
+
+        width = conv_weights.shape[1]
+        state_len = conv_state_before.shape[-1]
+        if state_len < width - 1:
+            return
+
+        x_new = torch.cat([conv_state_before, mixed_qkv_in.unsqueeze(-1)], dim=-1).to(
+            conv_weights.dtype
+        )
+        conv_ref = (x_new * conv_weights.unsqueeze(0)).sum(dim=-1)
+        if self.conv1d.bias is not None:
+            conv_ref = conv_ref + self.conv1d.bias.unsqueeze(0)
+        if self.activation in ("silu", "swish"):
+            conv_ref = torch.nn.functional.silu(conv_ref)
+        conv_err = (mixed_qkv_after_conv - conv_ref).abs()
+
+        q_ref, k_ref, v_ref = self.rearrange_mixed_qkv(conv_ref)
+        local_state_indices = torch.arange(
+            core_attn_out.shape[0],
+            device=core_attn_out.device,
+            dtype=torch.int32,
+        )
+        recurrent_ref, recurrent_state = fused_sigmoid_gating_delta_rule_update(
+            a=a,
+            b=b,
+            A_log=self.A_log,
+            dt_bias=self.dt_bias,
+            q=q_ref,
+            k=k_ref,
+            v=v_ref,
+            initial_state=ssm_state_before.clone(),
+            inplace_final_state=False,
+            cu_seqlens=torch.arange(
+                0,
+                core_attn_out.shape[0] + 1,
+                device=core_attn_out.device,
+                dtype=torch.int32,
+            ),
+            ssm_state_indices=local_state_indices,
+            use_qk_l2norm_in_kernel=True,
+        )
+        recurrent_err = (core_attn_out - recurrent_ref).abs()
+        recurrent_state_err = (ssm_state_after - recurrent_state).abs()
+
+        _GDN_DEBUG_SPLIT_USED += 1
+        logger.info(
+            "GDN split count=%d layer=%s tokens=%d "
+            "conv_max_err=%.6f conv_mean_err=%.6f "
+            "recur_out_max_err=%.6f recur_out_mean_err=%.6f "
+            "recur_state_max_err=%.6f recur_state_mean_err=%.6f "
+            "conv_got0=%s conv_ref0=%s recur_got0=%s recur_ref0=%s",
+            _GDN_DEBUG_SPLIT_USED,
+            self.prefix,
+            core_attn_out.shape[0],
+            float(conv_err.max().item()),
+            float(conv_err.mean().item()),
+            float(recurrent_err.max().item()),
+            float(recurrent_err.mean().item()),
+            float(recurrent_state_err.max().item()),
+            float(recurrent_state_err.mean().item()),
+            mixed_qkv_after_conv[0, :8].detach().cpu().tolist(),
+            conv_ref[0, :8].detach().cpu().tolist(),
+            core_attn_out[0, :8].detach().cpu().tolist(),
+            recurrent_ref[0, :8].detach().cpu().tolist(),
+        )
 
 
 def gdn_attention_core(

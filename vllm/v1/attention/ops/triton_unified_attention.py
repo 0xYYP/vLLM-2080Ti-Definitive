@@ -635,6 +635,13 @@ def unified_attention(
         or is_batch_invariant
     )
 
+    # The single-token 3D decode kernel path is currently not promotable for
+    # per-token-head quantized KV cache on SM75 Qwen hybrid routes. Keep these
+    # requests on the 2D path, which matches the known-good multi-token decode
+    # flow used by the same quantization mode.
+    if use_per_token_head_scales:
+        use_3d = False
+
     # The kernel signature is the same for 2D and 3D — only the launch
     # grid + a handful of constexpr toggles differ.  Per-token-head scale
     # caches and their strides are required arguments; non-per-token-head

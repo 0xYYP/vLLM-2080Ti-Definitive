@@ -243,6 +243,70 @@ def get_deepseek_v4_structural_tag(
     return StructuralTag(format=SequenceFormat(elements=[prefix_tag, suffix_tag]))
 
 
+@register_model_structural_tag("hermes")
+def get_hermes_structural_tag(
+    tools: list[ChatCompletionToolsParam],
+    tool_choice: SimplifiedToolChoice,
+    reasoning: bool,
+) -> StructuralTag:
+    """Build Hermes-style ``<tool_call>{json}</tool_call>`` tags."""
+
+    tool_call_begin = "<tool_call>"
+    tool_call_end = "</tool_call>"
+    think_tag_end = "</think>"
+    think_exclude_tokens = ["<think>", "</think>"]
+
+    def tool_schema(function_name: str, parameters: dict[str, Any] | bool):
+        return {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "const": function_name},
+                "arguments": parameters,
+            },
+            "required": ["name", "arguments"],
+            "additionalProperties": False,
+        }
+
+    tags = []
+    for tool in tools:
+        function = tool.function
+        tags.append(
+            TagFormat(
+                begin=tool_call_begin,
+                content=JSONSchemaFormat(
+                    json_schema=tool_schema(
+                        function.name, _get_function_parameters(function)
+                    )
+                ),
+                end=tool_call_end,
+            )
+        )
+
+    if tool_choice == "auto":
+        suffix_tag = TriggeredTagsFormat(
+            triggers=[tool_call_begin],
+            tags=tags,
+            excludes=think_exclude_tokens,
+        )
+    elif tool_choice == "forced":
+        if not tags:
+            raise ValueError("Forced tool choice must resolve to exactly one tool.")
+        suffix_tag = tags[0]
+    elif tool_choice == "required":
+        assert len(tags) > 0
+        suffix_tag = TagsWithSeparatorFormat(
+            tags=tags,
+            separator="\n",
+            at_least_one=True,
+        )
+
+    if not reasoning:
+        return StructuralTag(format=suffix_tag)
+
+    prefix_tag = TagFormat(begin="", content=AnyTextFormat(), end=think_tag_end)
+    return StructuralTag(format=SequenceFormat(elements=[prefix_tag, suffix_tag]))
+
+
 @register_model_structural_tag("qwen_3_5")
 def get_qwen_3_5_structural_tag(
     tools: list[ChatCompletionToolsParam],
@@ -257,7 +321,7 @@ def get_qwen_3_5_structural_tag(
     tool_call_begin_prefix = "<tool_call>\n<function="
     tool_call_begin_suffix = ">\n"
     tool_call_end = "\n</function>\n</tool_call>"
-    tool_call_trigger = "<tool_call>\n<function="
+    tool_call_trigger = "<tool_call>"
     think_tag_end = "</think>"
     think_suffix = "\n\n"
     think_exclude_tokens = ["<think>", "</think>"]

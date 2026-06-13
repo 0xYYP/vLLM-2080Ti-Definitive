@@ -7,20 +7,25 @@ if [[ "$(basename "$SCRIPT_DIR")" == "launcher" && -d "$SCRIPT_DIR/../profiles" 
 else
   MANAGER_ROOT="$SCRIPT_DIR"
 fi
+PROJECT_ROOT="$MANAGER_ROOT"
+PROJECT_RELEASE_FILE=${PROJECT_RELEASE_FILE:-"$MANAGER_ROOT/PROJECT_RELEASE.env"}
+# shellcheck source=/dev/null
+source "$PROJECT_RELEASE_FILE"
 RUNTIME_ROOT=${RUNTIME_ROOT:-"$MANAGER_ROOT"}
 PROFILE_DIR=${PROFILE_DIR:-"$MANAGER_ROOT/profiles"}
 TEMPLATE_DIR=${TEMPLATE_DIR:-"$PROFILE_DIR/templates"}
 LOG_DIR=${LOG_DIR:-"$MANAGER_ROOT/run-logs"}
 STATE_FILE=${STATE_FILE:-"$LOG_DIR/start-manager.state"}
 STAMP=$(date +%Y%m%d-%H%M%S)
-VERSION=${VERSION:-0.1.6}
+VERSION=${VERSION:-$FORK_RELEASE}
 
 banner() {
   cat <<EOF
 ============================================================
- vLLM 2080 Ti Definitive Edition v$VERSION
+ $PROJECT_NAME v$VERSION
  Service manager
- Author: github.com/weicj
+ Runtime: $RUNTIME_IDENTITY
+ Author: $PROJECT_AUTHOR
 ============================================================
 EOF
 }
@@ -243,11 +248,11 @@ read_profile_value() {
 
 profile_key_is_global() {
   case "$1" in
-    MODEL_DIR|PROFILE_DIR|PROFILE|MODE|PORT|SERVICE_SCOPE|GPU_DEVICES|TP_SIZE|\
+MODEL_DIR|PROFILE_DIR|PROFILE|MODE|PORT|SERVICE_SCOPE|GPU_DEVICES|TP_SIZE|\
 CHAT_TEMPLATE_FILE|CHAT_TEMPLATE_PRESET|TEMPLATE_DIR|REASONING_PARSER|\
 DEFAULT_CHAT_TEMPLATE_KWARGS|REASONING_MODE|REASONING_BUDGET|\
 ENABLE_AUTO_TOOL_CHOICE|TOOL_CALL_PARSER|TOOL_PARSER_PLUGIN|\
-VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH)
+VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH|VLLM_ENFORCE_STRICT_TOOL_CALLING)
       return 0
       ;;
     *)
@@ -326,6 +331,7 @@ save_manager_state() {
     printf 'GPU_DEVICES=%q\n' "${GPU_DEVICES:-}"
     printf 'QUANTIZATION=%q\n' "${QUANTIZATION:-}"
     printf 'KV_CACHE_DTYPE=%q\n' "${KV_CACHE_DTYPE:-}"
+    printf 'MAMBA_CACHE_MODE=%q\n' "${MAMBA_CACHE_MODE:-}"
     printf 'MAX_MODEL_LEN=%q\n' "${MAX_MODEL_LEN:-}"
     printf 'GPU_UTIL=%q\n' "${GPU_UTIL:-}"
     printf 'MAX_BATCHED_TOKENS=%q\n' "${MAX_BATCHED_TOKENS:-}"
@@ -350,6 +356,7 @@ save_manager_state() {
     printf 'ENABLE_AUTO_TOOL_CHOICE=%q\n' "${ENABLE_AUTO_TOOL_CHOICE:-0}"
     printf 'TOOL_CALL_PARSER=%q\n' "${TOOL_CALL_PARSER:-}"
     printf 'TOOL_PARSER_PLUGIN=%q\n' "${TOOL_PARSER_PLUGIN:-}"
+    printf 'VLLM_ENFORCE_STRICT_TOOL_CALLING=%q\n' "${VLLM_ENFORCE_STRICT_TOOL_CALLING:-}"
     printf 'ENFORCE_EAGER=%q\n' "${ENFORCE_EAGER:-}"
     printf 'NO_ASYNC_SCHEDULING=%q\n' "${NO_ASYNC_SCHEDULING:-}"
     printf 'DISABLE_HYBRID_KV_CACHE_MANAGER=%q\n' "${DISABLE_HYBRID_KV_CACHE_MANAGER:-}"
@@ -612,6 +619,7 @@ profile_summary() {
     MAX_BATCHED_TOKENS
     MAX_NUM_SEQS
     MTP_K
+    VLLM_ALLOW_LONG_MAX_MODEL_LEN
     MM_LIMIT_JSON
     HF_OVERRIDES_JSON
   )
@@ -1063,13 +1071,17 @@ Profiles are optional. They are presets only; the current menu values are the
 actual launch configuration.
 
 Notes:
-  - safe mode is recommended for daily service: safe MTP sync, no forced full graph.
-  - normal mode is the middle mode: nosync MTP, no forced full graph.
-  - fast mode is the high-performance mode: nosync MTP with full graph enabled.
+  - safe mode: eager fallback. Highest quality guardrail, with a large
+    performance cost.
+  - normal mode: non-eager + piecewise graph. Preferred production
+    middle path once the selected route has passed quality smoke.
+  - fast mode: non-eager + full graph. Highest throughput path,
+    intended for performance exploration and quality-risk-tolerant use.
   - Chat-template presets live under profiles/templates and are global launcher
     settings, not route-profile fields.
   - Tool-calling defaults are global launcher settings. Enable automatic tool
-    choice only when a matching --tool-call-parser is selected.
+    choice only when a matching --tool-call-parser is selected. The launcher
+    enables strict tool-output constraints for automatic tool choice.
   - thinking_token_budget is a per-request chat parameter in this vLLM runtime.
   - text+image requires a checkpoint that actually supports vision inputs.
   - --print-config prints the final launch summary and exits without starting.
@@ -1343,14 +1355,10 @@ save_current_profile_menu() {
   write_profile_entry "$target_file.tmp" HF_OVERRIDES_JSON "${HF_OVERRIDES_JSON:-}"
   write_profile_entry "$target_file.tmp" ADDITIONAL_CONFIG_JSON "${ADDITIONAL_CONFIG_JSON:-}"
   write_profile_entry "$target_file.tmp" SPECULATIVE_CONFIG "${SPECULATIVE_CONFIG:-}"
-  write_profile_entry "$target_file.tmp" COMPILATION_CONFIG_JSON "${COMPILATION_CONFIG_JSON:-}"
   write_profile_entry "$target_file.tmp" ATTENTION_BACKEND "${ATTENTION_BACKEND:-}"
-  write_profile_entry "$target_file.tmp" ENFORCE_EAGER "${ENFORCE_EAGER:-}"
-  write_profile_entry "$target_file.tmp" NO_ASYNC_SCHEDULING "${NO_ASYNC_SCHEDULING:-}"
   write_profile_entry "$target_file.tmp" DISABLE_HYBRID_KV_CACHE_MANAGER "${DISABLE_HYBRID_KV_CACHE_MANAGER:-}"
   write_profile_entry "$target_file.tmp" DISABLE_PREFIX_CACHING "${DISABLE_PREFIX_CACHING:-}"
   write_profile_entry "$target_file.tmp" DISABLE_CUSTOM_ALL_REDUCE "${DISABLE_CUSTOM_ALL_REDUCE:-}"
-  write_profile_entry "$target_file.tmp" DISABLE_LOG_STATS "${DISABLE_LOG_STATS:-}"
   mv "$target_file.tmp" "$target_file"
 
   PROFILE="$family_dir/user/${safe_name}.env"
@@ -1487,6 +1495,7 @@ edit_tool_calling_menu() {
       if [[ -z "${TOOL_CALL_PARSER:-}" ]]; then
         TOOL_CALL_PARSER=$(prompt_default "Tool call parser" "qwen3_xml") || return 0
       fi
+      VLLM_ENFORCE_STRICT_TOOL_CALLING=${VLLM_ENFORCE_STRICT_TOOL_CALLING:-1}
       save_manager_state
       ;;
     "tool call parser")
@@ -2340,16 +2349,19 @@ apply_mode() {
   normalize_mode
   case "$MODE" in
     normal)
-      export DISABLE_LOG_STATS=${DISABLE_LOG_STATS:-1}
-      export VLLM_SM75_SPEC_SYNC_MODE=nosync
+      export ENFORCE_EAGER=0
+      export DISABLE_LOG_STATS=1
+      export VLLM_SM75_SPEC_SYNC_MODE=safe
       export VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=0
       ;;
     fast)
-      export DISABLE_LOG_STATS=${DISABLE_LOG_STATS:-1}
-      export VLLM_SM75_SPEC_SYNC_MODE=${VLLM_SM75_SPEC_SYNC_MODE_OVERRIDE:-nosync}
+      export ENFORCE_EAGER=0
+      export DISABLE_LOG_STATS=1
+      export VLLM_SM75_SPEC_SYNC_MODE=safe
       export VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=1
       ;;
     safe)
+      export ENFORCE_EAGER=1
       export VLLM_SM75_SPEC_SYNC_MODE=safe
       export VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=0
       ;;
@@ -2390,25 +2402,12 @@ validate_mode_kv_policy() {
     return 1
   fi
   case "$MODE" in
-    safe)
-      case "$kv" in
-        ""|fp16|default|auto)
-          ;;
-        *)
-          if [[ "$mtp" =~ ^[0-9]+$ ]] && (( mtp > 0 )); then
-            echo "ERROR: safe mode allows quantized KV only when MTP_K=0." >&2
-            echo "       Use MODE=normal or MODE=fast for quantized KV with MTP, or set MTP_K=0. KV: $kv" >&2
-            return 1
-          fi
-          ;;
-      esac
-      ;;
-    normal|fast)
+    safe|normal|fast)
       ;;
     *)
-        echo "ERROR: MODE must be safe, normal, or fast." >&2
-        return 1
-        ;;
+      echo "ERROR: MODE must be safe, normal, or fast." >&2
+      return 1
+      ;;
   esac
 }
 
@@ -2443,6 +2442,11 @@ set_sm75_runtime_env() {
   export FLASHINFER_ENABLE_AOT=${FLASHINFER_ENABLE_AOT:-1}
   if [[ "${KV_CACHE_DTYPE:-}" == "int8_per_token_head" ]]; then
     export VLLM_INT8KV_FA_PREFILL=${VLLM_INT8KV_FA_PREFILL:-1}
+    if [[ "$MODE" == "safe" ]]; then
+      export VLLM_INT8KV_FA_FIRST_CHUNK_DEQUANT=${VLLM_INT8KV_FA_FIRST_CHUNK_DEQUANT:-1}
+    else
+      export VLLM_INT8KV_FA_FIRST_CHUNK_DEQUANT=${VLLM_INT8KV_FA_FIRST_CHUNK_DEQUANT:-0}
+    fi
     export VLLM_INT8KV_FA_CONTINUATION_DEQUANT=${VLLM_INT8KV_FA_CONTINUATION_DEQUANT:-1}
     export VLLM_INT8KV_FA_CASCADE_DEQUANT=${VLLM_INT8KV_FA_CASCADE_DEQUANT:-1}
     export VLLM_INT8KV_FA_CASCADE_TILE_TOKENS=${VLLM_INT8KV_FA_CASCADE_TILE_TOKENS:-65536}
@@ -2452,6 +2456,9 @@ set_sm75_runtime_env() {
   export TORCHINDUCTOR_CACHE_DIR="$MANAGER_ROOT/torchinductor-cache"
   export TRITON_CACHE_DIR="$MANAGER_ROOT/triton-cache"
   export PYTHONUNBUFFERED=1
+  if [[ "${ENABLE_AUTO_TOOL_CHOICE:-0}" == "1" ]]; then
+    export VLLM_ENFORCE_STRICT_TOOL_CALLING=${VLLM_ENFORCE_STRICT_TOOL_CALLING:-1}
+  fi
   if [[ -n "${REASONING_BUDGET:-}" ]]; then
     export VLLM_DEFAULT_THINKING_TOKEN_BUDGET="$REASONING_BUDGET"
   else
@@ -2479,6 +2486,7 @@ build_args() {
 
   [[ -n "${QUANTIZATION:-}" ]] && VLLM_ARGS+=(--quantization "$QUANTIZATION")
   [[ -n "${KV_CACHE_DTYPE:-}" ]] && VLLM_ARGS+=(--kv-cache-dtype "$KV_CACHE_DTYPE")
+  [[ -n "${MAMBA_CACHE_MODE:-}" ]] && VLLM_ARGS+=(--mamba-cache-mode "$MAMBA_CACHE_MODE")
   [[ "${ENFORCE_EAGER:-0}" == "1" ]] && VLLM_ARGS+=(--enforce-eager)
   [[ "${NO_ASYNC_SCHEDULING:-0}" == "1" ]] && VLLM_ARGS+=(--no-async-scheduling)
   [[ "${DISABLE_HYBRID_KV_CACHE_MANAGER:-0}" == "1" ]] && VLLM_ARGS+=(--disable-hybrid-kv-cache-manager)
@@ -2523,12 +2531,25 @@ build_args() {
     VLLM_ARGS+=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${MTP_K}}")
   fi
 
+  local cudagraph_mode
+  case "$MODE" in
+    safe|normal)
+      cudagraph_mode=PIECEWISE
+      ;;
+    fast)
+      cudagraph_mode=FULL_AND_PIECEWISE
+      ;;
+    *)
+      cudagraph_mode=PIECEWISE
+      ;;
+  esac
+
   if [[ -n "${COMPILATION_CONFIG_JSON:-}" ]]; then
     VLLM_ARGS+=(--compilation-config "$COMPILATION_CONFIG_JSON")
   elif [[ -n "${SPECULATIVE_CONFIG:-}" || "$MTP_K" -gt 0 ]]; then
-    VLLM_ARGS+=(--compilation-config "{\"cudagraph_capture_sizes\":[${capture}],\"max_cudagraph_capture_size\":${capture}}")
+    VLLM_ARGS+=(--compilation-config "{\"cudagraph_mode\":\"${cudagraph_mode}\",\"cudagraph_capture_sizes\":[${capture}],\"max_cudagraph_capture_size\":${capture}}")
   else
-    VLLM_ARGS+=(--compilation-config '{"cudagraph_capture_sizes":[1],"max_cudagraph_capture_size":1}')
+    VLLM_ARGS+=(--compilation-config "{\"cudagraph_mode\":\"${cudagraph_mode}\",\"cudagraph_capture_sizes\":[1],\"max_cudagraph_capture_size\":1}")
   fi
 }
 
@@ -2777,6 +2798,7 @@ launch_server() {
     echo "  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-}"
     echo "  VLLM_SM75_SPEC_SYNC_MODE=${VLLM_SM75_SPEC_SYNC_MODE:-auto}"
     echo "  VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=${VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH:-0}"
+    echo "  VLLM_ENFORCE_STRICT_TOOL_CALLING=${VLLM_ENFORCE_STRICT_TOOL_CALLING:-0}"
     echo "  VLLM_DEFAULT_THINKING_TOKEN_BUDGET=${VLLM_DEFAULT_THINKING_TOKEN_BUDGET:-}"
     echo "Command:"
     echo "  $RUNTIME_ROOT/.venv/bin/python -m vllm.entrypoints.openai.api_server $args_text"
@@ -2785,19 +2807,42 @@ launch_server() {
 
   check_checkpoint_mmap_policy || return 1
 
+  {
+    echo "============================================================"
+    echo "$PROJECT_NAME v$VERSION"
+    echo "Runtime identity: $RUNTIME_IDENTITY"
+    echo "Base vLLM: $BASE_VLLM_VERSION"
+    echo "Validated CUDA/Torch: CUDA $VALIDATED_CUDA_VERSION / torch $VALIDATED_TORCH_VERSION"
+    echo "Reference NVIDIA driver: $VALIDATED_NVIDIA_DRIVER_VERSION"
+    echo "Launch time: $(date '+%F %T %Z')"
+    echo "Served name: $SERVED_NAME"
+    echo "Model: $MODEL_DIR"
+    echo "Profile: ${PROFILE:-manual}"
+    echo "Mode: $MODE"
+    echo "GPU devices: ${GPU_DEVICES:-}"
+    echo "TP size: ${TP_SIZE:-}"
+    echo "Port: $PORT"
+    echo "Scope: $SERVICE_SCOPE"
+    echo "MTP graph policy: VLLM_SM75_SPEC_SYNC_MODE=${VLLM_SM75_SPEC_SYNC_MODE:-auto}, VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=${VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH:-0}"
+    echo "Strict tool calling: VLLM_ENFORCE_STRICT_TOOL_CALLING=${VLLM_ENFORCE_STRICT_TOOL_CALLING:-0}"
+    echo "Command: $RUNTIME_ROOT/.venv/bin/python -m vllm.entrypoints.openai.api_server $args_text"
+    echo "============================================================"
+  } > "$log_file"
+
   echo
   echo "Starting server..."
   echo "  Log: $log_file"
   echo "  Mode: $MODE"
   echo "  MTP graph policy: VLLM_SM75_SPEC_SYNC_MODE=${VLLM_SM75_SPEC_SYNC_MODE:-auto}, VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=${VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH:-0}"
+  echo "  Strict tool calling: VLLM_ENFORCE_STRICT_TOOL_CALLING=${VLLM_ENFORCE_STRICT_TOOL_CALLING:-0}"
   echo "  Served name: $SERVED_NAME"
   echo "  Model: $MODEL_DIR"
   echo "  Bind: $host_arg:$PORT"
 
   if command -v setsid >/dev/null 2>&1; then
-    nohup setsid "$RUNTIME_ROOT/.venv/bin/python" -m vllm.entrypoints.openai.api_server "${VLLM_ARGS[@]}" >"$log_file" 2>&1 &
+    nohup setsid "$RUNTIME_ROOT/.venv/bin/python" -m vllm.entrypoints.openai.api_server "${VLLM_ARGS[@]}" >>"$log_file" 2>&1 &
   else
-    nohup "$RUNTIME_ROOT/.venv/bin/python" -m vllm.entrypoints.openai.api_server "${VLLM_ARGS[@]}" >"$log_file" 2>&1 &
+    nohup "$RUNTIME_ROOT/.venv/bin/python" -m vllm.entrypoints.openai.api_server "${VLLM_ARGS[@]}" >>"$log_file" 2>&1 &
   fi
   CURRENT_SERVER_PID=$!
   echo "$CURRENT_SERVER_PID" > "$pid_file"
@@ -3010,10 +3055,9 @@ prepare_runtime_defaults() {
     SKIP_MM_PROFILING=1
   fi
   ENABLE_AUTO_TOOL_CHOICE=$(normalize_bool "${ENABLE_AUTO_TOOL_CHOICE:-0}")
-  if [[ "$ENABLE_AUTO_TOOL_CHOICE" == "1" && -z "${TOOL_CALL_PARSER:-}" ]]; then
-    echo "ERROR: auto tool choice requires a tool call parser." >&2
-    echo "       Set Tool calling -> tool call parser, for example qwen3_xml." >&2
-    return 1
+  if [[ "$ENABLE_AUTO_TOOL_CHOICE" == "1" ]]; then
+    TOOL_CALL_PARSER=${TOOL_CALL_PARSER:-qwen3_xml}
+    VLLM_ENFORCE_STRICT_TOOL_CALLING=${VLLM_ENFORCE_STRICT_TOOL_CALLING:-1}
   fi
   validate_mode_kv_policy
 }
@@ -3036,6 +3080,8 @@ print_review() {
 
   cat <<EOF
 Launch summary:
+  Fork release:         v$VERSION
+  Runtime identity:     $RUNTIME_IDENTITY
   Model directory:      $MODEL_DIR
   Served name:          $SERVED_NAME
   Model family:         $MODEL_FAMILY
@@ -3043,6 +3089,7 @@ Launch summary:
   W/A type:             $(guess_precision_scheme "$MODEL_DIR" "${QUANTIZATION:-}")
   GPU devices:          ${GPU_DEVICES:-$(detect_default_gpu_devices)}
   KV precision:         ${KV_CACHE_DTYPE:-fp16}
+  Mamba cache mode:     ${MAMBA_CACHE_MODE:-auto}
   Context tokens:       $MAX_MODEL_LEN
   GPU util:             $GPU_UTIL
   Max batched tokens:   $MAX_BATCHED_TOKENS
@@ -3054,6 +3101,7 @@ Launch summary:
   Tool calling:         $(current_tool_calling_label)
   Mode:                 $MODE
   MTP graph policy:     VLLM_SM75_SPEC_SYNC_MODE=${VLLM_SM75_SPEC_SYNC_MODE:-auto}, VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=${VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH:-0}
+  Strict tool calling:  VLLM_ENFORCE_STRICT_TOOL_CALLING=${VLLM_ENFORCE_STRICT_TOOL_CALLING:-0}
   Port:                 $PORT
   Scope:                $SERVICE_SCOPE
 EOF

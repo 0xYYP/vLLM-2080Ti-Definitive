@@ -8,11 +8,11 @@
 这是一个硬件定向的 vLLM fork，用来保存已经跑通的 2080 Ti vLLM
 栈：补丁源码、启动 profile、运行时说明和稳定环境记录。
 
-Fork 发布版本：`v0.1.6`
+Fork 发布版本：`v0.1.7`
 基础 vLLM：`0.21.0`
 
-核心实测：同一套双 2080 Ti TP=2 runtime 下，Qwen3.6 27B 单请求 decode
-达到 `100+ tok/s`，Gemma4 31B 单请求 decode 达到 `~100 tok/s`。
+核心实测：双 2080 Ti TP=2 runtime 下，Qwen3.6 27B 单请求 decode 达到
+`100+ tok/s`。
 
 语言：[English](README.md) | 简体中文
 
@@ -64,38 +64,33 @@ FlashQLA/FlashInfer/FA2、TurboQuant/INT8 KV、MTP 和 CUDAGraph 集成，
 
 ### Qwen3.6 27B 成熟主线
 
-Qwen 系 27B 是这个 fork 的主要生产路线。它在 FP8/INT4/NVFP4 Marlin 系权重、MTP、
-FP16/INT8 KV、原生 256K 上下文、YaRN 容量 profile 和图像多模态兼容性上
-覆盖最完整。
-快速路径：Qwen 使用 FlashQLA-SM70-SM75 处理 Gated DeltaNet /
-linear-attention prefill，full-attention prefill 走 FlashInfer / FA2，
-head_dim=256 路线完整保留，decode 侧使用 MTP + CUDAGraph 策略。
+Qwen 系 27B 是这个 fork 的主要生产路线，在 FP8/INT4/NVFP4 权重、MTP、
+FP16/INT8/TurboQuant KV、256K 原生上下文、YaRN 容量和图像多模态上覆盖最完整。
 
 | 功能 | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
 | Marlin 权重路线 | 🟢 FP8/INT4/NVFP4 | 🟢 FP8/INT4/NVFP4 | 🟢 FP8/INT4/NVFP4 |
-| MTP 解码 | 🟢 支持 | 🟡 fast 实验路线 | 🟡 实验路线 |
-| 原生 256K 上下文 | 🟢 文本路线 | 🟢 文本路线 | 🟡 不作为预设 |
-| YaRN 512K 扩展 | ⚪ 非目标路线 | 🟢 容量路线 | ⚪ 已验证，不作为预设 |
-| No-eager / CUDAGraph | 🟢 支持 | 🟢 支持 | 🟢 graph-safety 已修复 |
-| 快速 prefill 路线 | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟡 依赖具体路线 |
-| 图像多模态 | 🟢 FP8/INT4 路线 | 🟡 仅 INT4 路线 | 🔴 不晋升 |
-| 当前预设状态 | 🟢 推荐 | 🟢 推荐 | 🟡 仅实验 |
+| MTP 解码 | 🟢 支持 | 🟢 支持 | 🟢 支持 |
+| 原生 256K 上下文 | 🟢 支持 | 🟢 支持 | 🟢 支持 |
+| YaRN 扩展 | ⚪ 非目标路线 | 🟢 支持 | ⚪ 非目标预设 |
+| No-eager / CUDAGraph | 🟢 支持 | 🟡 部分支持 | 🟢 支持 |
+| 快速 prefill 路线 | 🟢 FlashInfer / FA2 | 🟢 FlashInfer | 🟢 FlashInfer |
+| 图像多模态 | 🟢 支持 | 🟢 支持 | 🟢 支持 |
+| 当前预设状态 | 🟢 normal / fast / safe | 🟢 normal / safe | 🟢 fast |
 
 ### Gemma4 31B 实验路线
 
-Gemma4 31B 保留为第二路线和实验路线。这里把能力支持和 profile 晋升分开：
-FP16/default KV 的 GPTQ + assistant 路线已经有 MTP 与快速 prefill 测试证据，
-但 Gemma profile 还没有晋升为生产预设。FP16/default KV 可以 noMTP 跑通
-64K，压缩 KV 256K 路线仍受上游 Gemma KV 行为限制。
+Gemma4 31B 保留为第二路线和实验路线。目前最值得继续推进的是官方 QAT
+target 搭配对应的 QAT assistant，这条路线相比早期 Gemma 变体有更好的
+FP16/default KV 空间。
 
 | 功能 | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
-| Marlin 权重路线 | 🟢 GPTQ target | 🟢 GPTQ target | 🟢 GPTQ target |
-| MTP 解码 | 🟢 已测试路线 | ⚪ 无预设 | ⚪ 无预设 |
-| 实测上下文 | 🟡 64K 文本路线 | 🔴 初始化问题 | 🔴 容量不足 |
+| Marlin 权重路线 | 🟢 GPTQ / QAT | 🟡 GPTQ / QAT | 🟡 GPTQ / QAT |
+| MTP 解码 | 🟡 QAT assistant MTP3 | ⚪ 无预设 | ⚪ 无预设 |
+| 实测上下文 | 🟡 约 170K KV 空间 | 🔴 初始化问题 | 🔴 容量不足 |
 | No-eager / CUDAGraph | 🟢 支持 | 🟡 fallback 问题 | 🟡 admission 受限 |
-| 快速 prefill 路线 | 🟢 FlashInfer / FA2 | 🟡 依赖后端路线 | 🟡 依赖后端路线 |
+| 快速 prefill 路线 | 🟢 FlashInfer / FA2 | 🟡 FlashInfer | 🟡 FlashInfer |
 | 图像多模态 | ⚪ 无已验证预设 | ⚪ 无已验证预设 | ⚪ 无已验证预设 |
 | 当前预设状态 | 🟡 仅实验 | ⚪ 无预设 | ⚪ 无预设 |
 
@@ -108,11 +103,12 @@ FP16/default KV 的 GPTQ + assistant 路线已经有 MTP 与快速 prefill 测�
 | 模型路线 | 权重路线 | 模型卡 | 状态 |
 |---|---|---|---|
 | Qwen3.6 27B FP8 | FP8 | [Qwen/Qwen3.6-27B-FP8](https://huggingface.co/Qwen/Qwen3.6-27B-FP8)<br>[Jackrong/Qwopus3.6-27B-v2-FP8](https://huggingface.co/Jackrong/Qwopus3.6-27B-v2-FP8) | 🟢 推荐 |
-| Qwen3.6 27B AWQ | AWQ-INT4 | [mconcat/Qwopus3.6-27B-v2-AWQ-4bit](https://huggingface.co/mconcat/Qwopus3.6-27B-v2-AWQ-4bit)<br>[QuantTrio/Qwen3.6-27B-AWQ](https://huggingface.co/QuantTrio/Qwen3.6-27B-AWQ) | 🟢 推荐 |
+| Qwen3.6 27B AWQ | AWQ-INT4 | [QuantTrio/Qwen3.6-27B-AWQ](https://huggingface.co/QuantTrio/Qwen3.6-27B-AWQ)<br>[mconcat/Qwopus3.6-27B-v2-AWQ-4bit](https://huggingface.co/mconcat/Qwopus3.6-27B-v2-AWQ-4bit) | 🟢 推荐 |
 | Qwen3.6 27B GPTQ | GPTQ-INT4 | [llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4) | 🟢 推荐 |
 | Qwen3.6 27B NVFP4 | NVFP4 | [unsloth/Qwen3.6-27B-NVFP4](https://huggingface.co/unsloth/Qwen3.6-27B-NVFP4) | 🟡 支持 |
 | Qwen3.6 27B Quark INT8 | Quark-INT8 | [nameistoken/Qwen3.6-27B-Quark-W8A8-INT8](https://huggingface.co/nameistoken/Qwen3.6-27B-Quark-W8A8-INT8) | 🟡 支持 |
 | Qwen3.6 27B AutoRound | AutoGPTQ-INT8 | [Minachist/Qwen3.6-27B-INT8-AutoRound](https://huggingface.co/Minachist/Qwen3.6-27B-INT8-AutoRound)<br>[Minachist/Qwen3.6-27B-INT8-AutoRound W8A16-GS128](https://huggingface.co/Minachist/Qwen3.6-27B-INT8-AutoRound/tree/W8A16-GS128) | 🟡 支持 |
+| Gemma4 31B QAT | QAT + QAT assistant draft | [google/gemma-4-31B-it-qat-w4a16-ct](https://huggingface.co/google/gemma-4-31B-it-qat-w4a16-ct)<br>[google/gemma-4-31B-it-qat-q4_0-unquantized-assistant](https://huggingface.co/google/gemma-4-31B-it-qat-q4_0-unquantized-assistant) | 🟡 支持 |
 | Gemma4 31B GPTQ | GPTQ-INT4 + assistant draft | [ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ](https://huggingface.co/ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ) | 🟡 支持 |
 
 ## 🛠️ 目标硬件与运行环境
@@ -120,7 +116,7 @@ FP16/default KV 的 GPTQ + assistant 路线已经有 MTP 与快速 prefill 测�
 - 已验证 GPU profile：双 RTX 2080 Ti 22GB，SM75，NVLink，tensor parallel
   size 2
 - CUDA/PyTorch：CUDA 12.8，`torch 2.11.0+cu128`
-- Fork 发布版本：`v0.1.6`
+- Fork 发布版本：`v0.1.7`
 - 基础 vLLM：`0.21.0`
 - 仓库身份：`vllm-2080ti-definitive`
 - 运行时身份：`vllm-sm75-tp2-cu128`
@@ -130,25 +126,40 @@ FP16/default KV 的 GPTQ + assistant 路线已经有 MTP 与快速 prefill 测�
 
 ## 🚀 如何使用
 
-源码 checkout 后直接运行：
+源码 checkout 后分两步使用。
+
+1. 编译 runtime：
 
 ```bash
 ./build.sh
+```
+
+`build.sh` 会创建本地 `.venv`、安装依赖、编译 CUDA 扩展，并在结束时明确提示
+成功或失败，同时给出 build log 路径。
+
+2. 启动并管理服务：
+
+```bash
 ./launcher.sh
 ```
 
-然后在 launcher 里选择三件事：
+`launcher.sh` 是交互式服务管理器。你可以在菜单里选择 checkpoint 目录、套用或
+修改 profile、选择 `safe` / `normal` / `fast` 模式、选择 GPU/TP、设置端口、
+切换仅本地或局域网访问、配置 chat template 和工具调用、启动服务、停止服务，
+也可以保存自定义 profile。
 
-1. checkpoint 目录
-2. Profile 路径，先看 [profiles/README.zh-CN.md](profiles/README.zh-CN.md)
-3. 端口和仅本地 / 局域网访问
+支持 OpenAI-compatible 工具调用。launcher 提供自动工具选择、tool parser 选择
+和严格结构化 tool 输出等全局运行参数。
 
-启动成功后会打印 OpenAI-compatible API 地址。非交互启动示例：
+启动成功后，状态区会显示 `RUNNING`、服务模型名、PID、OpenAI-compatible API
+地址、日志文件位置，以及 vLLM 能上报时的 cache 容量。
+
+非交互启动示例：
 
 ```bash
 MODEL_DIR=/path/to/qwen-or-gemma-checkpoint \
-PROFILE=qwen27b/safe/int4/fp16kv-256K-mtp3-text-only.env \
-MODE=safe \
+PROFILE=qwen27b/normal/int4/fp16kv-256K-mtp3-text-only.env \
+MODE=normal \
 PORT=8000 \
 SERVICE_SCOPE=lan \
 CUDA_VISIBLE_DEVICES=0,1 \
@@ -162,15 +173,14 @@ Profile 只声明兼容模式，不再提供推荐启动模式。需要指定模
 
 从 [Profile 导引](profiles/README.zh-CN.md) 开始选。Profile 按
 `profiles/<model>/<mode>/<weight>/<route>.env` 组织，例如
-`qwen27b/safe/fp8/fp16kv-128K-mtp3-text-only.env` 和
-`qwen27b/fast/int4/int8kv-256K-mtp3-text-only.env`。
+`qwen27b/normal/int4/fp16kv-256K-mtp3-text-only.env` 和
+`qwen27b/fast/int4/tqk8v4-256K-mtp3-text-only.env`。
 
 可用模式：
 
-- `safe`：默认生产模式。优先保证输出稳定性；FP16/default KV 可以使用 MTP，
-  量化 KV 必须关闭 MTP。
-- `normal`：中间档，主要用于诊断和手动对比。
-- `fast`：高性能模式。量化 KV + MTP 走这个模式，但显存和质量风险更高。
+- `normal`：默认推荐模式，适合日常生产部署。
+- `fast`：高性能模式，但不推荐用于稳定生产部署。
+- `safe`：安全模式，速度较慢，但输出质量高度稳定，用于排障。
 
 后续目标 profile 和实测进度记录在
 [Profile 蓝图草案](docs/profile-blueprint.zh-CN.md)。
@@ -179,7 +189,8 @@ Profile 只声明兼容模式，不再提供推荐启动模式。需要指定模
 
 优先使用项目自带 profile，不建议一开始手动调 MTP 和 KV 参数。每条路线的
 MTP 已按当前实测选择了更适合部署的值。KV 先按目标选择：FP16/default KV
-追求质量，INT8 KV 追求质量 / 容量平衡，TQ4NC 追求最大压缩。
+追求质量，INT8 KV 用于平衡型长上下文服务，TurboQuant K8V4 用于 fast
+压缩路线。
 
 详细 benchmark 记录见
 [MTP 任务敏感性](docs/mtp-task-sensitivity.md) 和
@@ -197,8 +208,8 @@ NVLink 时，不能直接认为极窄 PCIe 带宽也足够，仍然需要确认 
 
 **Q：需要很强的 CPU 或很多内存吗？**
 
-A：不需要。已验证路线可以跑在低端桌面 CPU + 16GB RAM 这类较低规格的平台上。
-更强 CPU/更大内存主要帮助 compile cache、下载和本地 build，不是
+A：不需要。已验证路线可以跑在 Intel Core i3-9100T + 16GB RAM 这类较低规格
+的平台上。更强 CPU/更大内存主要帮助 compile cache、下载和本地 build，不是
 steady-state token generation 的核心瓶颈。
 
 **Q：哪些 Turing 显卡值得尝试？可以 11GB + 22GB 混搭吗？**
@@ -211,10 +222,10 @@ Turing 卡可以跑小模型，但不是这个 stack 的主要目标。
 
 **Q：已验证的 CUDA、PyTorch 和驱动版本是什么？**
 
-A：已验证 runtime 是 CUDA 12.8 + `torch 2.11.0+cu128`。请使用支持目标 GPU、
-并且兼容该 CUDA runtime 的较新 NVIDIA driver。不要随意混用 build/runtime
-假设：PyTorch CUDA 版本、本地 CUDA toolkit、FlashInfer/FlashQLA 构建和启动
-profile 应保持一致。
+A：已验证 runtime 是 CUDA 12.8 + `torch 2.11.0+cu128`，参考验证主机使用
+NVIDIA driver `590.48.01`。请使用支持目标 GPU、并且兼容该 CUDA runtime 的
+较新 NVIDIA driver。不要随意混用 build/runtime 假设：PyTorch CUDA 版本、
+本地 CUDA toolkit、FlashInfer/FlashQLA 构建和启动 profile 应保持一致。
 
 **Q：还有哪些硬件风险需要注意？**
 

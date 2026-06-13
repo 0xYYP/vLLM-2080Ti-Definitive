@@ -8,12 +8,11 @@ The definitive vLLM runtime for dual RTX 2080 Ti / SM75 serving.
 This is a hardware-focused fork that preserves the patched source, launch
 profiles, and runtime notes needed to reproduce the working 2080 Ti vLLM stack.
 
-Fork release: `v0.1.6`
+Fork release: `v0.1.7`
 Base vLLM: `0.21.0`
 
-Headline evidence: Qwen3.6 27B reaches `100+ tok/s` single-request decode, and
-Gemma4 31B reaches `~100 tok/s` single-request decode on the same dual 2080 Ti
-TP=2 runtime.
+Headline evidence: Qwen3.6 27B reaches `100+ tok/s` single-request decode on
+the dual 2080 Ti TP=2 runtime.
 
 Language: English | [简体中文](README.zh-CN.md)
 
@@ -63,39 +62,34 @@ failure or clear regression; ⚪ not a target preset or not yet validated.
 
 ### Qwen3.6 27B Mature Route
 
-Qwen-family 27B is the primary production route for this fork. It has the most
-complete coverage across FP8/INT4/NVFP4 Marlin-family weights, MTP, FP16/INT8 KV,
-native 256K context, YaRN capacity profiles, and image-serving compatibility.
-Fast path: Qwen uses FlashQLA-SM70-SM75 for Gated DeltaNet / linear-attention
-prefill, FlashInfer / FA2 for full-attention prefill, head_dim=256 fast-path
-controls, and MTP with CUDAGraph for decode.
+Qwen-family 27B is the primary production route for this fork. It has the
+broadest tested coverage across FP8/INT4/NVFP4 weights, MTP, FP16/INT8/
+TurboQuant KV, 256K native context, YaRN capacity, and image serving.
 
 | Feature | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
 | Marlin weight route | 🟢 FP8/INT4/NVFP4 | 🟢 FP8/INT4/NVFP4 | 🟢 FP8/INT4/NVFP4 |
-| MTP decoding | 🟢 supported | 🟡 experimental fast mode | 🟡 experimental |
-| Native 256K context | 🟢 text route | 🟢 text route | 🟡 not a preset |
-| YaRN 512K extension | ⚪ not the target route | 🟢 supported capacity route | ⚪ not a preset |
-| No-eager / CUDAGraph | 🟢 supported | 🟢 supported | 🟢 graph-safety fixed |
-| Fast prefill path | 🟢 FlashInfer / FA2 | 🟢 FlashInfer / INT8 path | 🟡 route-specific |
-| Multimodal image serving | 🟢 FP8/INT4 routes | 🟡 INT4 route only | 🔴 not promoted |
-| Current preset status | 🟢 recommended | 🟢 recommended | 🟡 experimental only |
+| MTP decoding | 🟢 supported | 🟢 supported | 🟢 supported |
+| Native 256K context | 🟢 supported | 🟢 supported | 🟢 supported |
+| YaRN extension | ⚪ not the target route | 🟢 supported | ⚪ not a target preset |
+| No-eager / CUDAGraph | 🟢 supported | 🟡 partial support | 🟢 supported |
+| Fast prefill path | 🟢 FlashInfer / FA2 | 🟢 FlashInfer | 🟢 FlashInfer |
+| Multimodal image serving | 🟢 supported | 🟢 supported | 🟢 supported |
+| Current preset status | 🟢 normal / fast / safe | 🟢 normal / safe | 🟢 fast |
 
 ### Gemma4 31B Experimental Route
 
-Gemma4 31B is kept as a secondary experimental route. Capability support and
-profile promotion are separated here: MTP and fast prefill have benchmark
-evidence on the FP16/default-KV GPTQ + assistant route, but Gemma profiles are
-not promoted as production presets yet. FP16/default KV can run 64K noMTP,
-while compressed-KV 256K routes are still blocked by upstream Gemma KV behavior.
+Gemma4 31B is kept as a secondary experimental route. The official QAT target
+with the matching QAT assistant is now the most promising Gemma path, with
+better FP16/default-KV headroom than earlier Gemma checkpoints.
 
 | Feature | FP16 KV | INT8 KV | TurboQuant KV |
 |---|---|---|---|
-| Marlin weight route | 🟢 GPTQ target | 🟢 GPTQ target | 🟢 GPTQ target |
-| MTP decoding | 🟢 tested route | ⚪ no preset | ⚪ no preset |
-| Validated context | 🟡 64K text route | 🔴 init issue | 🔴 capacity shortfall |
+| Marlin weight route | 🟢 GPTQ / QAT | 🟡 GPTQ / QAT | 🟡 GPTQ / QAT |
+| MTP decoding | 🟡 QAT assistant MTP3 | ⚪ no preset | ⚪ no preset |
+| Validated context | 🟡 about 170K KV headroom observed | 🔴 init issue | 🔴 capacity shortfall |
 | No-eager / CUDAGraph | 🟢 supported | 🟡 fallback issue | 🟡 admission limited |
-| Fast prefill path | 🟢 FlashInfer / FA2 | 🟡 backend-dependent | 🟡 backend-dependent |
+| Fast prefill path | 🟢 FlashInfer / FA2 | 🟡 FlashInfer | 🟡 FlashInfer |
 | Multimodal image serving | ⚪ no validated preset | ⚪ no validated preset | ⚪ no validated preset |
 | Current preset status | 🟡 experimental only | ⚪ no preset | ⚪ no preset |
 
@@ -108,11 +102,12 @@ recommended checkpoint also has a useful throughput/context tradeoff on dual 208
 | Model route | Weight route | Model cards | Status |
 |---|---|---|---|
 | Qwen3.6 27B FP8 | FP8 | [Qwen/Qwen3.6-27B-FP8](https://huggingface.co/Qwen/Qwen3.6-27B-FP8)<br>[Jackrong/Qwopus3.6-27B-v2-FP8](https://huggingface.co/Jackrong/Qwopus3.6-27B-v2-FP8) | 🟢 Recommended |
-| Qwen3.6 27B AWQ | AWQ-INT4 | [mconcat/Qwopus3.6-27B-v2-AWQ-4bit](https://huggingface.co/mconcat/Qwopus3.6-27B-v2-AWQ-4bit)<br>[QuantTrio/Qwen3.6-27B-AWQ](https://huggingface.co/QuantTrio/Qwen3.6-27B-AWQ) | 🟢 Recommended |
+| Qwen3.6 27B AWQ | AWQ-INT4 | [QuantTrio/Qwen3.6-27B-AWQ](https://huggingface.co/QuantTrio/Qwen3.6-27B-AWQ)<br>[mconcat/Qwopus3.6-27B-v2-AWQ-4bit](https://huggingface.co/mconcat/Qwopus3.6-27B-v2-AWQ-4bit) | 🟢 Recommended |
 | Qwen3.6 27B GPTQ | GPTQ-INT4 | [llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4) | 🟢 Recommended |
 | Qwen3.6 27B NVFP4 | NVFP4 | [unsloth/Qwen3.6-27B-NVFP4](https://huggingface.co/unsloth/Qwen3.6-27B-NVFP4) | 🟡 Supported |
 | Qwen3.6 27B Quark INT8 | Quark-INT8 | [nameistoken/Qwen3.6-27B-Quark-W8A8-INT8](https://huggingface.co/nameistoken/Qwen3.6-27B-Quark-W8A8-INT8) | 🟡 Supported |
 | Qwen3.6 27B AutoRound | AutoGPTQ-INT8 | [Minachist/Qwen3.6-27B-INT8-AutoRound](https://huggingface.co/Minachist/Qwen3.6-27B-INT8-AutoRound)<br>[Minachist/Qwen3.6-27B-INT8-AutoRound W8A16-GS128](https://huggingface.co/Minachist/Qwen3.6-27B-INT8-AutoRound/tree/W8A16-GS128) | 🟡 Supported |
+| Gemma4 31B QAT | QAT + QAT assistant draft | [google/gemma-4-31B-it-qat-w4a16-ct](https://huggingface.co/google/gemma-4-31B-it-qat-w4a16-ct)<br>[google/gemma-4-31B-it-qat-q4_0-unquantized-assistant](https://huggingface.co/google/gemma-4-31B-it-qat-q4_0-unquantized-assistant) | 🟡 Supported |
 | Gemma4 31B GPTQ | GPTQ-INT4 + assistant draft | [ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ](https://huggingface.co/ebircak/gemma-4-31B-it-4bit-W4A16-GPTQ) | 🟡 Supported |
 
 ## 🛠️ Target Hardware & Runtime
@@ -120,7 +115,7 @@ recommended checkpoint also has a useful throughput/context tradeoff on dual 208
 - Validated GPU profile: dual RTX 2080 Ti 22GB, SM75, NVLink, tensor parallel
   size 2
 - CUDA/PyTorch: CUDA 12.8, `torch 2.11.0+cu128`
-- Fork release: `v0.1.6`
+- Fork release: `v0.1.7`
 - Base vLLM: `0.21.0`
 - Repository identity: `vllm-2080ti-definitive`
 - Runtime identity: `vllm-sm75-tp2-cu128`
@@ -130,25 +125,43 @@ recommended checkpoint also has a useful throughput/context tradeoff on dual 208
 
 ## 🚀 How To Use
 
-For a source checkout:
+For a source checkout, use two steps.
+
+1. Build the runtime:
 
 ```bash
 ./build.sh
+```
+
+`build.sh` creates the local `.venv`, installs dependencies, builds the CUDA
+extensions, and prints a clear success or failure result with a build log path.
+
+2. Start and manage the service:
+
+```bash
 ./launcher.sh
 ```
 
-Then choose three things in the launcher:
+The launcher is the interactive service manager. From the menu you can choose
+the checkpoint directory, apply or edit a profile, select `safe` / `normal` /
+`fast`, choose GPU/TP devices, set the port, switch local-only or LAN access,
+configure chat templates and tool calling, start the server, stop the server,
+or save a custom profile.
 
-1. Checkpoint directory
-2. Profile path, starting from [profiles/README.md](profiles/README.md)
-3. Port and local/LAN access
+Tool calling is supported through the OpenAI-compatible serving API. The
+launcher exposes automatic tool choice, tool parser selection, and strict
+structured tool output as global runtime settings.
 
-A successful launch prints an OpenAI-compatible API URL. For scripted use:
+After a successful launch, the status panel shows `RUNNING`, the served model
+name, PID, OpenAI-compatible API URL, log file, and cache capacity when vLLM
+reports it.
+
+For scripted use:
 
 ```bash
 MODEL_DIR=/path/to/qwen-or-gemma-checkpoint \
-PROFILE=qwen27b/safe/int4/fp16kv-256K-mtp3-text-only.env \
-MODE=safe \
+PROFILE=qwen27b/normal/int4/fp16kv-256K-mtp3-text-only.env \
+MODE=normal \
 PORT=8000 \
 SERVICE_SCOPE=lan \
 CUDA_VISIBLE_DEVICES=0,1 \
@@ -163,23 +176,23 @@ mode; the launcher validates that choice against the profile.
 
 Start from [Profile Guide](profiles/README.md). Profiles are organized as
 `profiles/<model>/<mode>/<weight>/<route>.env`, for example
-`qwen27b/safe/fp8/fp16kv-128K-mtp3-text-only.env` and
-`qwen27b/fast/int4/int8kv-256K-mtp3-text-only.env`.
+`qwen27b/normal/int4/fp16kv-256K-mtp3-text-only.env` and
+`qwen27b/fast/int4/tqk8v4-256K-mtp3-text-only.env`.
 
 Available modes:
 
-- `safe`: production default. It favors output stability and allows
-  FP16/default KV with MTP; quantized KV must use noMTP.
-- `normal`: middle mode for diagnostics and manual checks.
-- `fast`: high-performance mode. Use it for quantized KV with MTP; it has
-  higher memory and quality risk.
+- `normal`: recommended default mode for regular production deployments.
+- `fast`: high-performance mode, not recommended for stable production
+  deployments.
+- `safe`: safety mode. It is slower, but prioritizes highly stable output
+  quality for troubleshooting.
 
 ## 🚀 MTP And KV Precision
 
 Use the bundled profiles instead of hand-tuning MTP and KV settings first.
 MTP is already set to the best practical value for each route. Choose KV by
-intent first: FP16/default KV for maximum output quality, INT8 KV for the best
-quality/capacity balance, and TQ4NC when compression is the priority.
+intent first: FP16/default KV for maximum output quality, INT8 KV for balanced
+long-context service, and TurboQuant K8V4 for fast compression routes.
 
 Detailed benchmark notes are kept in
 [MTP Task Sensitivity](docs/mtp-task-sensitivity.md) and
@@ -198,9 +211,9 @@ behavior and benchmark the actual topology.
 
 **Q: Does the host need a strong CPU or a lot of RAM?**
 
-A: No. The validated path has run on a low-end desktop CPU with 16GB RAM. More
-CPU/RAM mainly helps compile cache generation, downloads, and local build work,
-not steady-state token generation.
+A: No. The validated path has run on an Intel Core i3-9100T with 16GB RAM.
+More CPU/RAM mainly helps compile cache generation, downloads, and local build
+work, not steady-state token generation.
 
 **Q: Which Turing GPUs make sense? Can I mix 11GB and 22GB cards?**
 
@@ -214,11 +227,11 @@ for this stack.
 
 **Q: Which CUDA, PyTorch, and driver versions are validated?**
 
-A: The validated runtime is CUDA 12.8 + `torch 2.11.0+cu128`. Use a recent
-NVIDIA driver that supports your host GPUs and is compatible with the CUDA
-runtime. Do not mix build/runtime assumptions casually: keep the PyTorch CUDA
-lane, local CUDA toolkit, FlashInfer/FlashQLA builds, and launch profile
-aligned.
+A: The validated runtime is CUDA 12.8 + `torch 2.11.0+cu128`. The reference
+validation host used NVIDIA driver `590.48.01`. Use a recent NVIDIA driver that
+supports your host GPUs and is compatible with the CUDA runtime. Do not mix
+build/runtime assumptions casually: keep the PyTorch CUDA lane, local CUDA
+toolkit, FlashInfer/FlashQLA builds, and launch profile aligned.
 
 **Q: What other hardware risks matter?**
 

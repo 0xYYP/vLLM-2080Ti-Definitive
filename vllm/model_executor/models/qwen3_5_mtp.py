@@ -91,11 +91,14 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
         # Ref: https://github.com/NVIDIA/Model-Optimizer/pull/1124
         qwopus_bf16_mtp = os.environ.get("VLLM_QWOPUS_MTP_BF16_DRAFT") == "1"
         quant_name = quant_config.get_name() if quant_config else None
+        # Keep the FP8 draft path quantized. The BF16 fc workaround is meant
+        # for checkpoints whose MTP fc is intentionally stored outside the
+        # target quantization scheme (for example some FP4/NVFP4 variants).
         fc_quant = (
             None
             if (
-                qwopus_bf16_mtp
-                or quant_name == "modelopt_fp4"
+                quant_name == "modelopt_fp4"
+                or (qwopus_bf16_mtp and quant_name != "fp8")
             )
             else quant_config
         )

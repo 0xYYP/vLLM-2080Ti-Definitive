@@ -1440,8 +1440,9 @@ class SpecDecodeBaseProposer:
                 kwargs = dict(
                     input_ids=input_ids,
                     positions=self._get_positions(num_input_tokens),
-                    inputs_embeds=inputs_embeds,
                 )
+                if inputs_embeds is not None:
+                    kwargs["inputs_embeds"] = inputs_embeds
                 if self.pass_hidden_states_to_model:
                     kwargs["hidden_states"] = self.hidden_states[:num_input_tokens]
                 self.model(**kwargs)

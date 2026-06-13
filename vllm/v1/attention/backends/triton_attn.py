@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 import torch
+import torch.nn.functional as F
 from flashinfer import (
     BatchPrefillWithPagedKVCacheWrapper,
     BatchPrefillWithRaggedKVCacheWrapper,
@@ -57,6 +58,9 @@ _INT8KV_FI_PREFILL_BACKEND = os.getenv("VLLM_INT8KV_FLASHINFER_PREFILL_BACKEND",
 _INT8KV_FA_RAGGED_PREFILL = (
     os.getenv("VLLM_INT8KV_FA_RAGGED_PREFILL", "1") == "1"
 )
+_INT8KV_FA_FIRST_CHUNK_DEQUANT = (
+    os.getenv("VLLM_INT8KV_FA_FIRST_CHUNK_DEQUANT", "0") == "1"
+)
 _INT8KV_FA_CONTINUATION_DEQUANT = (
     os.getenv("VLLM_INT8KV_FA_CONTINUATION_DEQUANT", "0") == "1"
 )
@@ -86,7 +90,31 @@ _INT8KV_FA_PREFILL_USED = 0
 _INT8KV_FA_DIRECT_USED = 0
 _INT8KV_FA_PREFILL_SKIP_LOGGED: set[str] = set()
 _INT8KV_FA_PREFILL_DEBUG_LOGGED = 0
-
+_INT8KV_DEBUG_VERIFY = os.getenv("VLLM_INT8KV_DEBUG_VERIFY", "0") == "1"
+_INT8KV_DEBUG_VERIFY_USED = 0
+_INT8KV_DEBUG_COMPARE = os.getenv("VLLM_INT8KV_DEBUG_COMPARE", "0") == "1"
+_INT8KV_DEBUG_COMPARE_USED = 0
+_GEMMA4_SM75_SDPA_PREFILL512 = (
+    os.getenv("VLLM_GEMMA4_SM75_SDPA_PREFILL512", "0") == "1"
+)
+_GEMMA4_SM75_SDPA_PREFILL512_GQA = (
+    os.getenv("VLLM_GEMMA4_SM75_SDPA_PREFILL512_GQA", "0") == "1"
+)
+_GEMMA4_SM75_SDPA_PREFILL512_EXPAND = (
+    os.getenv("VLLM_GEMMA4_SM75_SDPA_PREFILL512_EXPAND", "0") == "1"
+)
+_GEMMA4_SM75_SDPA_PREFILL512_USED = 0
+_GEMMA4_SM75_FI_PREFILL256 = (
+    os.getenv("VLLM_GEMMA4_SM75_FI_PREFILL256", "0") == "1"
+)
+_GEMMA4_SM75_FI_PREFILL256_BACKEND = os.getenv(
+    "VLLM_GEMMA4_SM75_FI_PREFILL256_BACKEND",
+    _INT8KV_FI_PREFILL_BACKEND,
+)
+_GEMMA4_SM75_FI_PREFILL256_USED = 0
+_GEMMA4_FI_PREFILL_WRAPPERS: dict[
+    tuple[object, ...], BatchPrefillWithRaggedKVCacheWrapper
+] = {}
 
 def _int8kv_direct_paged_jit_args(head_size: int) -> list[object]:
     variant_decl = r"""
@@ -613,6 +641,133 @@ class TritonAttentionImpl(AttentionImpl):
     _k_scale_cache: torch.Tensor | None = None
     _v_scale_cache: torch.Tensor | None = None
 
+    def _debug_verify_per_token_head_cache_update(
+        self,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        slot_mapping: torch.Tensor,
+    ) -> None:
+        global _INT8KV_DEBUG_VERIFY_USED
+        if not _INT8KV_DEBUG_VERIFY or _INT8KV_DEBUG_VERIFY_USED >= 4:
+            return
+        if key.numel() == 0 or value.numel() == 0:
+            return
+        if self._k_scale_cache is None or self._v_scale_cache is None:
+            return
+
+        slots = slot_mapping.detach().cpu().tolist()
+        if not slots:
+            return
+
+        key_ref = key.detach().float().cpu()
+        value_ref = value.detach().float().cpu()
+        key_cache_cpu = key_cache.detach().cpu().float()
+        value_cache_cpu = value_cache.detach().cpu().float()
+        k_scale_cpu = self._k_scale_cache.detach().cpu()
+        v_scale_cpu = self._v_scale_cache.detach().cpu()
+
+        k_err = 0.0
+        v_err = 0.0
+        for tok_idx, slot in enumerate(slots):
+            if slot < 0:
+                continue
+            blk = slot // key_cache.shape[1]
+            slot_in_blk = slot % key_cache.shape[1]
+            k_deq = key_cache_cpu[blk, slot_in_blk, :, :self.head_size] * (
+                k_scale_cpu[blk, slot_in_blk, :].unsqueeze(-1)
+            )
+            v_deq = value_cache_cpu[blk, slot_in_blk, :, :value.shape[-1]] * (
+                v_scale_cpu[blk, slot_in_blk, :].unsqueeze(-1)
+            )
+            k_err = max(k_err, float((k_deq - key_ref[tok_idx]).abs().max()))
+            v_err = max(v_err, float((v_deq - value_ref[tok_idx]).abs().max()))
+
+        _INT8KV_DEBUG_VERIFY_USED += 1
+        logger.info(
+            "INT8KV verify count=%d key_contig=%s value_contig=%s "
+            "key_stride=%s value_stride=%s k_err=%.6f v_err=%.6f",
+            _INT8KV_DEBUG_VERIFY_USED,
+            key.is_contiguous(),
+            value.is_contiguous(),
+            tuple(key.stride()),
+            tuple(value.stride()),
+            k_err,
+            v_err,
+        )
+
+    def _debug_compare_single_token_decode(
+        self,
+        layer: torch.nn.Module,
+        query: torch.Tensor,
+        output: torch.Tensor,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        attn_metadata: TritonAttentionMetadata,
+    ) -> None:
+        global _INT8KV_DEBUG_COMPARE_USED
+        if not _INT8KV_DEBUG_COMPARE or _INT8KV_DEBUG_COMPARE_USED >= 64:
+            return
+        if output.shape[0] != 1 or int(attn_metadata.seq_lens.shape[0]) != 1:
+            return
+        if self.sliding_window != (-1, -1):
+            return
+        if self._k_scale_cache is None or self._v_scale_cache is None:
+            return
+
+        seq_len = int(attn_metadata.seq_lens[0].item())
+        block_size = int(key_cache.shape[1])
+        num_blocks = (seq_len + block_size - 1) // block_size
+        page_ids = attn_metadata.block_table[0, :num_blocks].to(dtype=torch.long)
+
+        k_pages = key_cache.index_select(0, page_ids)[..., : self.head_size]
+        v_pages = value_cache.index_select(0, page_ids)[..., : self.head_size]
+        ks_pages = self._k_scale_cache.index_select(0, page_ids)
+        vs_pages = self._v_scale_cache.index_select(0, page_ids)
+
+        k_ref = (
+            k_pages.reshape(num_blocks * block_size, self.num_kv_heads, self.head_size)[
+                :seq_len
+            ].float()
+            * ks_pages.reshape(num_blocks * block_size, self.num_kv_heads)[:seq_len]
+            .float()
+            .unsqueeze(-1)
+        )
+        v_ref = (
+            v_pages.reshape(num_blocks * block_size, self.num_kv_heads, self.head_size)[
+                :seq_len
+            ].float()
+            * vs_pages.reshape(num_blocks * block_size, self.num_kv_heads)[:seq_len]
+            .float()
+            .unsqueeze(-1)
+        )
+        q_ref = query[0].float().unsqueeze(1)
+        k_heads = k_ref.repeat_interleave(self.num_queries_per_kv, dim=1).permute(
+            1, 0, 2
+        )
+        v_heads = v_ref.repeat_interleave(self.num_queries_per_kv, dim=1).permute(
+            1, 0, 2
+        )
+        scores = (q_ref * k_heads).sum(-1) * self.scale
+        probs = torch.softmax(scores, dim=-1)
+        ref = torch.einsum("ht,thd->hd", probs, v_heads.permute(1, 0, 2)).to(
+            output.dtype
+        )
+        err = (output[0] - ref).abs()
+        _INT8KV_DEBUG_COMPARE_USED += 1
+        logger.info(
+            "INT8KV compare count=%d layer=%s seq_len=%d max_err=%.6f mean_err=%.6f "
+            "out0=%s ref0=%s",
+            _INT8KV_DEBUG_COMPARE_USED,
+            getattr(layer, "layer_name", "<unknown>"),
+            seq_len,
+            float(err.max().item()),
+            float(err.mean().item()),
+            output[0, 0, :8].detach().cpu().tolist(),
+            ref[0, :8].detach().cpu().tolist(),
+        )
+
     def _ensure_scale_caches(self, kv_cache: torch.Tensor) -> None:
         """Extract per-head scale views from the padded head dimension.
 
@@ -730,10 +885,37 @@ class TritonAttentionImpl(AttentionImpl):
         indptr: torch.Tensor,
         num_heads: int,
         head_dim: int,
+        backend: str | None = None,
     ) -> torch.Tensor:
-        if _INT8KV_FI_PREFILL_BACKEND == "cudnn":
+        if (backend or _INT8KV_FI_PREFILL_BACKEND) == "cudnn":
             return indptr * (num_heads * head_dim)
         return indptr
+
+    def _get_or_plan_gemma4_flashinfer_prefill_wrapper(
+        self,
+        device: torch.device,
+        plan_key: tuple[object, ...],
+        plan_kwargs: dict[str, object],
+    ) -> BatchPrefillWithRaggedKVCacheWrapper:
+        norm_device = _int8kv_normalize_cuda_device(device)
+        cache_key = (
+            str(norm_device),
+            _GEMMA4_SM75_FI_PREFILL256_BACKEND,
+            *plan_key,
+        )
+        wrapper = _GEMMA4_FI_PREFILL_WRAPPERS.get(cache_key)
+        if wrapper is None:
+            workspace = _get_int8kv_flashinfer_prefill_workspace(
+                norm_device, _GEMMA4_SM75_FI_PREFILL256_BACKEND
+            )
+            wrapper = BatchPrefillWithRaggedKVCacheWrapper(
+                workspace,
+                "NHD",
+                backend=_GEMMA4_SM75_FI_PREFILL256_BACKEND,
+            )
+            wrapper.plan(**plan_kwargs)
+            _GEMMA4_FI_PREFILL_WRAPPERS[cache_key] = wrapper
+        return wrapper
 
     def _get_or_plan_int8kv_flashinfer_prefill_wrapper(
         self,
@@ -787,8 +969,12 @@ class TritonAttentionImpl(AttentionImpl):
         num_actual_tokens: int,
         q_seq_lens: torch.Tensor,
         seq_len: int,
+        output_scale: torch.Tensor | None = None,
+        output_block_scale: torch.Tensor | None = None,
     ) -> bool:
         if not _INT8KV_FA_DIRECT_PAGED:
+            return False
+        if output_scale is not None or output_block_scale is not None:
             return False
         if q_seq_lens.numel() != 1 or attn_metadata.seq_lens_cpu is None:
             return False
@@ -949,11 +1135,10 @@ class TritonAttentionImpl(AttentionImpl):
         query: torch.Tensor,
         key_cache: torch.Tensor,
         value_cache: torch.Tensor,
-        output: torch.Tensor,
         attn_metadata: TritonAttentionMetadata,
         seq_len: int,
         q_len: int,
-    ) -> None:
+    ) -> torch.Tensor:
         prefix_len = seq_len - q_len
         tile_tokens = max(1, _INT8KV_FA_CASCADE_TILE_TOKENS)
         state_v = None
@@ -993,7 +1178,31 @@ class TritonAttentionImpl(AttentionImpl):
             merge_segment(tile_start, tile_end, False)
             tile_start = tile_end
         merge_segment(prefix_len, seq_len, True)
-        output.copy_(state_v)
+        return state_v
+
+    def _store_int8kv_fa_prefill_output(
+        self,
+        attn_output: torch.Tensor,
+        output: torch.Tensor,
+        output_scale: torch.Tensor | None,
+        output_block_scale: torch.Tensor | None,
+    ) -> bool:
+        if output_scale is None:
+            if output_block_scale is not None:
+                return False
+            output.copy_(attn_output)
+            return True
+        if output_block_scale is not None:
+            return False
+
+        try:
+            dtype_info = torch.finfo(output.dtype)
+        except TypeError:
+            return False
+        scaled = attn_output.mul(torch.reciprocal(output_scale))
+        scaled.clamp_(dtype_info.min, dtype_info.max)
+        output.copy_(scaled)
+        return True
 
     def _try_int8kv_fa_prefill(
         self,
@@ -1004,6 +1213,8 @@ class TritonAttentionImpl(AttentionImpl):
         output: torch.Tensor,
         attn_metadata: TritonAttentionMetadata,
         num_actual_tokens: int,
+        output_scale: torch.Tensor | None,
+        output_block_scale: torch.Tensor | None,
     ) -> bool:
         if not _INT8KV_FA_PREFILL or not self._is_per_token_head_quant:
             return False
@@ -1063,8 +1274,19 @@ class TritonAttentionImpl(AttentionImpl):
         is_first_chunk = bool((num_computed_tokens_cpu == 0).all().item())
         use_continuation_bridge = False
         use_cascade_bridge = False
+        force_first_chunk_dequant = False
         seq_len = int(attn_metadata.max_seq_len)
-        if not is_first_chunk:
+        if is_first_chunk and _INT8KV_FA_FIRST_CHUNK_DEQUANT:
+            if q_seq_lens.numel() != 1:
+                skip_reason = "first_chunk_batch_not_1"
+            elif attn_metadata.seq_lens_cpu is not None:
+                seq_len = int(attn_metadata.seq_lens_cpu[0].item())
+                use_continuation_bridge = True
+                force_first_chunk_dequant = True
+            else:
+                use_continuation_bridge = True
+                force_first_chunk_dequant = True
+        elif not is_first_chunk:
             if not _INT8KV_FA_CONTINUATION_DEQUANT:
                 skip_reason = "prefix_or_cached_kv"
             elif q_seq_lens.numel() != 1:
@@ -1104,13 +1326,15 @@ class TritonAttentionImpl(AttentionImpl):
                 num_actual_tokens,
                 q_seq_lens,
                 seq_len,
+                output_scale,
+                output_block_scale,
             ):
                 return True
 
         if use_cascade_bridge:
             self._ensure_scale_caches(kv_cache)
             key_cache, value_cache = kv_cache.unbind(1)
-            if self._try_int8kv_direct_paged_prefill(
+            if not force_first_chunk_dequant and self._try_int8kv_direct_paged_prefill(
                 q_prefill,
                 kv_cache,
                 output,
@@ -1118,17 +1342,32 @@ class TritonAttentionImpl(AttentionImpl):
                 num_actual_tokens,
                 q_seq_lens,
                 seq_len,
+                output_scale,
+                output_block_scale,
             ):
                 return True
-            self._run_int8kv_cascade_flashinfer_prefill(
+            out = self._run_int8kv_cascade_flashinfer_prefill(
                 q_prefill,
                 key_cache,
                 value_cache,
-                output[:num_actual_tokens],
                 attn_metadata,
                 seq_len,
                 int(q_seq_lens[0].item()),
             )
+            if not self._store_int8kv_fa_prefill_output(
+                out,
+                output[:num_actual_tokens],
+                output_scale,
+                output_block_scale,
+            ):
+                skip_reason = "unsupported_output_quant"
+                if skip_reason not in _INT8KV_FA_PREFILL_SKIP_LOGGED:
+                    _INT8KV_FA_PREFILL_SKIP_LOGGED.add(skip_reason)
+                    logger.info(
+                        "INT8 KV FlashInfer prefill skipped reason=%s",
+                        skip_reason,
+                    )
+                return False
             _INT8KV_FA_PREFILL_USED += 1
             if _INT8KV_FA_PREFILL_USED <= 4 or _INT8KV_FA_PREFILL_USED % 64 == 0:
                 logger.info(
@@ -1148,7 +1387,7 @@ class TritonAttentionImpl(AttentionImpl):
         kv_indptr_cpu = indptr_cpu
         max_sequence_kv = attn_metadata.max_seq_len
         if use_continuation_bridge:
-            if self._try_int8kv_direct_paged_prefill(
+            if not force_first_chunk_dequant and self._try_int8kv_direct_paged_prefill(
                 q_prefill,
                 kv_cache,
                 output,
@@ -1156,6 +1395,8 @@ class TritonAttentionImpl(AttentionImpl):
                 num_actual_tokens,
                 q_seq_lens,
                 seq_len,
+                output_scale,
+                output_block_scale,
             ):
                 return True
             kv_indptr_cpu = torch.tensor(
@@ -1246,7 +1487,17 @@ class TritonAttentionImpl(AttentionImpl):
                 logger.info("INT8 KV FlashInfer prefill skipped reason=%s", skip_reason)
             return False
         out = wrapper.run(q_prefill, k_prefill, v_prefill)
-        output[:num_actual_tokens].copy_(out)
+        if not self._store_int8kv_fa_prefill_output(
+            out,
+            output[:num_actual_tokens],
+            output_scale,
+            output_block_scale,
+        ):
+            skip_reason = "unsupported_output_quant"
+            if skip_reason not in _INT8KV_FA_PREFILL_SKIP_LOGGED:
+                _INT8KV_FA_PREFILL_SKIP_LOGGED.add(skip_reason)
+                logger.info("INT8 KV FlashInfer prefill skipped reason=%s", skip_reason)
+            return False
         _INT8KV_FA_PREFILL_USED += 1
         if _INT8KV_FA_PREFILL_USED <= 4 or _INT8KV_FA_PREFILL_USED % 64 == 0:
             logger.info(
@@ -1260,6 +1511,206 @@ class TritonAttentionImpl(AttentionImpl):
                 query.shape[1],
                 key.shape[1],
                 self.head_size,
+        )
+        return True
+
+    def _try_gemma4_sm75_sdpa_prefill512(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        output: torch.Tensor,
+        attn_metadata: TritonAttentionMetadata,
+        output_scale: torch.Tensor | None,
+        output_block_scale: torch.Tensor | None,
+        num_actual_tokens: int,
+    ) -> bool:
+        global _GEMMA4_SM75_SDPA_PREFILL512_USED
+
+        if not _GEMMA4_SM75_SDPA_PREFILL512:
+            return False
+        if (
+            output_block_scale is not None
+            or output_scale is not None
+            or attn_metadata.use_cascade
+            or self.attn_type != AttentionType.DECODER
+            or self.head_size < 512
+            or self.sliding_window[0] >= 0
+            or self.logits_soft_cap != 0
+            or self.sinks is not None
+            or self._is_per_token_head_quant
+            or is_quantized_kv_cache(self.kv_cache_dtype)
+            or attn_metadata.max_query_len <= 1
+            or attn_metadata.max_query_len != attn_metadata.max_seq_len
+            or int(attn_metadata.seq_lens.shape[0]) != 1
+            or num_actual_tokens != query.shape[0]
+            or key.shape[0] != query.shape[0]
+            or value.shape[0] != query.shape[0]
+        ):
+            return False
+
+        q = query[:num_actual_tokens].transpose(0, 1).unsqueeze(0).contiguous()
+        k = key[:num_actual_tokens].transpose(0, 1).unsqueeze(0).contiguous()
+        v = value[:num_actual_tokens].transpose(0, 1).unsqueeze(0).contiguous()
+
+        enable_gqa = False
+        if q.shape[1] != k.shape[1]:
+            if q.shape[1] % k.shape[1] != 0:
+                return False
+            enable_gqa = _GEMMA4_SM75_SDPA_PREFILL512_GQA
+            if not enable_gqa:
+                repeat = q.shape[1] // k.shape[1]
+                if _GEMMA4_SM75_SDPA_PREFILL512_EXPAND:
+                    bsz, kv_heads, seq_len, head_dim = k.shape
+                    k = (
+                        k[:, :, None]
+                        .expand(bsz, kv_heads, repeat, seq_len, head_dim)
+                        .reshape(bsz, q.shape[1], seq_len, head_dim)
+                    )
+                    v = (
+                        v[:, :, None]
+                        .expand(bsz, kv_heads, repeat, seq_len, head_dim)
+                        .reshape(bsz, q.shape[1], seq_len, head_dim)
+                    )
+                else:
+                    k = k.repeat_interleave(repeat, dim=1)
+                    v = v.repeat_interleave(repeat, dim=1)
+
+        attn_output = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=None,
+            dropout_p=0.0,
+            is_causal=True,
+            scale=self.scale,
+            enable_gqa=enable_gqa,
+        )
+        output[:num_actual_tokens].copy_(attn_output.squeeze(0).transpose(0, 1))
+
+        _GEMMA4_SM75_SDPA_PREFILL512_USED += 1
+        if _GEMMA4_SM75_SDPA_PREFILL512_USED <= 4:
+            logger.info(
+                "Gemma4 SM75 SDPA prefill512 used count=%d tokens=%d heads=%d "
+                "kv_heads=%d head_dim=%d gqa=%s",
+                _GEMMA4_SM75_SDPA_PREFILL512_USED,
+                num_actual_tokens,
+                q.shape[1],
+                key.shape[1],
+                self.head_size,
+                enable_gqa,
+        )
+        return True
+
+    def _try_gemma4_sm75_flashinfer_prefill256(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        output: torch.Tensor,
+        attn_metadata: TritonAttentionMetadata,
+        output_scale: torch.Tensor | None,
+        output_block_scale: torch.Tensor | None,
+        num_actual_tokens: int,
+    ) -> bool:
+        global _GEMMA4_SM75_FI_PREFILL256_USED
+
+        if not _GEMMA4_SM75_FI_PREFILL256:
+            return False
+        if (
+            output_block_scale is not None
+            or output_scale is not None
+            or attn_metadata.use_cascade
+            or self.attn_type != AttentionType.DECODER
+            or self.head_size != 256
+            or self.sliding_window[0] <= 0
+            or self.logits_soft_cap != 0
+            or self.sinks is not None
+            or self._is_per_token_head_quant
+            or is_quantized_kv_cache(self.kv_cache_dtype)
+            or attn_metadata.max_query_len <= 1
+            or attn_metadata.max_query_len != attn_metadata.max_seq_len
+            or int(attn_metadata.seq_lens.shape[0]) != 1
+            or attn_metadata.query_start_loc_cpu is None
+            or num_actual_tokens != query.shape[0]
+            or key.shape[0] != query.shape[0]
+            or value.shape[0] != query.shape[0]
+            or query.dtype != torch.float16
+            or key.dtype != torch.float16
+            or value.dtype != torch.float16
+        ):
+            return False
+
+        indptr_cpu = attn_metadata.query_start_loc_cpu.to(torch.int32)
+        plan_key = (
+            self.num_heads,
+            self.num_kv_heads,
+            self.head_size,
+            str(query.dtype),
+            str(key.dtype),
+            tuple(int(x) for x in indptr_cpu.tolist()),
+            attn_metadata.max_query_len,
+            attn_metadata.max_seq_len,
+            self.sliding_window[0],
+        )
+        wrapper = self._get_or_plan_gemma4_flashinfer_prefill_wrapper(
+            query.device,
+            plan_key,
+            {
+                "qo_indptr": self._flashinfer_indptr(
+                    indptr_cpu,
+                    self.num_heads,
+                    self.head_size,
+                    _GEMMA4_SM75_FI_PREFILL256_BACKEND,
+                ),
+                "kv_indptr": self._flashinfer_indptr(
+                    indptr_cpu,
+                    self.num_kv_heads,
+                    self.head_size,
+                    _GEMMA4_SM75_FI_PREFILL256_BACKEND,
+                ),
+                "num_qo_heads": self.num_heads,
+                "num_kv_heads": self.num_kv_heads,
+                "head_dim_qk": self.head_size,
+                "causal": True,
+                "window_left": self.sliding_window[0],
+                "logits_soft_cap": self.logits_soft_cap,
+                "sm_scale": self.scale,
+                "pos_encoding_mode": "NONE",
+                "q_data_type": query.dtype,
+                "kv_data_type": key.dtype,
+                "seq_lens": indptr_cpu[1:] - indptr_cpu[:-1],
+                "seq_lens_q": indptr_cpu[1:] - indptr_cpu[:-1],
+                "max_token_per_sequence": attn_metadata.max_query_len,
+                "max_sequence_kv": attn_metadata.max_seq_len,
+            },
+        )
+
+        q_prefill = query[:num_actual_tokens]
+        k_prefill = key[:num_actual_tokens]
+        v_prefill = value[:num_actual_tokens]
+        if not q_prefill.is_contiguous():
+            q_prefill = q_prefill.contiguous()
+        if not k_prefill.is_contiguous():
+            k_prefill = k_prefill.contiguous()
+        if not v_prefill.is_contiguous():
+            v_prefill = v_prefill.contiguous()
+
+        out = wrapper.run(q_prefill, k_prefill, v_prefill)
+        output[:num_actual_tokens].copy_(out)
+
+        _GEMMA4_SM75_FI_PREFILL256_USED += 1
+        if _GEMMA4_SM75_FI_PREFILL256_USED <= 4:
+            logger.info(
+                "Gemma4 SM75 FlashInfer prefill256 used count=%d backend=%s "
+                "tokens=%d heads=%d kv_heads=%d head_dim=%d window=%s",
+                _GEMMA4_SM75_FI_PREFILL256_USED,
+                _GEMMA4_SM75_FI_PREFILL256_BACKEND,
+                num_actual_tokens,
+                query.shape[1],
+                key.shape[1],
+                self.head_size,
+                self.sliding_window,
             )
         return True
 
@@ -1323,6 +1774,30 @@ class TritonAttentionImpl(AttentionImpl):
                 layer,
             )
 
+        if self._try_gemma4_sm75_sdpa_prefill512(
+            query,
+            key,
+            value,
+            output,
+            attn_metadata,
+            output_scale,
+            output_block_scale,
+            num_actual_tokens,
+        ):
+            return output
+
+        if self._try_gemma4_sm75_flashinfer_prefill256(
+            query,
+            key,
+            value,
+            output,
+            attn_metadata,
+            output_scale,
+            output_block_scale,
+            num_actual_tokens,
+        ):
+            return output
+
         if self._try_int8kv_fa_prefill(
             query,
             key,
@@ -1331,6 +1806,8 @@ class TritonAttentionImpl(AttentionImpl):
             output,
             attn_metadata,
             num_actual_tokens,
+            output_scale,
+            output_block_scale,
         ):
             return output
 
@@ -1411,6 +1888,16 @@ class TritonAttentionImpl(AttentionImpl):
             chunk_lookback=self.chunk_lookback,
         )
 
+        if self._is_per_token_head_quant and num_actual_tokens == 1:
+            self._debug_compare_single_token_decode(
+                layer,
+                query[:num_actual_tokens],
+                output[:num_actual_tokens],
+                key_cache,
+                value_cache,
+                attn_metadata,
+            )
+
         return output
 
     def _forward_encoder_attention(
@@ -1478,6 +1965,13 @@ class TritonAttentionImpl(AttentionImpl):
             if key_cache.dtype == torch.uint8:
                 key_cache = key_cache.view(self.fp8_dtype)
                 value_cache = value_cache.view(self.fp8_dtype)
+            # The per-token-head cache writer only carries explicit strides for
+            # token/head axes; keep the head_dim axis materialized as a
+            # canonical contiguous layout before quantizing new KV entries.
+            if not key.is_contiguous():
+                key = key.contiguous()
+            if not value.is_contiguous():
+                value = value.contiguous()
             triton_reshape_and_cache_flash_per_token_head_quant(
                 key,
                 value,
@@ -1485,6 +1979,13 @@ class TritonAttentionImpl(AttentionImpl):
                 value_cache,
                 self._k_scale_cache,
                 self._v_scale_cache,
+                slot_mapping,
+            )
+            self._debug_verify_per_token_head_cache_update(
+                key,
+                value,
+                key_cache,
+                value_cache,
                 slot_mapping,
             )
             return
@@ -1528,6 +2029,12 @@ class TritonAttentionImpl(AttentionImpl):
         if is_fp8_kv_cache:
             key_cache = key_cache.view(self.fp8_dtype)
             value_cache = value_cache.view(self.fp8_dtype)
+
+        if self._is_per_token_head_quant:
+            if not key.is_contiguous():
+                key = key.contiguous()
+            if not value.is_contiguous():
+                value = value.contiguous()
 
         rocm_aiter_ops.triton_rope_and_cache(
             query,

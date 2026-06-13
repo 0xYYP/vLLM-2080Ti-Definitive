@@ -2,20 +2,25 @@
 set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+PROJECT_ROOT="$ROOT"
+PROJECT_RELEASE_FILE=${PROJECT_RELEASE_FILE:-"$ROOT/PROJECT_RELEASE.env"}
+# shellcheck source=/dev/null
+source "$PROJECT_RELEASE_FILE"
 LOG_DIR=${LOG_DIR:-"$ROOT/build-logs"}
 STAMP=$(date +%Y%m%d-%H%M%S)
 LOG="$LOG_DIR/build-$STAMP.log"
 TOTAL_STEPS=8
 STEP_INDEX=0
 BUILD_STARTED_AT=$(date +%s)
-VERSION=${VERSION:-0.1.6}
+VERSION=${VERSION:-$FORK_RELEASE}
 
 banner() {
   cat <<EOF
 ============================================================
- vLLM 2080 Ti Definitive Edition v$VERSION
+ $PROJECT_NAME v$VERSION
  One-click source build
- Author: github.com/weicj
+ Runtime: $RUNTIME_IDENTITY
+ Author: $PROJECT_AUTHOR
 ============================================================
 EOF
 }
@@ -187,9 +192,9 @@ run_step() {
   "$@" 2>&1 | tee -a "$LOG"
 }
 
-banner
 mkdir -p "$LOG_DIR"
 touch "$LOG"
+banner | tee -a "$LOG"
 
 echo "Build log: $LOG"
 echo "Source: $ROOT"
@@ -252,6 +257,12 @@ export FLASHINFER_ENABLE_AOT=${FLASHINFER_ENABLE_AOT:-1}
 cat <<EOF | tee -a "$LOG"
 
 Build settings:
+  Fork release=$VERSION
+  Base vLLM=$BASE_VLLM_VERSION
+  Runtime identity=$RUNTIME_IDENTITY
+  Validated CUDA=$VALIDATED_CUDA_VERSION
+  Validated torch=$VALIDATED_TORCH_VERSION
+  Reference NVIDIA driver=$VALIDATED_NVIDIA_DRIVER_VERSION
   CUDA_HOME=$CUDA_HOME
   TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST
   CPU_THREADS=$CPU_THREADS

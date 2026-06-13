@@ -2299,6 +2299,8 @@ class GPUModelRunner(
                     ],
                 )
 
+            dynamic_attn_metadata = bool(extra_attn_metadata_args)
+
             if for_cudagraph_capture:
                 attn_metadata_i = builder.build_for_cudagraph_capture(
                     common_attn_metadata
@@ -2306,6 +2308,7 @@ class GPUModelRunner(
             elif (
                 cache_key in cached_attn_metadata
                 and builder.supports_update_block_table
+                and not dynamic_attn_metadata
             ):
                 attn_metadata_i = builder.update_block_table(
                     cached_attn_metadata[cache_key],
@@ -2318,7 +2321,7 @@ class GPUModelRunner(
                     common_attn_metadata=common_attn_metadata,
                     **extra_attn_metadata_args,
                 )
-                if builder.supports_update_block_table:
+                if builder.supports_update_block_table and not dynamic_attn_metadata:
                     cached_attn_metadata[cache_key] = attn_metadata_i
 
             if ubid is None:
@@ -5627,6 +5630,10 @@ class GPUModelRunner(
                     batch_descriptor=batch_desc,
                     ubatch_slices=ubatch_slices_padded,
                     slot_mapping=slot_mappings,
+                    additional_kwargs={
+                        "dummy_run": True,
+                        "is_profile": is_profile,
+                    },
                 ),
             ):
                 outputs = self.model(

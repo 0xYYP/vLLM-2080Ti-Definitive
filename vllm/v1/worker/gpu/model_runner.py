@@ -1145,6 +1145,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 num_tokens_across_dp=num_tokens_across_dp,
                 batch_descriptor=batch_descriptor,
                 slot_mapping=slot_mappings_by_layer,
+                additional_kwargs={
+                    "dummy_run": dummy_run,
+                    "is_profile": is_profile,
+                    "skip_attn_for_dummy_run": skip_attn_for_dummy_run,
+                },
                 skip_compiled=skip_compiled,
             ):
                 self.kv_connector.pre_forward(scheduler_output)

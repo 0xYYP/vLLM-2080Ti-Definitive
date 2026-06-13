@@ -9,9 +9,7 @@ from xml.parsers.expat import ParserCreate
 import regex as re
 
 from vllm.entrypoints.chat_utils import make_tool_call_id
-from vllm.entrypoints.openai.chat_completion.protocol import (
-    ChatCompletionRequest,
-)
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 from vllm.entrypoints.openai.engine.protocol import (
     DeltaFunctionCall,
     DeltaMessage,
@@ -25,6 +23,10 @@ from vllm.tokenizers import TokenizerLike
 from vllm.tool_parsers.abstract_tool_parser import (
     Tool,
     ToolParser,
+)
+from vllm.tool_parsers.structural_tag_registry import (
+    get_enable_structured_outputs_in_reasoning,
+    get_model_structural_tag,
 )
 from vllm.tool_parsers.utils import find_tool_properties
 
@@ -1146,6 +1148,8 @@ class StreamingXMLToolCallParser:
 
 
 class Qwen3XMLToolParser(ToolParser):
+    supports_required_and_named: bool = False
+
     def __init__(self, tokenizer: TokenizerLike, tools: list[Tool] | None = None):
         super().__init__(tokenizer, tools)
         self.parser = StreamingXMLToolCallParser()
@@ -1156,6 +1160,14 @@ class Qwen3XMLToolParser(ToolParser):
 
         logger.info(
             "vLLM Successfully import tool parser %s !", self.__class__.__name__
+        )
+
+    def get_structural_tag(self, request: ChatCompletionRequest):
+        return get_model_structural_tag(
+            model="qwen_3_5",
+            tools=request.tools,
+            tool_choice=request.tool_choice,
+            reasoning=get_enable_structured_outputs_in_reasoning(),
         )
 
     def extract_tool_calls(

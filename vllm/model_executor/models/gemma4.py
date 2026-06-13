@@ -1628,10 +1628,29 @@ class Gemma4ForCausalLM(
                         k_eq_v_layer_indices.add(idx)
 
             for name, weight in weights:
-                # Remap "language_model." → "" to match our model tree.
-                # Checkpoint: model.language_model.layers.X.*
-                # Our model:  model.layers.X.*
-                name = name.replace("language_model.", "")
+                # Gemma4ForCausalLM may be loaded directly from a unified
+                # checkpoint, or as the language_model child after the
+                # multimodal wrapper has already mapped names to model.*.
+                if name.startswith("model.language_model."):
+                    name = name.replace("model.language_model.", "model.", 1)
+                elif name.startswith("language_model."):
+                    name = name.replace("language_model.", "", 1)
+                elif name.startswith("model.lm_head."):
+                    name = name.replace("model.lm_head.", "lm_head.", 1)
+                elif name.startswith(("model.", "lm_head.")):
+                    pass
+                else:
+                    continue
+
+                if name.startswith(
+                    (
+                        "model.audio_tower.",
+                        "model.vision_tower.",
+                        "model.embed_audio.",
+                        "model.embed_vision.",
+                    )
+                ):
+                    continue
 
                 # Remap new HF checkpoint naming to internal vLLM
                 # naming: HF moved per_expert_scale to router and

@@ -9,13 +9,13 @@ checkpoint is selected separately with `MODEL_DIR`.
 
 ## Evidence Rule
 
-Full pass means a real large-prompt request returns HTTP 200, finishes the
-stream, and generates at least one completion token.
+Full pass means a real request returns HTTP 200, finishes the stream, and the
+Chinese quality smoke has no repetition collapse, broken output, garbling, or
+clear wrong-response behavior.
 
-Platform pass means a real large-prompt request enters prefill, GPU memory
-reaches a stable plateau, the backend continues processing high-context chunks,
-and no OOM or empty-stream failure appears before the test is intentionally
-stopped.
+A memory plateau only proves lower capacity risk. If quality smoke fails, the
+route is not promoted as a profile even when capacity or synthetic throughput
+looks usable.
 
 Load-only, READY-only, health-only, small-window smoke, and empty-stream results
 are not capacity evidence.
@@ -23,28 +23,26 @@ are not capacity evidence.
 ## KV Positioning
 
 - FP16/default KV is the quality route.
-- INT8 KV is the balanced quality/capacity route.
-- TQ4NC is the compression route.
-- TQK8V4 is not a formal route because current evidence does not show a
-  practical advantage over INT8 KV.
+- INT8 KV is the capacity / balance route; currently shipped only as
+  `normal` / piecewise profiles.
+- TQK8V4 is the TurboQuant compression route; currently shipped only for
+  quality-passed `fast` profiles.
+- TQ4NC had capacity experiments, but is not used in the current shipped
+  profiles.
 
 ## Notes
 
 - Profiles are organized as `profiles/<model>/<mode>/<weight>/<route>.env`.
-- The mode directory is part of the shipped preset because safe and fast
-  profiles have different graph behavior and VRAM pressure. Safe mode allows
-  FP16/default KV with MTP; quantized KV in safe mode must use noMTP. Normal is
-  available as a middle diagnostic mode for compatible profiles.
-- Gemma remains a second-line route. FP16/default-KV MTP and fast-prefill routes
-  have benchmark evidence, but no Gemma preset is promoted as a production route
-  yet. The currently validated noMTP FP16 route can run 64K but is
-  slow/repetitive; INT8 KV and TurboQuant 256K routes are not promoted.
-- `two256K` was tested but rejected: it admitted two requests, then OOMed during
-  INT8-KV prefill workspace allocation and returned empty streams. The promoted
-  two-workspace route is `two250K`.
-- TurboQuant YaRN was validated at 400K, while 448K and 440K both failed
-  admission near an estimated 449,280-token edge. It is not a preset profile
-  because INT8 KV YaRN reaches 512K with better capacity and quality.
+- `normal` is the current recommended production route. `fast` keeps only
+  high-performance routes that passed quality smoke. `safe` is the launcher
+  eager fallback mode, not the current shipped profile directory.
+- FP8 + FP16KV ships at 128K for `normal`. The current `fast` route is 112K:
+  120K fails admission, while 128K passes short smoke but fails PP4096/TG128
+  stability.
+- FP8 + TQK8V4 is validated at 256K for text-only and 240K for text-image.
+  The image route uses GPU util 0.96.
+- fast + INT8KV is not kept: capacity or synthetic throughput may pass, but
+  Chinese quality smoke showed repeated or broken output.
 - Throughput background is kept in
   [Qwen3.6 KV Throughput Sweep](qwen36-kv-throughput-sweep.md) and
   [MTP Task Sensitivity](mtp-task-sensitivity.md).
