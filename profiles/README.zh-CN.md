@@ -29,6 +29,7 @@ profiles/
 - `safe`：保守回退模式，优先保证可用性。
 - `normal`：推荐日常模式，适合稳定部署。
 - `fast`：高性能模式，适合追求更高吞吐的场景。
+- `aggressive`：更加激进的模式，性能与质量风险最高。
 
 `profiles/templates/` 存放可选 chat template 预设。它们通过 launcher 作为全局
 服务设置选择；具体 route profile 不保存 chat template、GPU、端口、reasoning

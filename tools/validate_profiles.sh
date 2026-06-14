@@ -38,6 +38,25 @@ VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH)
   esac
 }
 
+profile_key_is_allowed() {
+  case "$1" in
+    SERVED_NAME|COMPATIBLE_MODES|MODEL_FAMILY|PROFILE_GROUP|MODEL_VARIANT|\
+QUANTIZATION|KV_CACHE_DTYPE|MAX_MODEL_LEN|GPU_UTIL|MAX_BATCHED_TOKENS|\
+MAX_NUM_SEQS|MTP_K|MESSAGE_TYPE|MM_LIMIT_JSON|LANGUAGE_MODEL_ONLY|\
+SKIP_MM_PROFILING|HF_OVERRIDES_JSON|ADDITIONAL_CONFIG_JSON|\
+SPECULATIVE_CONFIG|ATTENTION_BACKEND|DISABLE_HYBRID_KV_CACHE_MANAGER|\
+DISABLE_PREFIX_CACHING|DISABLE_CUSTOM_ALL_REDUCE|\
+VLLM_ALLOW_LONG_MAX_MODEL_LEN|VLLM_INT8KV_FA_PREFILL|\
+VLLM_INT8KV_FA_CONTINUATION_DEQUANT|VLLM_INT8KV_FA_CASCADE_DEQUANT|\
+VLLM_INT8KV_FA_CASCADE_TILE_TOKENS)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 total=0
 errors=0
 
@@ -59,6 +78,9 @@ while IFS= read -r -d '' file; do
     [[ -n "$key" ]] || continue
     if profile_key_is_global "$key"; then
       echo "ERROR $rel: $key is a global launcher setting and must not be stored in a route profile" >&2
+      ((errors += 1))
+    elif ! profile_key_is_allowed "$key"; then
+      echo "ERROR $rel: $key is not an allowed route profile setting" >&2
       ((errors += 1))
     fi
   done < <(sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$file" | sort -u)

@@ -83,14 +83,15 @@ def get_flash_attn_version(
         # ROCm doesn't use vllm_flash_attn; return None to skip fa_version arg
         return None
     try:
+        device_capability = current_platform.get_device_capability()
+        assert device_capability is not None
+        if current_platform.is_cuda() and device_capability.major < 8:
+            return None
+
         from vllm.vllm_flash_attn.flash_attn_interface import (
             fa_version_unsupported_reason,
             is_fa_version_supported,
         )
-
-        device_capability = current_platform.get_device_capability()
-
-        assert device_capability is not None
 
         # 1. default version depending on platform
         if device_capability.major == 9 and is_fa_version_supported(3):

@@ -129,6 +129,13 @@ def _get_backend_priorities(
                 AttentionBackendEnum.FLASHMLA_SPARSE,
             ]
     else:
+        if device_capability.major < 8:
+            return [
+                AttentionBackendEnum.FLASHINFER,
+                AttentionBackendEnum.TRITON_ATTN,
+                AttentionBackendEnum.FLEX_ATTENTION,
+                AttentionBackendEnum.TURBOQUANT,
+            ]
         if device_capability.major == 10:
             return [
                 AttentionBackendEnum.FLASHINFER,
@@ -388,7 +395,6 @@ class CudaPlatformBase(Platform):
             ]
         else:
             return [
-                AttentionBackendEnum.FLASH_ATTN,
                 AttentionBackendEnum.TORCH_SDPA,
                 AttentionBackendEnum.TRITON_ATTN,
                 AttentionBackendEnum.FLASHINFER,

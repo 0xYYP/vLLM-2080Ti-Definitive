@@ -8,7 +8,7 @@ The definitive vLLM runtime for dual RTX 2080 Ti / SM75 serving.
 This is a hardware-focused fork that preserves the patched source, launch
 profiles, and runtime notes needed to reproduce the working 2080 Ti vLLM stack.
 
-Fork release: `v0.1.7`
+Fork release: `v0.1.8`
 Base vLLM: `0.21.0`
 
 Headline evidence: Qwen3.6 27B reaches `100+ tok/s` single-request decode on
@@ -115,7 +115,7 @@ recommended checkpoint also has a useful throughput/context tradeoff on dual 208
 - Validated GPU profile: dual RTX 2080 Ti 22GB, SM75, NVLink, tensor parallel
   size 2
 - CUDA/PyTorch: CUDA 12.8, `torch 2.11.0+cu128`
-- Fork release: `v0.1.7`
+- Fork release: `v0.1.8`
 - Base vLLM: `0.21.0`
 - Repository identity: `vllm-2080ti-definitive`
 - Runtime identity: `vllm-sm75-tp2-cu128`
@@ -184,6 +184,7 @@ Available modes:
 - `normal`: recommended default mode for regular production deployments.
 - `fast`: high-performance mode, not recommended for stable production
   deployments.
+- `aggressive`: more aggressive mode with the highest performance and quality risk.
 - `safe`: safety mode. It is slower, but prioritizes highly stable output
   quality for troubleshooting.
 
@@ -211,9 +212,13 @@ behavior and benchmark the actual topology.
 
 **Q: Does the host need a strong CPU or a lot of RAM?**
 
-A: No. The validated path has run on an Intel Core i3-9100T with 16GB RAM.
-More CPU/RAM mainly helps compile cache generation, downloads, and local build
-work, not steady-state token generation.
+A: It does not need a high-end CPU, but it does prefer a modern CPU with strong
+single-core performance and low platform latency. The validated path has run on
+an Intel Core i3-9100T with 16GB RAM; in contrast, a much older dual Xeon X5675
+host measured about 56 tok/s decode versus about 91 tok/s on the i3-9100T under
+the same 4096/128 GPTQ-INT4 MTP3 route. More RAM mainly helps builds, downloads,
+and compile cache. Because vLLM has a Python/service control plane, very old CPUs
+may be better matched to minimal C++ runtimes such as llama.cpp.
 
 **Q: Which Turing GPUs make sense? Can I mix 11GB and 22GB cards?**
 

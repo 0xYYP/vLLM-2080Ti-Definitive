@@ -201,17 +201,24 @@ def flashqla_legacy_chunk_gated_delta_rule(
         q = l2norm_fwd(q)
         k = l2norm_fwd(k)
 
+    output_dtype = v.dtype
+    state_dtype = initial_state.dtype
     scale = q.shape[-1] ** -0.5
     output, final_state = chunk_gated_delta_rule_fwd_legacy(
-        q.contiguous(),
-        k.contiguous(),
-        v.contiguous(),
-        g.contiguous(),
-        beta.contiguous(),
+        q.to(torch.float32).contiguous(),
+        k.to(torch.float32).contiguous(),
+        v.to(torch.float32).contiguous(),
+        g.to(torch.float32).contiguous(),
+        beta.to(torch.float32).contiguous(),
         scale,
-        initial_state.contiguous(),
+        initial_state.to(torch.float32).contiguous(),
     )
-    return output, final_state if output_final_state else None
+    output = output.to(output_dtype)
+    if output_final_state:
+        final_state = final_state.to(state_dtype)
+    else:
+        final_state = None
+    return output, final_state
 
 
 @CustomOp.register("chunk_gated_delta_rule")
@@ -1639,17 +1646,33 @@ class GatedDeltaNetAttention(PluggableLayer, MambaBase):
         mixed_qkv = mixed_qkv[:num_actual_tokens]
         b = b[:num_actual_tokens]
         a = a[:num_actual_tokens]
-        mixed_qkv_in = mixed_qkv.clone()
 
         conv_weights = self.conv1d.weight.view(
             self.conv1d.weight.size(0), self.conv1d.weight.size(2)
         )
-        debug_state_indices = non_spec_state_indices_tensor[:num_actual_tokens].to(
-            dtype=torch.long
+        debug_enabled = (
+            _GDN_DEBUG_USE_TORCH_CONV or _GDN_DEBUG_SPLIT or _GDN_DEBUG_COMPARE
         )
-        conv_state_before = conv_state.index_select(0, debug_state_indices).clone()
-        ssm_state_before = ssm_state.index_select(0, debug_state_indices).clone()
+        debug_state_indices = None
+        conv_state_before = None
+        ssm_state_before = None
+        mixed_qkv_in = None
+        if debug_enabled:
+            debug_state_indices = non_spec_state_indices_tensor[
+                :num_actual_tokens
+            ].to(dtype=torch.long)
+            conv_state_before = conv_state.index_select(
+                0, debug_state_indices
+            ).clone()
+            ssm_state_before = ssm_state.index_select(
+                0, debug_state_indices
+            ).clone()
+            if _GDN_DEBUG_SPLIT:
+                mixed_qkv_in = mixed_qkv.clone()
+
         if _GDN_DEBUG_USE_TORCH_CONV:
+            assert conv_state_before is not None
+            assert debug_state_indices is not None
             conv_state_local = conv_state_before.clone()
             mixed_qkv_non_spec = _torch_single_token_causal_conv_update(
                 mixed_qkv,
@@ -1682,28 +1705,36 @@ class GatedDeltaNetAttention(PluggableLayer, MambaBase):
             ssm_state_indices=non_spec_state_indices_tensor[:num_actual_tokens],  # type: ignore[index]
             use_qk_l2norm_in_kernel=True,
         )
-        self._debug_split_packed_decode(
-            mixed_qkv_in=mixed_qkv_in,
-            mixed_qkv_after_conv=mixed_qkv_non_spec,
-            conv_state_before=conv_state_before,
-            conv_weights=conv_weights,
-            a=a,
-            b=b,
-            core_attn_out=out_buf.squeeze(1),
-            ssm_state_before=ssm_state_before,
-            ssm_state_after=ssm_state.index_select(0, debug_state_indices),
-        )
-        q_ref, k_ref, v_ref = self.rearrange_mixed_qkv(mixed_qkv_non_spec)
-        self._debug_compare_packed_decode(
-            query_non_spec=q_ref,
-            key_non_spec=k_ref,
-            value_non_spec=v_ref,
-            a=a,
-            b=b,
-            core_attn_out=out_buf.squeeze(1),
-            ssm_state_before=ssm_state_before,
-            ssm_state_after=ssm_state.index_select(0, debug_state_indices),
-        )
+        if (
+            (_GDN_DEBUG_SPLIT or _GDN_DEBUG_COMPARE)
+            and debug_state_indices is not None
+            and ssm_state_before is not None
+        ):
+            ssm_state_after = ssm_state.index_select(0, debug_state_indices)
+            if _GDN_DEBUG_SPLIT and conv_state_before is not None:
+                self._debug_split_packed_decode(
+                    mixed_qkv_in=mixed_qkv if mixed_qkv_in is None else mixed_qkv_in,
+                    mixed_qkv_after_conv=mixed_qkv_non_spec,
+                    conv_state_before=conv_state_before,
+                    conv_weights=conv_weights,
+                    a=a,
+                    b=b,
+                    core_attn_out=out_buf.squeeze(1),
+                    ssm_state_before=ssm_state_before,
+                    ssm_state_after=ssm_state_after,
+                )
+            if _GDN_DEBUG_COMPARE:
+                q_ref, k_ref, v_ref = self.rearrange_mixed_qkv(mixed_qkv_non_spec)
+                self._debug_compare_packed_decode(
+                    query_non_spec=q_ref,
+                    key_non_spec=k_ref,
+                    value_non_spec=v_ref,
+                    a=a,
+                    b=b,
+                    core_attn_out=out_buf.squeeze(1),
+                    ssm_state_before=ssm_state_before,
+                    ssm_state_after=ssm_state_after,
+                )
         return
 
     def _debug_compare_packed_decode(

@@ -18,6 +18,8 @@ build-logs/
 run-logs/
 results/
 logs/
+triton-cache/
+torchinductor-cache/
 *.log
 *.csv
 *.jsonl

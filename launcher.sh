@@ -364,7 +364,7 @@ save_manager_state() {
     printf 'DISABLE_CUSTOM_ALL_REDUCE=%q\n' "${DISABLE_CUSTOM_ALL_REDUCE:-}"
     printf 'DISABLE_LOG_STATS=%q\n' "${DISABLE_LOG_STATS:-}"
     printf 'VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=%q\n' "${VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH:-}"
-    printf 'MODE=%q\n' "${MODE:-safe}"
+    printf 'MODE=%q\n' "${MODE:-normal}"
     printf 'PORT=%q\n' "${PORT:-8000}"
     printf 'SERVICE_SCOPE=%q\n' "${SERVICE_SCOPE:-local}"
     printf 'LAST_PID_FILE=%q\n' "${LAST_PID_FILE:-}"
@@ -417,8 +417,7 @@ first_compatible_mode() {
     case "$candidate" in
       stable) echo safe; return 0 ;;
       speed) echo normal; return 0 ;;
-      aggressive) echo fast; return 0 ;;
-      safe|normal|fast) echo "$candidate"; return 0 ;;
+      safe|normal|fast|aggressive) echo "$candidate"; return 0 ;;
     esac
   done
   echo safe
@@ -428,12 +427,17 @@ mode_is_compatible() {
   local mode=$1
   local compatible_modes=${2:-safe,normal,fast}
   local candidate
+
+  # aggressive intentionally has no shipped profile directory. It can run
+  # fast-compatible routes only when the user explicitly selects the mode.
+  if [[ "$mode" == "aggressive" ]]; then
+    mode=fast
+  fi
   for candidate in ${compatible_modes//,/ }; do
     candidate=${candidate//[[:space:]]/}
     case "$candidate" in
       stable) candidate=safe ;;
       speed) candidate=normal ;;
-      aggressive) candidate=fast ;;
     esac
     [[ "$candidate" == "$mode" ]] && return 0
   done
@@ -456,9 +460,14 @@ profile_family_dir() {
 
 profile_compatible_modes_for_current() {
   normalize_mode
-  local mode=${MODE:-safe}
+  local mode=${MODE:-normal}
   local kv=${KV_CACHE_DTYPE:-}
   local mtp=${MTP_K:-0}
+
+  if [[ "$mode" == "aggressive" ]]; then
+    echo fast
+    return 0
+  fi
 
   if [[ "$mode" == "safe" ]]; then
     case "$kv" in
@@ -1058,7 +1067,7 @@ Main menu:
   2. Profile: choose a profile directory, apply .env route presets, select a
      chat-template preset, and edit the filled runtime parameters.
   3. GPU / TP selection: select GPUs with Space; TP size follows GPU count.
-  4. Launch mode: safe, normal, or fast.
+  4. Launch mode: safe, normal, fast, or aggressive.
   5. Port: default 8000.
   6. Service scope: local only or local + LAN.
   7. Help.
@@ -1071,12 +1080,14 @@ Profiles are optional. They are presets only; the current menu values are the
 actual launch configuration.
 
 Notes:
-  - safe mode: eager fallback. Highest quality guardrail, with a large
-    performance cost.
-  - normal mode: non-eager + piecewise graph. Preferred production
-    middle path once the selected route has passed quality smoke.
+  - safe mode: eager fallback. Use it only for diagnosis or conservative
+    fallback, not as the formal serving performance route.
+  - normal mode: non-eager production default once the selected route has
+    passed quality smoke.
   - fast mode: non-eager + full graph. Highest throughput path,
     intended for performance exploration and quality-risk-tolerant use.
+  - aggressive mode: more aggressive mode with the highest performance and
+    quality risk.
   - Chat-template presets live under profiles/templates and are global launcher
     settings, not route-profile fields.
   - Tool-calling defaults are global launcher settings. Enable automatic tool
@@ -1298,7 +1309,7 @@ apply_profile_preset_menu() {
   apply_profile_overrides "$profile_file"
   compatible_modes=${COMPATIBLE_MODES:-$(read_profile_value "$profile_file" COMPATIBLE_MODES)}
   normalize_mode
-  if ! mode_is_compatible "${MODE:-safe}" "$compatible_modes"; then
+  if ! mode_is_compatible "${MODE:-normal}" "$compatible_modes"; then
     MODE=$(first_compatible_mode "$compatible_modes")
     echo "Launch mode switched to compatible mode: $MODE"
     echo
@@ -1868,15 +1879,12 @@ normalize_mode() {
     speed)
       MODE=normal
       ;;
-    aggressive)
-      MODE=fast
-      ;;
   esac
 }
 
 select_mode_menu() {
   normalize_mode
-  MODE=$(prompt_segmented "Launch mode" "${MODE:-safe}" safe normal fast) || return 0
+  MODE=$(prompt_segmented "Launch mode" "${MODE:-normal}" safe normal fast aggressive) || return 0
   save_manager_state
 }
 
@@ -2001,16 +2009,23 @@ clear_last_service_state() {
 
 stop_pid_file() {
   local pid_file=$1
-  local pid
+  local pid descendants
   pid=$(cat "$pid_file" 2>/dev/null || true)
   if ! pid_is_running "$pid"; then
     rm -f "$pid_file"
     return 0
   fi
 
+  descendants=$(collect_descendant_pids "$pid")
+
   stop_pid_tree "$pid" || true
   for _ in {1..20}; do
     pid_is_running "$pid" || {
+      stop_recorded_pids "$descendants" || true
+      wait_recorded_pids_stopped "$descendants" 10 || true
+      stop_recorded_pids "$descendants" force || true
+      wait_recorded_pids_stopped "$descendants" 10 || true
+      cleanup_vllm_worker_residuals || true
       rm -f "$pid_file"
       return 0
     }
@@ -2020,12 +2035,60 @@ stop_pid_file() {
   stop_pid_tree "$pid" force || true
   for _ in {1..20}; do
     pid_is_running "$pid" || {
+      stop_recorded_pids "$descendants" force || true
+      wait_recorded_pids_stopped "$descendants" 10 || true
+      cleanup_vllm_worker_residuals force || true
       rm -f "$pid_file"
       return 0
     }
     sleep 0.5
   done
 
+  return 1
+}
+
+collect_descendant_pids() {
+  local pid=${1:-}
+  local child
+
+  pid_is_running "$pid" || return 0
+  while read -r child; do
+    [[ -n "$child" ]] || continue
+    printf '%s\n' "$child"
+    collect_descendant_pids "$child"
+  done < <(pgrep -P "$pid" 2>/dev/null || true)
+}
+
+stop_recorded_pids() {
+  local pids=${1:-}
+  local mode=${2:-term}
+  local signal pid
+
+  signal=TERM
+  [[ "$mode" == "force" ]] && signal=KILL
+  while read -r pid; do
+    [[ -n "$pid" ]] || continue
+    pid_is_running "$pid" || continue
+    kill "-$signal" "$pid" 2>/dev/null || true
+  done <<<"$pids"
+}
+
+wait_recorded_pids_stopped() {
+  local pids=${1:-}
+  local attempts=${2:-20}
+  local pid any
+
+  for _ in $(seq 1 "$attempts"); do
+    any=0
+    while read -r pid; do
+      [[ -n "$pid" ]] || continue
+      pid_is_running "$pid" || continue
+      any=1
+      break
+    done <<<"$pids"
+    (( any == 0 )) && return 0
+    sleep 0.5
+  done
   return 1
 }
 
@@ -2360,13 +2423,19 @@ apply_mode() {
       export VLLM_SM75_SPEC_SYNC_MODE=safe
       export VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=1
       ;;
+    aggressive)
+      export ENFORCE_EAGER=0
+      export DISABLE_LOG_STATS=1
+      export VLLM_SM75_SPEC_SYNC_MODE=nosync
+      export VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=1
+      ;;
     safe)
       export ENFORCE_EAGER=1
       export VLLM_SM75_SPEC_SYNC_MODE=safe
       export VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=0
       ;;
     *)
-      die "MODE must be safe, normal, or fast."
+      die "MODE must be safe, normal, fast, or aggressive."
       ;;
   esac
 }
@@ -2387,10 +2456,11 @@ validate_mode_kv_policy() {
       speed)
         candidate=normal
         ;;
-      aggressive)
-        candidate=fast
-        ;;
     esac
+    if [[ "$MODE" == "aggressive" ]]; then
+      [[ "$candidate" == "fast" ]] && mode_ok=1 && break
+      continue
+    fi
     if [[ "$candidate" == "$MODE" ]]; then
       mode_ok=1
       break
@@ -2402,10 +2472,10 @@ validate_mode_kv_policy() {
     return 1
   fi
   case "$MODE" in
-    safe|normal|fast)
+    safe|normal|fast|aggressive)
       ;;
     *)
-      echo "ERROR: MODE must be safe, normal, or fast." >&2
+      echo "ERROR: MODE must be safe, normal, fast, or aggressive." >&2
       return 1
       ;;
   esac
@@ -2421,6 +2491,15 @@ set_sm75_runtime_env() {
   fi
   export CUDA_PATH="$CUDA_HOME"
   export CUDACXX="$CUDA_HOME/bin/nvcc"
+  if [[ -z "${CC:-}" && -x /usr/bin/gcc-12 ]]; then
+    export CC=/usr/bin/gcc-12
+  fi
+  if [[ -z "${CXX:-}" && -x /usr/bin/g++-12 ]]; then
+    export CXX=/usr/bin/g++-12
+  fi
+  if [[ -z "${CUDAHOSTCXX:-}" && -n "${CXX:-}" ]]; then
+    export CUDAHOSTCXX="$CXX"
+  fi
   export TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-7.5}
   export CUDA_VISIBLE_DEVICES="${GPU_DEVICES:-${CUDA_VISIBLE_DEVICES:-$(detect_default_gpu_devices)}}"
   export CUDA_DEVICE_ORDER=${CUDA_DEVICE_ORDER:-PCI_BUS_ID}
@@ -2506,7 +2585,7 @@ build_args() {
 
   if [[ -n "${MM_LIMIT_JSON:-}" ]]; then
     VLLM_ARGS+=(--limit-mm-per-prompt "$MM_LIMIT_JSON")
-  elif [[ "$MODEL_FAMILY" == qwen* ]]; then
+  elif [[ "$MODEL_FAMILY" == qwen* && -z "${ADDITIONAL_CONFIG_JSON:-}" ]]; then
     VLLM_ARGS+=(--additional-config '{"gdn_prefill_backend":"flashqla_legacy"}')
   elif [[ "$MODEL_FAMILY" == gemma* ]]; then
     VLLM_ARGS+=(--limit-mm-per-prompt '{"image":0,"video":0,"audio":0}')
@@ -2533,10 +2612,17 @@ build_args() {
 
   local cudagraph_mode
   case "$MODE" in
-    safe|normal)
+    safe)
       cudagraph_mode=PIECEWISE
       ;;
-    fast)
+    normal)
+      if (( MTP_K > 0 )) || [[ -n "${SPECULATIVE_CONFIG:-}" ]]; then
+        cudagraph_mode=PIECEWISE
+      else
+        cudagraph_mode=FULL_AND_PIECEWISE
+      fi
+      ;;
+    fast|aggressive)
       cudagraph_mode=FULL_AND_PIECEWISE
       ;;
     *)
@@ -3037,7 +3123,7 @@ prepare_runtime_defaults() {
   MAX_NUM_SEQS=${MAX_NUM_SEQS:-1}
   MTP_K=${MTP_K:-0}
   PORT=${PORT:-8000}
-  MODE=${MODE:-safe}
+  MODE=${MODE:-normal}
   normalize_mode
   SERVICE_SCOPE=${SERVICE_SCOPE:-local}
   if [[ -z "${MESSAGE_TYPE:-}" && -n "${MM_LIMIT_JSON:-}" ]]; then
@@ -3195,7 +3281,7 @@ render_main_menu() {
   printf '     Reasoning:        %s\n' "$(menu_value "$(current_reasoning_label)")"
   printf '     Tool calling:     %s\n' "$(menu_value "$(current_tool_calling_label)")"
   render_main_menu_item 3 "$current" "3. GPU/TP setting:  $(menu_value "$gpu_devices") / TP $(menu_value "$tp_size")"
-  render_main_menu_item 4 "$current" "4. Launch mode:      ${MODE:-safe}"
+  render_main_menu_item 4 "$current" "4. Launch mode:      ${MODE:-normal}"
   render_main_menu_item 5 "$current" "5. Port:             ${PORT:-8000}"
   render_main_menu_item 6 "$current" "6. Service scope:    $(current_scope_label)"
   render_main_menu_item 7 "$current" "7. Help"
@@ -3268,7 +3354,7 @@ read_main_menu_choice() {
 service_manager() {
   local choice menu_idx=1 refresh_timeout rc
   load_manager_state
-  MODE=${MODE:-safe}
+  MODE=${MODE:-normal}
   PORT=${PORT:-8000}
   SERVICE_SCOPE=${SERVICE_SCOPE:-local}
 

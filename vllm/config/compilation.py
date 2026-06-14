@@ -1371,7 +1371,6 @@ class CompilationConfig:
             and kv_cache_config is not None
             and kv_cache_config.has_mamba_layers
             and envs.VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH
-            and self._has_quantized_attention_kv(kv_cache_config)
         )
         if (
             allow_mamba_spec_full_cudagraph

@@ -3,6 +3,24 @@
 This changelog tracks the fork release version for vLLM 2080 Ti Definitive
 Edition. It is separate from the upstream vLLM package version.
 
+## v0.1.8 - 2026-06-14
+
+- Improves source-build reliability for non-Miniclaw dual 2080 Ti hosts,
+  including automatic FlashQLA SM70/SM75 install and clearer runtime path logs.
+- Fixes local launch reliability around service stop, failed-start cleanup,
+  generated-kernel cache isolation, and default `normal` mode handling.
+- Adds an explicit `aggressive` launcher mode: a more aggressive mode with the
+  highest performance and quality risk.
+- Tightens SM75 backend selection so Turing hosts do not accidentally prefer
+  unsuitable FlashAttention paths over the validated FlashInfer/TurboQuant
+  routes.
+- Carries the SM75 TurboQuant compatibility fixes for workspace reservation,
+  sliding-window decode, and legacy runtime environment handling.
+- Refines Qwen GDN / linear-attention decode correctness and removes debug-only
+  overhead from the normal serving path.
+- Updates hardware notes for CPU/platform latency after local build-to-launch
+  validation showed old Xeon hosts can underperform newer low-end desktop CPUs.
+
 ## v0.1.7 - 2026-06-13
 
 - Updates the `safe`, `normal`, and `fast` launch modes. `normal` is now the

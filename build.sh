@@ -9,7 +9,9 @@ source "$PROJECT_RELEASE_FILE"
 LOG_DIR=${LOG_DIR:-"$ROOT/build-logs"}
 STAMP=$(date +%Y%m%d-%H%M%S)
 LOG="$LOG_DIR/build-$STAMP.log"
-TOTAL_STEPS=8
+FLASHQLA_REPO=${FLASHQLA_REPO:-https://github.com/weicj/FlashQLA-SM70-SM75.git}
+FLASHQLA_DIR=${FLASHQLA_DIR:-"$ROOT/.deps/FlashQLA-SM70-SM75"}
+TOTAL_STEPS=11
 STEP_INDEX=0
 BUILD_STARTED_AT=$(date +%s)
 VERSION=${VERSION:-$FORK_RELEASE}
@@ -263,6 +265,8 @@ Build settings:
   Validated CUDA=$VALIDATED_CUDA_VERSION
   Validated torch=$VALIDATED_TORCH_VERSION
   Reference NVIDIA driver=$VALIDATED_NVIDIA_DRIVER_VERSION
+  FlashQLA repo=$FLASHQLA_REPO
+  FlashQLA dir=$FLASHQLA_DIR
   CUDA_HOME=$CUDA_HOME
   TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST
   CPU_THREADS=$CPU_THREADS
@@ -292,6 +296,78 @@ if [[ -f requirements/cuda.txt ]]; then
   run_with_progress "Install CUDA runtime requirements" uv pip install --python .venv/bin/python -r requirements/cuda.txt --torch-backend=auto
 fi
 
+fetch_flashqla() {
+  mkdir -p "$(dirname -- "$FLASHQLA_DIR")"
+  if [[ -d "$FLASHQLA_DIR/.git" ]]; then
+    git -C "$FLASHQLA_DIR" fetch --depth=1 origin
+    git -C "$FLASHQLA_DIR" checkout -q FETCH_HEAD
+  else
+    git clone --depth=1 "$FLASHQLA_REPO" "$FLASHQLA_DIR"
+  fi
+}
+
+patch_flashqla_sm75_imports() {
+  python - "$FLASHQLA_DIR" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+patches = {
+    root / "flash_qla" / "__init__.py": '''# Copyright (c) 2026 The Qwen team, Alibaba Group.
+# Licensed under The MIT License [see LICENSE for details]
+
+__version__ = "0.1.0"
+
+try:
+    from flash_qla.ops.gated_delta_rule.chunk import (
+        chunk_gated_delta_rule_fwd,
+        chunk_gated_delta_rule_bwd,
+        chunk_gated_delta_rule,
+    )
+except ValueError:
+    chunk_gated_delta_rule_fwd = None
+    chunk_gated_delta_rule_bwd = None
+    chunk_gated_delta_rule = None
+
+__all__ = [
+    "chunk_gated_delta_rule_fwd",
+    "chunk_gated_delta_rule_bwd",
+    "chunk_gated_delta_rule",
+]
+''',
+    root / "flash_qla" / "ops" / "__init__.py": '''# Copyright (c) 2026 The Qwen team, Alibaba Group.
+# Licensed under The MIT License [see LICENSE for details]
+
+try:
+    from .gated_delta_rule import chunk_gated_delta_rule
+except ValueError:
+    chunk_gated_delta_rule = None
+
+__all__ = ["chunk_gated_delta_rule"]
+''',
+    root / "flash_qla" / "ops" / "gated_delta_rule" / "__init__.py": '''# Copyright (c) 2026 The Qwen team, Alibaba Group.
+# Licensed under The MIT License [see LICENSE for details]
+
+try:
+    from .chunk import chunk_gated_delta_rule
+except ValueError:
+    chunk_gated_delta_rule = None
+
+__all__ = ["chunk_gated_delta_rule"]
+''',
+}
+
+for path, content in patches.items():
+    if not path.exists():
+        raise SystemExit(f"missing FlashQLA file: {path}")
+    path.write_text(content, encoding="utf-8")
+PY
+}
+
+run_with_progress "Fetch FlashQLA SM70/SM75 backend" fetch_flashqla
+run_with_progress "Patch FlashQLA SM75 legacy imports" patch_flashqla_sm75_imports
+run_with_progress "Install FlashQLA SM70/SM75 backend" uv pip install --python .venv/bin/python --no-deps -e "$FLASHQLA_DIR" --torch-backend=auto
+
 run_with_progress "Build and install vLLM 2080 Ti Definitive runtime" \
   env \
     CUDA_HOME="$CUDA_HOME" \
@@ -316,6 +392,7 @@ if torch.cuda.is_available():
     for idx in range(torch.cuda.device_count()):
         print(f"cuda_device_{idx}={torch.cuda.get_device_name(idx)}")
 print(f"flashinfer_available={importlib.util.find_spec('flashinfer') is not None}")
+print(f"flash_qla_available={importlib.util.find_spec('flash_qla') is not None}")
 PY
 
 echo

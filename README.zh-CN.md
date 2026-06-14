@@ -8,7 +8,7 @@
 这是一个硬件定向的 vLLM fork，用来保存已经跑通的 2080 Ti vLLM
 栈：补丁源码、启动 profile、运行时说明和稳定环境记录。
 
-Fork 发布版本：`v0.1.7`
+Fork 发布版本：`v0.1.8`
 基础 vLLM：`0.21.0`
 
 核心实测：双 2080 Ti TP=2 runtime 下，Qwen3.6 27B 单请求 decode 达到
@@ -116,7 +116,7 @@ FP16/default KV 空间。
 - 已验证 GPU profile：双 RTX 2080 Ti 22GB，SM75，NVLink，tensor parallel
   size 2
 - CUDA/PyTorch：CUDA 12.8，`torch 2.11.0+cu128`
-- Fork 发布版本：`v0.1.7`
+- Fork 发布版本：`v0.1.8`
 - 基础 vLLM：`0.21.0`
 - 仓库身份：`vllm-2080ti-definitive`
 - 运行时身份：`vllm-sm75-tp2-cu128`
@@ -180,6 +180,7 @@ Profile 只声明兼容模式，不再提供推荐启动模式。需要指定模
 
 - `normal`：默认推荐模式，适合日常生产部署。
 - `fast`：高性能模式，但不推荐用于稳定生产部署。
+- `aggressive`：更加激进的模式，性能与质量风险最高。
 - `safe`：安全模式，速度较慢，但输出质量高度稳定，用于排障。
 
 后续目标 profile 和实测进度记录在
@@ -208,9 +209,11 @@ NVLink 时，不能直接认为极窄 PCIe 带宽也足够，仍然需要确认 
 
 **Q：需要很强的 CPU 或很多内存吗？**
 
-A：不需要。已验证路线可以跑在 Intel Core i3-9100T + 16GB RAM 这类较低规格
-的平台上。更强 CPU/更大内存主要帮助 compile cache、下载和本地 build，不是
-steady-state token generation 的核心瓶颈。
+A：不需要高端 CPU，但更推荐单核性能强、平台延迟低的现代 CPU。已验证路线可以
+跑在 Intel Core i3-9100T + 16GB RAM 上；同一条 4096/128 GPTQ-INT4 MTP3 路线下，
+更老的双 Xeon X5675 主机约为 56 tok/s decode，而 i3-9100T 约为 91 tok/s。
+更多内存主要帮助 build、下载和 compile cache。由于 vLLM 有 Python / 服务化控制面，
+很老的 CPU 平台可能更适合 llama.cpp 这类极简 C++ runtime。
 
 **Q：哪些 Turing 显卡值得尝试？可以 11GB + 22GB 混搭吗？**
 

@@ -30,6 +30,7 @@ Launch modes:
 - `safe`: conservative fallback mode for maximum compatibility.
 - `normal`: recommended daily mode for stable deployments.
 - `fast`: high-performance mode for higher throughput.
+- `aggressive`: more aggressive mode with the highest performance and quality risk.
 
 `profiles/templates/` contains optional chat-template presets. They are selected
 from the launcher as a global service setting; route profiles do not store chat

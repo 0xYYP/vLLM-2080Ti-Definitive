@@ -47,7 +47,6 @@ if TYPE_CHECKING:
     VLLM_TRACE_FUNCTION: int = 0
     VLLM_USE_FLASHINFER_SAMPLER: bool = True
     VLLM_SM75_SPEC_SYNC_MODE: Literal["auto", "safe", "nosync"] = "auto"
-    VLLM_QWOPUS_MTP_BF16_DRAFT: bool = False
     VLLM_INT8KV_FA_PREFILL: bool = False
     VLLM_INT8KV_FLASHINFER_PREFILL_BACKEND: str = "fa2"
     VLLM_INT8KV_FA_RAGGED_PREFILL: bool = True
@@ -765,9 +764,6 @@ environment_variables: dict[str, Callable[[], Any]] = {
         or "auto"
     ).lower(),
     # Fork-specific SM75/Qwen attention and speculative decode controls.
-    "VLLM_QWOPUS_MTP_BF16_DRAFT": lambda: bool(
-        int(os.getenv("VLLM_QWOPUS_MTP_BF16_DRAFT", "0"))
-    ),
     "VLLM_INT8KV_FA_PREFILL": lambda: bool(
         int(os.getenv("VLLM_INT8KV_FA_PREFILL", "0"))
     ),
