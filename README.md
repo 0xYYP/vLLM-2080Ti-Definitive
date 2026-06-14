@@ -43,7 +43,7 @@ serving, then use vLLM runtime work to turn those resources into real tokens.
 
 That is the first value of this fork: take old but strong Turing silicon and
 make it behave like a serious 27B/31B-class inference platform through Marlin,
-FlashQLA/FlashInfer/FA2, TurboQuant/INT8 KV, MTP, and CUDAGraph integration.
+FlashQLA/FlashInfer, TurboQuant/INT8 KV, MTP, and CUDAGraph integration.
 
 ## 🧩 Core Routes
 
@@ -73,7 +73,7 @@ TurboQuant KV, 256K native context, YaRN capacity, and image serving.
 | Native 256K context | 🟢 supported | 🟢 supported | 🟢 supported |
 | YaRN extension | ⚪ not the target route | 🟢 supported | ⚪ not a target preset |
 | No-eager / CUDAGraph | 🟢 supported | 🟡 partial support | 🟢 supported |
-| Fast prefill path | 🟢 FlashInfer / FA2 | 🟢 FlashInfer | 🟢 FlashInfer |
+| Fast prefill path | 🟢 FlashQLA / FlashInfer | 🟢 FlashQLA / FlashInfer | 🟢 FlashQLA / FlashInfer |
 | Multimodal image serving | 🟢 supported | 🟢 supported | 🟢 supported |
 | Current preset status | 🟢 normal / fast / safe | 🟢 normal / safe | 🟢 fast |
 
@@ -89,7 +89,7 @@ better FP16/default-KV headroom than earlier Gemma checkpoints.
 | MTP decoding | 🟡 QAT assistant MTP3 | ⚪ no preset | ⚪ no preset |
 | Validated context | 🟡 about 170K KV headroom observed | 🔴 init issue | 🔴 capacity shortfall |
 | No-eager / CUDAGraph | 🟢 supported | 🟡 fallback issue | 🟡 admission limited |
-| Fast prefill path | 🟢 FlashInfer / FA2 | 🟡 FlashInfer | 🟡 FlashInfer |
+| Fast prefill path | 🟢 FlashInfer | 🟡 FlashInfer | 🟡 FlashInfer |
 | Multimodal image serving | ⚪ no validated preset | ⚪ no validated preset | ⚪ no validated preset |
 | Current preset status | 🟡 experimental only | ⚪ no preset | ⚪ no preset |
 
@@ -268,6 +268,6 @@ Acceleration components used or integrated by this runtime include:
   Gated DeltaNet / Qwen3.5 linear-attention implementation.
 - [weicj/FlashQLA-SM70-SM75](https://github.com/weicj/FlashQLA-SM70-SM75):
   SM70/SM75 adaptation used by the validated Qwen3.6 prefill profile.
-- FlashAttention / FA2, TurboQuant, Marlin, CUTLASS, Triton, and related vLLM
+- TurboQuant, Marlin, CUTLASS, Triton, and related vLLM
   acceleration kernels: existing open-source acceleration work integrated and
   profiled for this hardware target.

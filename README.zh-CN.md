@@ -47,7 +47,7 @@ Fork 发布版本：`v0.1.8`
 超过 3090 Ti，再通过 vLLM 运行时优化把这些资源转化成真实 token 产出。
 
 这就是本 fork 的首要价值：把老但仍然很强的 Turing 硅片，通过 Marlin、
-FlashQLA/FlashInfer/FA2、TurboQuant/INT8 KV、MTP 和 CUDAGraph 集成，
+FlashQLA/FlashInfer、TurboQuant/INT8 KV、MTP 和 CUDAGraph 集成，
 变成一个严肃可用的 27B/31B 级别推理平台。
 
 ## 🧩 核心路线
@@ -74,7 +74,7 @@ FP16/INT8/TurboQuant KV、256K 原生上下文、YaRN 容量和图像多模态�
 | 原生 256K 上下文 | 🟢 支持 | 🟢 支持 | 🟢 支持 |
 | YaRN 扩展 | ⚪ 非目标路线 | 🟢 支持 | ⚪ 非目标预设 |
 | No-eager / CUDAGraph | 🟢 支持 | 🟡 部分支持 | 🟢 支持 |
-| 快速 prefill 路线 | 🟢 FlashInfer / FA2 | 🟢 FlashInfer | 🟢 FlashInfer |
+| 快速 prefill 路线 | 🟢 FlashQLA / FlashInfer | 🟢 FlashQLA / FlashInfer | 🟢 FlashQLA / FlashInfer |
 | 图像多模态 | 🟢 支持 | 🟢 支持 | 🟢 支持 |
 | 当前预设状态 | 🟢 normal / fast / safe | 🟢 normal / safe | 🟢 fast |
 
@@ -90,7 +90,7 @@ FP16/default KV 空间。
 | MTP 解码 | 🟡 QAT assistant MTP3 | ⚪ 无预设 | ⚪ 无预设 |
 | 实测上下文 | 🟡 约 170K KV 空间 | 🔴 初始化问题 | 🔴 容量不足 |
 | No-eager / CUDAGraph | 🟢 支持 | 🟡 fallback 问题 | 🟡 admission 受限 |
-| 快速 prefill 路线 | 🟢 FlashInfer / FA2 | 🟡 FlashInfer | 🟡 FlashInfer |
+| 快速 prefill 路线 | 🟢 FlashInfer | 🟡 FlashInfer | 🟡 FlashInfer |
 | 图像多模态 | ⚪ 无已验证预设 | ⚪ 无已验证预设 | ⚪ 无已验证预设 |
 | 当前预设状态 | 🟡 仅实验 | ⚪ 无预设 | ⚪ 无预设 |
 
@@ -257,6 +257,6 @@ fork，遵循 Apache-2.0 license。仓库保留上游项目结构，并加入面
   Gated DeltaNet / Qwen3.5 linear-attention 实现。
 - [weicj/FlashQLA-SM70-SM75](https://github.com/weicj/FlashQLA-SM70-SM75)：
   面向 SM70/SM75 的适配版本，已验证 Qwen3.6 prefill profile 会用到。
-- FlashAttention / FA2、TurboQuant、Marlin、CUTLASS、Triton 以及 vLLM
+- TurboQuant、Marlin、CUTLASS、Triton 以及 vLLM
   相关加速 kernel：这些都是已有开源加速工作，本项目将它们整合、适配并在
   目标硬件上验证。
