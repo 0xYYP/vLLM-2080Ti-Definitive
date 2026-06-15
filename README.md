@@ -8,7 +8,7 @@ The definitive vLLM runtime for dual RTX 2080 Ti / SM75 serving.
 This is a hardware-focused fork that preserves the patched source, launch
 profiles, and runtime notes needed to reproduce the working 2080 Ti vLLM stack.
 
-Fork release: `v0.1.8`
+Fork release: `v0.1.9`
 Base vLLM: `0.21.0`
 
 Headline evidence: Qwen3.6 27B reaches `100+ tok/s` single-request decode on
@@ -114,8 +114,9 @@ recommended checkpoint also has a useful throughput/context tradeoff on dual 208
 
 - Validated GPU profile: dual RTX 2080 Ti 22GB, SM75, NVLink, tensor parallel
   size 2
+- Validated host OS: Ubuntu 22.04/24.04 LTS or Debian 12, on Linux kernel 6.x
 - CUDA/PyTorch: CUDA 12.8, `torch 2.11.0+cu128`
-- Fork release: `v0.1.8`
+- Fork release: `v0.1.9`
 - Base vLLM: `0.21.0`
 - Repository identity: `vllm-2080ti-definitive`
 - Runtime identity: `vllm-sm75-tp2-cu128`
@@ -171,6 +172,17 @@ CUDA_VISIBLE_DEVICES=0,1 \
 Profiles declare compatible modes, not a recommended launch mode. Set
 `MODE=safe`, `MODE=normal`, or `MODE=fast` explicitly when you want a specific
 mode; the launcher validates that choice against the profile.
+
+3. Update an existing checkout:
+
+```bash
+./update.sh
+```
+
+`update.sh` checks the latest GitHub Release against the local fork version,
+downloads the newer release archive when available, preserves local runtime
+state such as `.venv`, `.deps`, logs, results, caches, and user profiles, then
+asks whether to run `build.sh` immediately.
 
 ## 🧭 Profiles
 

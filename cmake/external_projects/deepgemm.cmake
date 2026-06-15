@@ -1,5 +1,28 @@
 include(FetchContent)
 
+# DeepGEMM only has CUDA kernels for Hopper/Blackwell-class architectures.
+# Check support before FetchContent so SM75 builds do not download a project
+# that will be skipped immediately afterward.
+set(DEEPGEMM_SUPPORT_ARCHS)
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.3)
+  list(APPEND DEEPGEMM_SUPPORT_ARCHS "9.0a")
+endif()
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.9)
+  list(APPEND DEEPGEMM_SUPPORT_ARCHS "10.0f")
+elseif(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8)
+  list(APPEND DEEPGEMM_SUPPORT_ARCHS "10.0a")
+endif()
+
+cuda_archs_loose_intersection(DEEPGEMM_ARCHS
+  "${DEEPGEMM_SUPPORT_ARCHS}" "${CUDA_ARCHS}")
+
+if(NOT DEEPGEMM_ARCHS)
+  message(STATUS "DeepGEMM will not compile: "
+    "unsupported CUDA architecture ${CUDA_ARCHS}")
+  add_custom_target(_deep_gemm_C)
+  return()
+endif()
+
 # If DEEPGEMM_SRC_DIR is set, DeepGEMM is built from that directory
 # instead of downloading.
 # It can be set as an environment variable or passed as a cmake argument.
@@ -35,20 +58,6 @@ if(NOT deepgemm_POPULATED)
   FetchContent_Populate(deepgemm)
 endif()
 message(STATUS "DeepGEMM is available at ${deepgemm_SOURCE_DIR}")
-
-# DeepGEMM requires CUDA 12.3+ for SM90, 12.9+ for SM100
-set(DEEPGEMM_SUPPORT_ARCHS)
-if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.3)
-  list(APPEND DEEPGEMM_SUPPORT_ARCHS "9.0a")
-endif()
-if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.9)
-  list(APPEND DEEPGEMM_SUPPORT_ARCHS "10.0f")
-elseif(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8)
-  list(APPEND DEEPGEMM_SUPPORT_ARCHS "10.0a")
-endif()
-
-cuda_archs_loose_intersection(DEEPGEMM_ARCHS
-  "${DEEPGEMM_SUPPORT_ARCHS}" "${CUDA_ARCHS}")
 
 if(DEEPGEMM_ARCHS)
   message(STATUS "DeepGEMM CUDA architectures: ${DEEPGEMM_ARCHS}")

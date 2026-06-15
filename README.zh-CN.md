@@ -8,7 +8,7 @@
 这是一个硬件定向的 vLLM fork，用来保存已经跑通的 2080 Ti vLLM
 栈：补丁源码、启动 profile、运行时说明和稳定环境记录。
 
-Fork 发布版本：`v0.1.8`
+Fork 发布版本：`v0.1.9`
 基础 vLLM：`0.21.0`
 
 核心实测：双 2080 Ti TP=2 runtime 下，Qwen3.6 27B 单请求 decode 达到
@@ -115,8 +115,9 @@ FP16/default KV 空间。
 
 - 已验证 GPU profile：双 RTX 2080 Ti 22GB，SM75，NVLink，tensor parallel
   size 2
+- 已验证主机系统：Ubuntu 22.04/24.04 LTS 或 Debian 12，Linux kernel 6.x
 - CUDA/PyTorch：CUDA 12.8，`torch 2.11.0+cu128`
-- Fork 发布版本：`v0.1.8`
+- Fork 发布版本：`v0.1.9`
 - 基础 vLLM：`0.21.0`
 - 仓库身份：`vllm-2080ti-definitive`
 - 运行时身份：`vllm-sm75-tp2-cu128`
@@ -168,6 +169,16 @@ CUDA_VISIBLE_DEVICES=0,1 \
 
 Profile 只声明兼容模式，不再提供推荐启动模式。需要指定模式时，显式传
 `MODE=safe`、`MODE=normal` 或 `MODE=fast`；launcher 会根据 profile 做二次校验。
+
+3. 更新已有 checkout：
+
+```bash
+./update.sh
+```
+
+`update.sh` 会检查 GitHub 最新 Release 和本地 fork 版本；有新版本时下载
+release archive，并保留本地 `.venv`、`.deps`、日志、结果、缓存和用户 profile
+等运行状态，更新完成后会询问是否立刻运行 `build.sh`。
 
 ## 🧭 Profile 与推荐路线
 

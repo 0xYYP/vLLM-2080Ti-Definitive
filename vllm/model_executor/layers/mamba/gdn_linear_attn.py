@@ -201,19 +201,17 @@ def flashqla_legacy_chunk_gated_delta_rule(
         q = l2norm_fwd(q)
         k = l2norm_fwd(k)
 
-    dtype_policy = envs.VLLM_FLASHQLA_LEGACY_GDN_DTYPE
-    kernel_dtype = torch.float32 if dtype_policy == "fp32" else v.dtype
     output_dtype = v.dtype
     state_dtype = initial_state.dtype
     scale = q.shape[-1] ** -0.5
     output, final_state = chunk_gated_delta_rule_fwd_legacy(
-        q.to(kernel_dtype).contiguous(),
-        k.to(kernel_dtype).contiguous(),
-        v.to(kernel_dtype).contiguous(),
-        g.to(kernel_dtype).contiguous(),
-        beta.to(kernel_dtype).contiguous(),
+        q.to(torch.float32).contiguous(),
+        k.to(torch.float32).contiguous(),
+        v.to(torch.float32).contiguous(),
+        g.to(torch.float32).contiguous(),
+        beta.to(torch.float32).contiguous(),
         scale,
-        initial_state.to(kernel_dtype).contiguous(),
+        initial_state.to(torch.float32).contiguous(),
     )
     output = output.to(output_dtype)
     if output_final_state:

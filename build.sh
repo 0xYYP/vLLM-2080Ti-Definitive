@@ -11,7 +11,24 @@ STAMP=$(date +%Y%m%d-%H%M%S)
 LOG="$LOG_DIR/build-$STAMP.log"
 FLASHQLA_REPO=${FLASHQLA_REPO:-https://github.com/weicj/FlashQLA-SM70-SM75.git}
 FLASHQLA_DIR=${FLASHQLA_DIR:-"$ROOT/.deps/FlashQLA-SM70-SM75"}
-TOTAL_STEPS=11
+CUTLASS_REPO=${CUTLASS_REPO:-https://github.com/nvidia/cutlass.git}
+CUTLASS_REVISION=${CUTLASS_REVISION:-v4.4.2}
+CUTLASS_DIR=${CUTLASS_DIR:-"$ROOT/.deps/cutlass-src"}
+TRITON_REPO=${TRITON_REPO:-https://github.com/triton-lang/triton.git}
+TRITON_TAG=${TRITON_TAG:-v3.6.0}
+TRITON_KERNELS_DIR=${TRITON_KERNELS_DIR:-"$ROOT/.deps/triton-src"}
+BUILD_PYPI_OFFICIAL_INDEX=${BUILD_PYPI_OFFICIAL_INDEX:-https://pypi.org/simple}
+BUILD_PYPI_FOREIGN_INDEX=${BUILD_PYPI_FOREIGN_INDEX:-https://pypi.python.org/simple}
+BUILD_PYPI_DOMESTIC_INDEX=${BUILD_PYPI_DOMESTIC_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
+BUILD_GIT_FOREIGN_REPO_PREFIX=${BUILD_GIT_FOREIGN_REPO_PREFIX:-https://mirror.ghproxy.com/}
+BUILD_GIT_DOMESTIC_REPO_PREFIX=${BUILD_GIT_DOMESTIC_REPO_PREFIX:-https://ghfast.top/}
+BUILD_GIT_OFFICIAL_PROBE=${BUILD_GIT_OFFICIAL_PROBE:-https://github.com/}
+BUILD_GIT_FOREIGN_PROBE=${BUILD_GIT_FOREIGN_PROBE:-${BUILD_GIT_FOREIGN_REPO_PREFIX}https://github.com/}
+BUILD_GIT_DOMESTIC_PROBE=${BUILD_GIT_DOMESTIC_PROBE:-${BUILD_GIT_DOMESTIC_REPO_PREFIX}https://github.com/}
+BUILD_PREFLIGHT_TIMEOUT_SECONDS=${BUILD_PREFLIGHT_TIMEOUT_SECONDS:-6}
+BUILD_GIT_PRIMARY_TIMEOUT_SECONDS=${BUILD_GIT_PRIMARY_TIMEOUT_SECONDS:-120}
+BUILD_GIT_MIRROR_PREFIXES=${BUILD_GIT_MIRROR_PREFIXES:-https://ghfast.top/}
+TOTAL_STEPS=14
 STEP_INDEX=0
 BUILD_STARTED_AT=$(date +%s)
 VERSION=${VERSION:-$FORK_RELEASE}
@@ -65,6 +82,30 @@ select_max_jobs() {
   fi
 }
 
+validate_cuda_dev_files() {
+  local lib_dir="$CUDA_HOME/targets/x86_64-linux/lib"
+  local missing=()
+  local file
+
+  for file in libcudadevrt.a libcudart_static.a libculibos.a; do
+    if [[ ! -f "$lib_dir/$file" ]]; then
+      missing+=("$lib_dir/$file")
+    fi
+  done
+
+  if (( ${#missing[@]} > 0 )); then
+    {
+      echo "CUDA toolkit is missing required development static libraries:"
+      printf '  %s\n' "${missing[@]}"
+      echo
+      echo "Install or repair the CUDA ${VALIDATED_CUDA_VERSION} development toolkit."
+      echo "On Debian/Ubuntu NVIDIA CUDA repos, this is usually:"
+      echo "  sudo apt-get install --reinstall cuda-cudart-dev-12-8"
+    } >&2
+    fail "Incomplete CUDA development toolkit at CUDA_HOME=$CUDA_HOME"
+  fi
+}
+
 confirm_install() {
   if [[ "${ASSUME_YES:-0}" == "1" || "${YES:-0}" == "1" ]]; then
     return 0
@@ -110,6 +151,183 @@ EOF
   done
 }
 
+prompt_yes_no_timeout() {
+  local prompt=$1
+  local timeout_seconds=${2:-10}
+  local default_answer=${3:-y}
+  local answer=""
+
+  if [[ "${ASSUME_YES:-0}" == "1" || "${YES:-0}" == "1" ]]; then
+    printf '%s\n' "$default_answer"
+    return 0
+  fi
+
+  if [[ ! -t 0 ]]; then
+    printf '%s\n' "$default_answer"
+    return 0
+  fi
+
+  printf '%s ' "$prompt"
+  if read -r -t "$timeout_seconds" answer; then
+    case "$answer" in
+      y|Y|yes|YES) printf 'y\n'; return 0 ;;
+      n|N|no|NO) printf 'n\n'; return 0 ;;
+      *) printf '%s\n' "$default_answer"; return 0 ;;
+    esac
+  fi
+
+  printf '%s\n' "$default_answer"
+}
+
+check_network_url() {
+  local url=$1
+  local timeout_seconds=${2:-3}
+  local status=1
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -I -L --max-time "$timeout_seconds" --silent --show-error "$url" >/dev/null 2>&1
+    status=$?
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q --spider --timeout="$timeout_seconds" "$url"
+    status=$?
+  fi
+  return "$status"
+}
+
+choose_download_mode() {
+  local official_ok=1 foreign_ok=1 domestic_ok=1
+  local selected_mode="official"
+
+  echo "Preflight: probing download routes..."
+  if check_network_url "$BUILD_PYPI_OFFICIAL_INDEX" "$BUILD_PREFLIGHT_TIMEOUT_SECONDS" && \
+     check_network_url "$BUILD_GIT_OFFICIAL_PROBE" "$BUILD_PREFLIGHT_TIMEOUT_SECONDS"; then
+    official_ok=0
+  fi
+  if check_network_url "$BUILD_PYPI_FOREIGN_INDEX" "$BUILD_PREFLIGHT_TIMEOUT_SECONDS" && \
+     check_network_url "$BUILD_GIT_FOREIGN_PROBE" "$BUILD_PREFLIGHT_TIMEOUT_SECONDS"; then
+    foreign_ok=0
+  fi
+  if check_network_url "$BUILD_PYPI_DOMESTIC_INDEX" "$BUILD_PREFLIGHT_TIMEOUT_SECONDS" && \
+     check_network_url "$BUILD_GIT_DOMESTIC_PROBE" "$BUILD_PREFLIGHT_TIMEOUT_SECONDS"; then
+    domestic_ok=0
+  fi
+
+  if (( official_ok == 0 )); then
+    selected_mode="official"
+  elif (( foreign_ok == 0 )); then
+    selected_mode="foreign"
+  elif (( domestic_ok == 0 )); then
+    selected_mode="domestic"
+  else
+    echo "Preflight: network looks poor; no download route is currently reachable."
+    local answer
+    answer=$(prompt_yes_no_timeout "Continue anyway? [y/N]:" 10 n)
+    [[ "$answer" == "y" ]] || fail "Build cancelled because network preflight failed."
+    selected_mode="official"
+  fi
+
+  case "$selected_mode" in
+    official)
+      BUILD_PYPI_ACTIVE_INDEX="$BUILD_PYPI_OFFICIAL_INDEX"
+      BUILD_GIT_ACTIVE_PREFIX=""
+      echo "Preflight: using official download routes."
+      ;;
+    foreign)
+      BUILD_PYPI_ACTIVE_INDEX="$BUILD_PYPI_FOREIGN_INDEX"
+      BUILD_GIT_ACTIVE_PREFIX="$BUILD_GIT_FOREIGN_REPO_PREFIX"
+      echo "Preflight: official route is slow/unreachable; using foreign mirror route."
+      local answer
+      answer=$(prompt_yes_no_timeout "Continue with mirror route? [Y/n]:" 10 y)
+      [[ "$answer" != "n" ]] || fail "Build cancelled by user."
+      ;;
+    domestic)
+      BUILD_PYPI_ACTIVE_INDEX="$BUILD_PYPI_DOMESTIC_INDEX"
+      BUILD_GIT_ACTIVE_PREFIX="$BUILD_GIT_DOMESTIC_REPO_PREFIX"
+      echo "Preflight: official and foreign routes are slow/unreachable; using domestic mirror route."
+      local answer
+      answer=$(prompt_yes_no_timeout "Continue with domestic mirror route? [Y/n]:" 10 y)
+      [[ "$answer" != "n" ]] || fail "Build cancelled by user."
+      ;;
+  esac
+
+  export BUILD_PYPI_ACTIVE_INDEX BUILD_GIT_ACTIVE_PREFIX
+}
+
+check_cpu_cores() {
+  local cores=${CPU_THREADS:-$(detect_cpu_threads)}
+  if (( cores < 4 )); then
+    echo "Preflight: CPU core count is low ($cores cores). Build may be slow."
+  else
+    echo "Preflight: CPU core count is OK ($cores cores)."
+  fi
+}
+
+check_memory_headroom() {
+  local mem_kb mem_gb
+  mem_kb=$(awk '/MemTotal:/ { print $2 }' /proc/meminfo 2>/dev/null || echo 0)
+  mem_gb=$(( mem_kb / 1024 / 1024 ))
+  if (( mem_gb < 16 )); then
+    echo "Preflight: system memory is low (${mem_gb}GB). Recommended is 16GB+."
+  else
+    echo "Preflight: system memory is OK (${mem_gb}GB)."
+  fi
+}
+
+check_disk_headroom() {
+  local free_kb free_gb
+  free_kb=$(df -Pk "$ROOT" | awk 'NR == 2 { print $4 }')
+  free_gb=$(( free_kb / 1024 / 1024 ))
+  if (( free_gb < 80 )); then
+    echo "Preflight: free disk under source tree is low (${free_gb}GB). Recommended is 80GB+ for a clean build."
+  else
+    echo "Preflight: free disk under source tree is OK (${free_gb}GB)."
+  fi
+}
+
+check_gpu_hardware() {
+  local gpu_summary
+  local gpu_count
+  local high_vram_count
+
+  gpu_summary=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || true)
+  if [[ -z "$gpu_summary" ]]; then
+    echo "Preflight: no NVIDIA GPU was detected."
+    return 0
+  fi
+
+  echo "Preflight: detected GPUs:"
+  echo "$gpu_summary" | sed 's/^/  - /'
+
+  gpu_count=$(printf '%s\n' "$gpu_summary" | sed '/^[[:space:]]*$/d' | wc -l)
+  high_vram_count=$(
+    printf '%s\n' "$gpu_summary" |
+      awk -F, '
+        {
+          mem = $2
+          gsub(/[^0-9]/, "", mem)
+          if (mem + 0 >= 20000) count += 1
+        }
+        END { print count + 0 }
+      '
+  )
+
+  if (( gpu_count < 2 || high_vram_count < 2 )); then
+    echo "Preflight: recommended target is two RTX 2080 Ti-class GPUs with about 22GB VRAM each."
+    echo "Preflight: current GPU layout may still build, but validated profiles may not fit or may run slower."
+  else
+    echo "Preflight: GPU layout matches the recommended dual 2080 Ti-class target."
+  fi
+}
+
+check_gpu_topology() {
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "Preflight: GPU topology:"
+  nvidia-smi topo -m 2>/dev/null | sed 's/^/  /' || echo "  topology query unavailable"
+}
+
 print_step_header() {
   local title=$1
   STEP_INDEX=$((STEP_INDEX + 1))
@@ -123,6 +341,20 @@ print_step_header() {
 run_with_progress() {
   local title=$1
   shift
+
+  if run_with_progress_status "$title" "$@"; then
+    return 0
+  fi
+
+  echo
+  echo "Last log lines:"
+  tail -n 80 "$LOG" || true
+  fail "Step failed: $title"
+}
+
+run_with_progress_status() {
+  local title=$1
+  shift
   local step_start
   local tmp_status
   local pid
@@ -131,7 +363,13 @@ run_with_progress() {
   local spinner='|/-\'
   local spin_i=0
 
-  print_step_header "$title"
+  if [[ "${REUSE_STEP_HEADER:-0}" == "1" ]]; then
+    echo
+    echo "  $title"
+    echo "[$(date '+%F %T')] $title" >> "$LOG"
+  else
+    print_step_header "$title"
+  fi
   step_start=$(date +%s)
   tmp_status=$(mktemp)
 
@@ -178,13 +416,328 @@ run_with_progress() {
 
   if [[ "$rc" == "0" ]]; then
     echo "OK: $title completed in $elapsed"
+    return 0
   else
     echo "FAILED: $title after $elapsed"
-    echo
-    echo "Last log lines:"
-    tail -n 80 "$LOG" || true
-    fail "Step failed: $title"
+    return "$rc"
   fi
+}
+
+run_uv_pip_with_mirror_fallback() {
+  local title=$1
+  shift
+  local timeout_seconds=${BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS:-300}
+  local primary_index=${BUILD_PYPI_INDEX:-${BUILD_PYPI_ACTIVE_INDEX:-}}
+  local mirror_index=${BUILD_PYPI_MIRROR_INDEX:-${BUILD_PYPI_DOMESTIC_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}}
+  local wheelhouse_dir=${BUILD_WHEELHOUSE_DIR:-}
+  local -a uv_env=(env)
+
+  if [[ -z "$wheelhouse_dir" && -d /data/wheelhouse/cu128 ]]; then
+    wheelhouse_dir=/data/wheelhouse/cu128
+  fi
+
+  if [[ -n "$wheelhouse_dir" ]]; then
+    if [[ -d "$wheelhouse_dir" ]]; then
+      uv_env+=("UV_FIND_LINKS=$wheelhouse_dir")
+    else
+      fail "BUILD_WHEELHOUSE_DIR does not exist: $wheelhouse_dir"
+    fi
+  fi
+
+  if [[ "${BUILD_PYPI_MIRROR_FALLBACK:-1}" != "1" ]]; then
+    run_with_progress "$title" "${uv_env[@]}" uv pip "$@"
+    return 0
+  fi
+
+  if ! is_positive_integer "$timeout_seconds"; then
+    fail "BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS must be a positive integer."
+  fi
+
+  echo "Python package mirror fallback: enabled"
+  echo "  Primary timeout: ${timeout_seconds}s"
+  echo "  Mirror index: $mirror_index"
+  if [[ -n "$wheelhouse_dir" ]]; then
+    echo "  Local wheelhouse: $wheelhouse_dir"
+  fi
+  {
+    echo "Python package mirror fallback: enabled"
+    echo "Primary timeout: ${timeout_seconds}s"
+    echo "Mirror index: $mirror_index"
+    if [[ -n "$wheelhouse_dir" ]]; then
+      echo "Local wheelhouse: $wheelhouse_dir"
+    fi
+  } >> "$LOG"
+
+  print_step_header "$title"
+
+  local REUSE_STEP_HEADER=1
+  if [[ -n "$primary_index" ]]; then
+    if run_with_progress_status "Primary index attempt" \
+      "${uv_env[@]}" UV_DEFAULT_INDEX="$primary_index" timeout --preserve-status "$timeout_seconds" uv pip "$@"; then
+      return 0
+    fi
+  else
+    if run_with_progress_status "Primary index attempt" \
+      "${uv_env[@]}" timeout --preserve-status "$timeout_seconds" uv pip "$@"; then
+      return 0
+    fi
+  fi
+
+  echo
+  echo "Primary Python package install was too slow or failed; retrying with mirror."
+  echo "Primary Python package install was too slow or failed; retrying with mirror." >> "$LOG"
+  if run_with_progress_status "Mirror index attempt" \
+    "${uv_env[@]}" UV_DEFAULT_INDEX="$mirror_index" UV_INDEX_STRATEGY=unsafe-best-match uv pip "$@"; then
+    return 0
+  fi
+
+  echo
+  echo "Last log lines:"
+  tail -n 80 "$LOG" || true
+  fail "Step failed: $title"
+}
+
+git_url_with_prefix() {
+  local prefix=$1
+  local repo=$2
+  if [[ "$prefix" == *"{}"* ]]; then
+    printf '%s\n' "${prefix//\{\}/$repo}"
+  else
+    printf '%s%s\n' "$prefix" "$repo"
+  fi
+}
+
+active_git_url() {
+  local repo=$1
+  if [[ -n "${BUILD_GIT_ACTIVE_PREFIX:-}" ]]; then
+    git_url_with_prefix "$BUILD_GIT_ACTIVE_PREFIX" "$repo"
+  else
+    printf '%s\n' "$repo"
+  fi
+}
+
+fetch_git_repo_once() {
+  local repo=$1
+  if [[ -d "$FLASHQLA_DIR/.git" ]]; then
+    git -C "$FLASHQLA_DIR" fetch --depth=1 "$repo"
+    git -C "$FLASHQLA_DIR" checkout -q FETCH_HEAD
+  else
+    git clone --depth=1 "$repo" "$FLASHQLA_DIR"
+  fi
+}
+
+fetch_git_tag_once() {
+  local repo=$1
+  local dir=$2
+  local ref=$3
+
+  if [[ -d "$dir/.git" ]]; then
+    git -C "$dir" fetch --depth=1 origin "tag" "$ref"
+    git -C "$dir" checkout -q "$ref"
+  else
+    git clone --depth=1 --branch "$ref" --single-branch "$repo" "$dir"
+  fi
+}
+
+fetch_git_branch_or_tag_once() {
+  local repo=$1
+  local dir=$2
+  local ref=$3
+
+  if [[ -d "$dir/.git" ]]; then
+    git -C "$dir" fetch --depth=1 origin "refs/tags/$ref:refs/tags/$ref"
+    git -C "$dir" checkout -q "$ref"
+  else
+    git clone --depth=1 --branch "$ref" --single-branch "$repo" "$dir"
+  fi
+}
+
+fetch_flashqla_with_fallback() {
+  local timeout_seconds=$BUILD_GIT_PRIMARY_TIMEOUT_SECONDS
+  local mirror_prefix
+  local mirror_repo
+  local primary_repo
+
+  if ! is_positive_integer "$timeout_seconds"; then
+    fail "BUILD_GIT_PRIMARY_TIMEOUT_SECONDS must be a positive integer."
+  fi
+
+  mkdir -p "$(dirname -- "$FLASHQLA_DIR")"
+  if [[ -e "$FLASHQLA_DIR" && ! -d "$FLASHQLA_DIR/.git" ]]; then
+    fail "FlashQLA dir exists but is not a git checkout: $FLASHQLA_DIR"
+  fi
+
+  echo "Git fetch fallback: enabled"
+  echo "  Primary timeout: ${timeout_seconds}s"
+  echo "  Mirror prefixes: ${BUILD_GIT_MIRROR_PREFIXES:-none}"
+  {
+    echo "Git fetch fallback: enabled"
+    echo "Primary timeout: ${timeout_seconds}s"
+    echo "Mirror prefixes: ${BUILD_GIT_MIRROR_PREFIXES:-none}"
+  } >> "$LOG"
+
+  primary_repo=$(active_git_url "$FLASHQLA_REPO")
+  local REUSE_STEP_HEADER=1
+  if run_with_progress_status "Primary git attempt" \
+    env FLASHQLA_DIR="$FLASHQLA_DIR" timeout --preserve-status "$timeout_seconds" bash -c '
+      repo=$1
+      if [[ -d "$FLASHQLA_DIR/.git" ]]; then
+        git -C "$FLASHQLA_DIR" fetch --depth=1 "$repo"
+        git -C "$FLASHQLA_DIR" checkout -q FETCH_HEAD
+      else
+        git clone --depth=1 "$repo" "$FLASHQLA_DIR"
+      fi
+    ' _ "$primary_repo"; then
+    return 0
+  fi
+
+  for mirror_prefix in $BUILD_GIT_MIRROR_PREFIXES; do
+    [[ -n "$mirror_prefix" ]] || continue
+    mirror_repo=$(git_url_with_prefix "$mirror_prefix" "$FLASHQLA_REPO")
+    echo
+    echo "Primary git fetch was too slow or failed; retrying with mirror: $mirror_repo"
+    echo "Primary git fetch was too slow or failed; retrying with mirror: $mirror_repo" >> "$LOG"
+    if run_with_progress_status "Mirror git attempt" fetch_git_repo_once "$mirror_repo"; then
+      return 0
+    fi
+  done
+
+  echo
+  echo "Last log lines:"
+  tail -n 80 "$LOG" || true
+  fail "Step failed: Fetch FlashQLA SM70/SM75 backend"
+}
+
+fetch_cutlass_with_fallback() {
+  local timeout_seconds=$BUILD_GIT_PRIMARY_TIMEOUT_SECONDS
+  local mirror_prefix
+  local mirror_repo
+  local primary_repo
+
+  if ! is_positive_integer "$timeout_seconds"; then
+    fail "BUILD_GIT_PRIMARY_TIMEOUT_SECONDS must be a positive integer."
+  fi
+
+  mkdir -p "$(dirname -- "$CUTLASS_DIR")"
+  if [[ -e "$CUTLASS_DIR" && ! -d "$CUTLASS_DIR/.git" ]]; then
+    fail "CUTLASS dir exists but is not a git checkout: $CUTLASS_DIR"
+  fi
+
+  echo "CUTLASS fetch fallback: enabled"
+  echo "  Primary timeout: ${timeout_seconds}s"
+  echo "  Mirror prefixes: ${BUILD_GIT_MIRROR_PREFIXES:-none}"
+  {
+    echo "CUTLASS fetch fallback: enabled"
+    echo "Primary timeout: ${timeout_seconds}s"
+    echo "Mirror prefixes: ${BUILD_GIT_MIRROR_PREFIXES:-none}"
+  } >> "$LOG"
+
+  primary_repo=$(active_git_url "$CUTLASS_REPO")
+  local REUSE_STEP_HEADER=1
+  if run_with_progress_status "Primary CUTLASS attempt" \
+    env CUTLASS_DIR="$CUTLASS_DIR" timeout --preserve-status "$timeout_seconds" bash -c '
+      repo=$1
+      ref=$2
+      dir=$3
+      if [[ -d "$dir/.git" ]]; then
+        git -C "$dir" fetch --depth=1 origin tag "$ref"
+        git -C "$dir" checkout -q "$ref"
+      else
+        git clone --depth=1 --branch "$ref" --single-branch "$repo" "$dir"
+      fi
+    ' _ "$primary_repo" "$CUTLASS_REVISION" "$CUTLASS_DIR"; then
+    return 0
+  fi
+
+  for mirror_prefix in $BUILD_GIT_MIRROR_PREFIXES; do
+    [[ -n "$mirror_prefix" ]] || continue
+    mirror_repo=$(git_url_with_prefix "$mirror_prefix" "$CUTLASS_REPO")
+    echo
+    echo "Primary CUTLASS fetch was too slow or failed; retrying with mirror: $mirror_repo"
+    echo "Primary CUTLASS fetch was too slow or failed; retrying with mirror: $mirror_repo" >> "$LOG"
+    if run_with_progress_status "Mirror CUTLASS attempt" \
+      fetch_git_tag_once "$mirror_repo" "$CUTLASS_DIR" "$CUTLASS_REVISION"; then
+      return 0
+    fi
+  done
+
+  echo
+  echo "Last log lines:"
+  tail -n 80 "$LOG" || true
+fail "Step failed: Fetch CUTLASS source"
+}
+
+fetch_triton_with_fallback() {
+  local timeout_seconds=$BUILD_GIT_PRIMARY_TIMEOUT_SECONDS
+  local mirror_prefix
+  local mirror_repo
+  local primary_repo
+
+  if ! is_positive_integer "$timeout_seconds"; then
+    fail "BUILD_GIT_PRIMARY_TIMEOUT_SECONDS must be a positive integer."
+  fi
+
+  mkdir -p "$(dirname -- "$TRITON_KERNELS_DIR")"
+  if [[ -e "$TRITON_KERNELS_DIR" && ! -d "$TRITON_KERNELS_DIR/.git" ]]; then
+    fail "TRITON_KERNELS_DIR exists but is not a git checkout: $TRITON_KERNELS_DIR"
+  fi
+
+  echo "Triton fetch fallback: enabled"
+  echo "  Primary timeout: ${timeout_seconds}s"
+  echo "  Mirror prefixes: ${BUILD_GIT_MIRROR_PREFIXES:-none}"
+  {
+    echo "Triton fetch fallback: enabled"
+    echo "Primary timeout: ${timeout_seconds}s"
+    echo "Mirror prefixes: ${BUILD_GIT_MIRROR_PREFIXES:-none}"
+  } >> "$LOG"
+
+  primary_repo=$(active_git_url "$TRITON_REPO")
+  local REUSE_STEP_HEADER=1
+  if run_with_progress_status "Primary Triton attempt" \
+    env TRITON_KERNELS_DIR="$TRITON_KERNELS_DIR" timeout --preserve-status "$timeout_seconds" bash -c '
+      repo=$1
+      ref=$2
+      dir=$3
+      if [[ -d "$dir/.git" ]]; then
+        git -C "$dir" fetch --depth=1 origin "refs/tags/$ref:refs/tags/$ref"
+        git -C "$dir" checkout -q "$ref"
+      else
+        git clone --depth=1 --branch "$ref" --single-branch "$repo" "$dir"
+      fi
+    ' _ "$primary_repo" "$TRITON_TAG" "$TRITON_KERNELS_DIR"; then
+    return 0
+  fi
+
+  for mirror_prefix in $BUILD_GIT_MIRROR_PREFIXES; do
+    [[ -n "$mirror_prefix" ]] || continue
+    mirror_repo=$(git_url_with_prefix "$mirror_prefix" "$TRITON_REPO")
+    echo
+    echo "Primary Triton fetch was too slow or failed; retrying with mirror: $mirror_repo"
+    echo "Primary Triton fetch was too slow or failed; retrying with mirror: $mirror_repo" >> "$LOG"
+    if run_with_progress_status "Mirror Triton attempt" \
+      fetch_git_branch_or_tag_once "$mirror_repo" "$TRITON_KERNELS_DIR" "$TRITON_TAG"; then
+      return 0
+    fi
+  done
+
+  echo
+  echo "Last log lines:"
+  tail -n 80 "$LOG" || true
+  fail "Step failed: Fetch Triton kernels source"
+}
+
+install_torch_from_wheelhouse() {
+  local wheelhouse_dir=${BUILD_WHEELHOUSE_DIR:-}
+  if [[ -z "$wheelhouse_dir" && -d /data/wheelhouse/cu128 ]]; then
+    wheelhouse_dir=/data/wheelhouse/cu128
+  fi
+  [[ -n "$wheelhouse_dir" ]] || return 0
+  [[ -d "$wheelhouse_dir" ]] || return 0
+
+  run_with_progress "Install torch from local wheelhouse" \
+    env UV_NO_INDEX=1 UV_FIND_LINKS="$wheelhouse_dir" UV_LINK_MODE=copy \
+    uv pip install --python .venv/bin/python --no-deps --no-index --find-links "$wheelhouse_dir" \
+      "torch==${VALIDATED_TORCH_VERSION}"
 }
 
 run_step() {
@@ -215,17 +768,17 @@ fi
 export CPU_THREADS
 export MAX_JOBS
 
-confirm_install
-
 cd "$ROOT"
 
 if [[ ! -f pyproject.toml || ! -d vllm ]]; then
   fail "Run this script from the vLLM 2080 Ti Definitive source tree."
 fi
 
-if ! command -v nvidia-smi >/dev/null 2>&1; then
-  fail "nvidia-smi not found. Install NVIDIA driver first."
-fi
+check_cpu_cores
+check_memory_headroom
+check_disk_headroom
+check_gpu_hardware
+check_gpu_topology
 
 if [[ -z "${CUDA_HOME:-}" ]]; then
   if [[ -x /usr/local/cuda-12.8/bin/nvcc ]]; then
@@ -240,6 +793,9 @@ fi
 if [[ ! -x "$CUDA_HOME/bin/nvcc" ]]; then
   fail "nvcc not found at $CUDA_HOME/bin/nvcc."
 fi
+validate_cuda_dev_files
+choose_download_mode
+confirm_install
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "uv not found; installing uv with the official installer."
@@ -253,8 +809,11 @@ export CUDA_PATH="$CUDA_HOME"
 export CUDACXX="$CUDA_HOME/bin/nvcc"
 export PATH="$ROOT/.venv/bin:$CUDA_HOME/bin:$PATH"
 export TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-7.5}
+export UV_TORCH_BACKEND=${UV_TORCH_BACKEND:-cu128}
 export CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:-Release}
 export FLASHINFER_ENABLE_AOT=${FLASHINFER_ENABLE_AOT:-1}
+export VLLM_CUTLASS_SRC_DIR=${VLLM_CUTLASS_SRC_DIR:-$CUTLASS_DIR}
+export TRITON_KERNELS_SRC_DIR=${TRITON_KERNELS_SRC_DIR:-"$TRITON_KERNELS_DIR/python/triton_kernels/triton_kernels"}
 
 cat <<EOF | tee -a "$LOG"
 
@@ -269,13 +828,32 @@ Build settings:
   FlashQLA dir=$FLASHQLA_DIR
   CUDA_HOME=$CUDA_HOME
   TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST
+  UV_TORCH_BACKEND=$UV_TORCH_BACKEND
   CPU_THREADS=$CPU_THREADS
   MAX_JOBS=$MAX_JOBS ($MAX_JOBS_SOURCE)
   CMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE
   VENV=$ROOT/.venv
+  Python package mirror fallback=${BUILD_PYPI_MIRROR_FALLBACK:-1}
+  Python package mirror index=${BUILD_PYPI_MIRROR_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
+  Python package wheelhouse=${BUILD_WHEELHOUSE_DIR:-auto:/data/wheelhouse/cu128}
+  Git primary timeout=${BUILD_GIT_PRIMARY_TIMEOUT_SECONDS}s
+  Git mirror prefixes=${BUILD_GIT_MIRROR_PREFIXES:-none}
+  CUTLASS repo=$CUTLASS_REPO
+  CUTLASS ref=$CUTLASS_REVISION
+  CUTLASS dir=$CUTLASS_DIR
+  Triton repo=$TRITON_REPO
+  Triton tag=$TRITON_TAG
+  Triton dir=$TRITON_KERNELS_DIR
+  Triton kernels dir=$TRITON_KERNELS_SRC_DIR
 EOF
 
-run_step "GPU summary" nvidia-smi
+if command -v nvidia-smi >/dev/null 2>&1; then
+  if ! run_step "GPU summary" nvidia-smi; then
+    echo "GPU summary warning: nvidia-smi returned a non-zero status." | tee -a "$LOG"
+  fi
+else
+  echo "GPU summary skipped: nvidia-smi not found." | tee -a "$LOG"
+fi
 run_step "CUDA compiler" "$CUDA_HOME/bin/nvcc" --version
 
 if [[ ! -d .venv ]]; then
@@ -286,32 +864,26 @@ if [[ ! -x .venv/bin/python ]]; then
   fail ".venv/bin/python was not created."
 fi
 
-run_with_progress "Upgrade build frontend" uv pip install --python .venv/bin/python -U pip setuptools wheel
+install_torch_from_wheelhouse
+
+run_uv_pip_with_mirror_fallback "Upgrade build frontend" install --python .venv/bin/python -U pip setuptools wheel
 
 if [[ -f requirements/build/cuda.txt ]]; then
-  run_with_progress "Install CUDA build requirements" uv pip install --python .venv/bin/python -r requirements/build/cuda.txt --torch-backend=auto
+  run_uv_pip_with_mirror_fallback "Install CUDA build requirements" install --python .venv/bin/python -r requirements/build/cuda.txt
 fi
 
 if [[ -f requirements/cuda.txt ]]; then
-  run_with_progress "Install CUDA runtime requirements" uv pip install --python .venv/bin/python -r requirements/cuda.txt --torch-backend=auto
+  run_uv_pip_with_mirror_fallback "Install CUDA runtime requirements" install --python .venv/bin/python -r requirements/cuda.txt
 fi
 
-fetch_flashqla() {
-  mkdir -p "$(dirname -- "$FLASHQLA_DIR")"
-  if [[ -d "$FLASHQLA_DIR/.git" ]]; then
-    git -C "$FLASHQLA_DIR" fetch --depth=1 origin
-    git -C "$FLASHQLA_DIR" checkout -q FETCH_HEAD
-  else
-    git clone --depth=1 "$FLASHQLA_REPO" "$FLASHQLA_DIR"
-  fi
-}
-
 patch_flashqla_sm75_imports() {
-  python - "$FLASHQLA_DIR" <<'PY'
+  python - "$FLASHQLA_DIR" "$ROOT/tools/flashqla_sm75_patches" <<'PY'
 from pathlib import Path
+import shutil
 import sys
 
 root = Path(sys.argv[1])
+patch_root = Path(sys.argv[2])
 patches = {
     root / "flash_qla" / "__init__.py": '''# Copyright (c) 2026 The Qwen team, Alibaba Group.
 # Licensed under The MIT License [see LICENSE for details]
@@ -361,12 +933,25 @@ for path, content in patches.items():
     if not path.exists():
         raise SystemExit(f"missing FlashQLA file: {path}")
     path.write_text(content, encoding="utf-8")
+
+legacy_py = root / "flash_qla" / "ops" / "gated_delta_rule" / "legacy" / "sm_legacy.py"
+legacy_cu = legacy_py.with_name("csrc") / "gdn_forward.cu"
+patch_py = patch_root / "sm_legacy.py"
+patch_cu = patch_root / "gdn_forward.cu"
+for src, dst in ((patch_py, legacy_py), (patch_cu, legacy_cu)):
+    if not src.exists():
+        raise SystemExit(f"missing FlashQLA SM75 patch file: {src}")
+    if not dst.exists():
+        raise SystemExit(f"missing FlashQLA target file: {dst}")
+    shutil.copyfile(src, dst)
 PY
 }
 
-run_with_progress "Fetch FlashQLA SM70/SM75 backend" fetch_flashqla
+run_with_progress "Fetch FlashQLA SM70/SM75 backend" fetch_flashqla_with_fallback
 run_with_progress "Patch FlashQLA SM75 legacy imports" patch_flashqla_sm75_imports
-run_with_progress "Install FlashQLA SM70/SM75 backend" uv pip install --python .venv/bin/python --no-deps -e "$FLASHQLA_DIR" --torch-backend=auto
+run_uv_pip_with_mirror_fallback "Install FlashQLA SM70/SM75 backend" install --python .venv/bin/python --no-deps -e "$FLASHQLA_DIR"
+run_with_progress "Fetch CUTLASS source" fetch_cutlass_with_fallback
+run_with_progress "Fetch Triton kernels source" fetch_triton_with_fallback
 
 run_with_progress "Build and install vLLM 2080 Ti Definitive runtime" \
   env \
@@ -377,7 +962,10 @@ run_with_progress "Build and install vLLM 2080 Ti Definitive runtime" \
     MAX_JOBS="$MAX_JOBS" \
     CMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
     FLASHINFER_ENABLE_AOT="$FLASHINFER_ENABLE_AOT" \
-    uv pip install --python .venv/bin/python --no-build-isolation -e .
+    VLLM_CUTLASS_SRC_DIR="$VLLM_CUTLASS_SRC_DIR" \
+    TRITON_KERNELS_SRC_DIR="$TRITON_KERNELS_SRC_DIR" \
+    VLLM_VERSION_OVERRIDE="$VERSION" \
+    uv pip install --python .venv/bin/python --no-build-isolation --no-deps -e .
 
 run_step "Runtime check" .venv/bin/python - <<'PY'
 import importlib.util

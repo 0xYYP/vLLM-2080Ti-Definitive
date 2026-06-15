@@ -20,6 +20,8 @@ import functools
 import math
 import os
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
+from packaging.version import Version
 from typing import Any, ClassVar
 
 import torch
@@ -75,6 +77,16 @@ try:
 except ImportError:
     BatchDecodeWithPagedKVCacheWrapper = None  # type: ignore[assignment]
 
+
+def _flashinfer_version() -> Version | None:
+    try:
+        return Version(version("flashinfer-python"))
+    except (PackageNotFoundError, ValueError):
+        return None
+
+
+_FLASHINFER_VERSION = _flashinfer_version()
+
 # Continuation prefill: for small continuation chunks (q_len ≤ threshold),
 # use the TQ decode kernel directly instead of full-dequant + flash_attn.
 # do_kv_cache_update already stored all tokens to TQ cache, so the decode
@@ -107,8 +119,37 @@ _GEMMA4_TQ4NC_SHARED_DRAFT_SDPA_FALLBACK = (
 _GEMMA4_TQ4NC_SHARED_DRAFT_NATIVE_DECODE = (
     os.getenv("VLLM_GEMMA4_TQ4NC_SHARED_DRAFT_NATIVE_DECODE", "0") == "1"
 )
+_SM75_TQ_FI_PREFILL_SUPPORTED = (
+    _FLASHINFER_VERSION is not None
+    and _FLASHINFER_VERSION >= Version("0.6.8")
+    and _FLASHINFER_VERSION < Version("0.6.9")
+)
+_SM75_TQ_FI_PREFILL_MIN_HEAD_DIM_DEFAULT = (
+    "0" if _SM75_TQ_FI_PREFILL_SUPPORTED else "1024"
+)
+_SM75_TQ_FI_PREFILL_MIN_QUERY_LEN_DEFAULT = (
+    "1" if _SM75_TQ_FI_PREFILL_SUPPORTED else "128"
+)
+_SM75_TQ_FI_CONTINUATION_MIN_QUERY_LEN_DEFAULT = (
+    "1" if _SM75_TQ_FI_PREFILL_SUPPORTED else "4096"
+)
 _SM75_TQ_FI_PREFILL_MIN_HEAD_DIM = int(
-    os.getenv("VLLM_TURBOQUANT_SM75_FLASHINFER_PREFILL_MIN_HEAD_DIM", "1024")
+    os.getenv(
+        "VLLM_TURBOQUANT_SM75_FLASHINFER_PREFILL_MIN_HEAD_DIM",
+        _SM75_TQ_FI_PREFILL_MIN_HEAD_DIM_DEFAULT,
+    )
+)
+_SM75_TQ_FI_PREFILL_MIN_QUERY_LEN = int(
+    os.getenv(
+        "VLLM_TURBOQUANT_SM75_FLASHINFER_PREFILL_MIN_QUERY_LEN",
+        _SM75_TQ_FI_PREFILL_MIN_QUERY_LEN_DEFAULT,
+    )
+)
+_SM75_TQ_FI_CONTINUATION_MIN_QUERY_LEN = int(
+    os.getenv(
+        "VLLM_TURBOQUANT_SM75_FLASHINFER_CONTINUATION_MIN_QUERY_LEN",
+        _SM75_TQ_FI_CONTINUATION_MIN_QUERY_LEN_DEFAULT,
+    )
 )
 _DEFAULT_TQ_FI_PLAN_CACHE = (
     os.getenv("VLLM_TURBOQUANT_FLASHINFER_PREFILL_PLAN_CACHE", "1") == "1"
@@ -500,10 +541,13 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         self._shared_fp16_decode_workspace = None
         self._shared_fp16_decode_wrappers: dict[tuple[Any, ...], Any] = {}
         capability = current_platform.get_device_capability()
-        sm75_skip_flashinfer_prefill = (
+        self._sm75_tq_prefill_guard = (
             capability is not None
             and capability.major == 7
             and capability.minor == 5
+        )
+        sm75_skip_flashinfer_prefill = (
+            self._sm75_tq_prefill_guard
             and head_size < _SM75_TQ_FI_PREFILL_MIN_HEAD_DIM
         )
         self._sm75_skip_flashinfer_prefill = sm75_skip_flashinfer_prefill
@@ -526,13 +570,14 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         if self._use_flashinfer_prefill:
             cap_str = capability.as_version_str() if capability is not None else "unknown"
             logger.info_once(
-                "TurboQuant prefill is using FlashInfer backend=%s on CUDA capability %s",
+                "TurboQuant prefill is using FlashInfer backend=%s on CUDA capability %s (flashinfer=%s)",
                 self._fi_prefill_backend,
                 cap_str,
+                _FLASHINFER_VERSION or "unknown",
             )
         elif sm75_skip_flashinfer_prefill:
             logger.info_once(
-                "TurboQuant prefill is using SDPA fallback on CUDA capability 7.5 for head_dim=%s because FlashInfer prefill is disabled for this head_dim",
+                "TurboQuant prefill is using SDPA fallback on CUDA capability 7.5 for head_dim=%s because FlashInfer prefill is disabled for this head_dim or FlashInfer version",
                 head_size,
             )
 
@@ -720,6 +765,20 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         if self._fi_prefill_backend == "cudnn":
             return indptr * (num_heads * head_dim)
         return indptr
+
+    def _use_flashinfer_for_first_chunk(self, query_len: int) -> bool:
+        if not self._use_flashinfer_prefill:
+            return False
+        if not self._sm75_tq_prefill_guard:
+            return True
+        return query_len >= _SM75_TQ_FI_PREFILL_MIN_QUERY_LEN
+
+    def _use_flashinfer_for_continuation(self, query_len: int) -> bool:
+        if not self._use_flashinfer_prefill:
+            return False
+        if not self._sm75_tq_prefill_guard:
+            return True
+        return query_len >= _SM75_TQ_FI_CONTINUATION_MIN_QUERY_LEN
 
     def _shared_fp16_decode_flashinfer(
         self,
@@ -1304,7 +1363,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         N, Hq, D = query.shape
 
         if (
-            self._use_flashinfer_prefill
+            self._use_flashinfer_for_first_chunk(attn_metadata.max_query_len)
             and attn_metadata.max_query_len == attn_metadata.max_seq_len
         ):
             query_start_loc = (
@@ -1409,7 +1468,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
 
             if q_len == seq_len:
                 # First-chunk prefill: all K/V are in the current batch.
-                if self._use_flashinfer_prefill:
+                if self._use_flashinfer_for_first_chunk(q_len):
                     if self._fi_single_qo_indptr_cpu is None:
                         self._fi_single_qo_indptr_cpu = torch.empty(
                             2, dtype=torch.int32, pin_memory=True
@@ -1800,7 +1859,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         v_full[cached_len:] = val_chunk
 
         # Attention: q_len queries attending to seq_len K/V with causal mask
-        if self._use_flashinfer_prefill and not force_sdpa:
+        if self._use_flashinfer_for_continuation(q_len) and not force_sdpa:
             if self._fi_single_qo_indptr_cpu is None:
                 self._fi_single_qo_indptr_cpu = torch.empty(
                     2, dtype=torch.int32, pin_memory=True

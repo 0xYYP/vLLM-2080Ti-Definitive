@@ -3,6 +3,25 @@
 This changelog tracks the fork release version for vLLM 2080 Ti Definitive
 Edition. It is separate from the upstream vLLM package version.
 
+## v0.1.9 - 2026-06-15
+
+- Restores the validated Qwen3.6 27B FP8 + TurboQuant TQK8V4 `fast` route on
+  SM75 by pinning the working FlashInfer 0.6.8 runtime path and guarding
+  unvalidated newer FlashInfer ragged-prefill behavior.
+- Adds TurboQuant launcher defaults for the validated FlashInfer `fa2` prefill,
+  workspace reservation, and speculative decode fast path used by the tested
+  dual 2080 Ti route.
+- Carries FlashQLA legacy SM70/SM75 patch assets into source builds so fresh
+  builds reproduce the validated GDN prefill path.
+- Improves one-click build reliability with network preflight, package/git
+  mirror fallback, local wheelhouse support, CUDA toolkit sanity checks, and
+  clearer hardware/environment hints.
+- Adds `update.sh` for release-version checks and optional rebuild after an
+  update.
+- Documents the recommended host runtime as Ubuntu 22.04/24.04 LTS or Debian
+  12 on Linux kernel 6.x. Ubuntu 26.04 / CUDA 13 remains a community
+  experiment until runtime profiles are validated.
+
 ## v0.1.8 - 2026-06-14
 
 - Improves source-build reliability for non-Miniclaw dual 2080 Ti hosts,
