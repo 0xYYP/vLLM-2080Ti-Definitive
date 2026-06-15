@@ -32,7 +32,7 @@ BUILD_PREFLIGHT_TIMEOUT_SECONDS=${BUILD_PREFLIGHT_TIMEOUT_SECONDS:-$BUILD_PREFLI
 BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS=${BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS:-60}
 BUILD_GIT_PRIMARY_TIMEOUT_SECONDS=${BUILD_GIT_PRIMARY_TIMEOUT_SECONDS:-120}
 BUILD_GIT_MIRROR_PREFIXES=${BUILD_GIT_MIRROR_PREFIXES:-https://gh-proxy.com/ https://ghfast.top/}
-TOTAL_STEPS=14
+TOTAL_STEPS=15
 STEP_INDEX=0
 BUILD_STARTED_AT=$(date +%s)
 VERSION=${VERSION:-$FORK_RELEASE}
@@ -1017,9 +1017,63 @@ for src, dst in ((patch_py, legacy_py), (patch_cu, legacy_cu)):
 PY
 }
 
+build_flashqla_legacy_extension() {
+  env \
+    CUDA_HOME="$CUDA_HOME" \
+    CUDA_PATH="$CUDA_PATH" \
+    CUDACXX="$CUDACXX" \
+    TORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
+    PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+    TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-$FLASHQLA_DIR/.torch_extensions_vllm_flashqla_legacy}" \
+    .venv/bin/python - "$FLASHQLA_DIR" <<'PY'
+from pathlib import Path
+import importlib
+import os
+import sys
+
+flashqla_root = Path(sys.argv[1]).resolve()
+legacy_src = (
+    flashqla_root
+    / "flash_qla"
+    / "ops"
+    / "gated_delta_rule"
+    / "legacy"
+    / "csrc"
+    / "gdn_forward.cu"
+)
+if not legacy_src.is_file():
+    raise SystemExit(f"missing FlashQLA legacy source: {legacy_src}")
+
+sys.path.insert(0, str(flashqla_root))
+legacy = importlib.import_module("flash_qla.ops.gated_delta_rule.legacy.sm_legacy")
+ext = legacy._load_ext()
+so_path = Path(getattr(ext, "__file__", ""))
+if not so_path.is_file():
+    raise SystemExit(f"FlashQLA legacy extension did not produce a shared object: {so_path}")
+
+print(f"flash_qla_legacy_extension={so_path}")
+print(f"torch_extensions_dir={os.environ.get('TORCH_EXTENSIONS_DIR', '')}")
+PY
+}
+
+validate_runtime_components() {
+  env \
+    CUDA_HOME="$CUDA_HOME" \
+    CUDA_PATH="$CUDA_PATH" \
+    CUDACXX="$CUDACXX" \
+    TORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
+    PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+    TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-$FLASHQLA_DIR/.torch_extensions_vllm_flashqla_legacy}" \
+    VLLM_CUTLASS_SRC_DIR="$VLLM_CUTLASS_SRC_DIR" \
+    TRITON_KERNELS_SRC_DIR="$TRITON_KERNELS_SRC_DIR" \
+    FLASHQLA_DIR="$FLASHQLA_DIR" \
+    .venv/bin/python "$ROOT/tools/validate_runtime_components.py"
+}
+
 run_with_progress "Fetch FlashQLA SM70/SM75 backend" fetch_flashqla_with_fallback
 run_with_progress "Patch FlashQLA SM75 legacy imports" patch_flashqla_sm75_imports
 run_uv_pip_with_mirror_fallback "Install FlashQLA SM70/SM75 backend" install --python .venv/bin/python --no-deps -e "$FLASHQLA_DIR"
+run_with_progress "Build FlashQLA legacy GDN extension" build_flashqla_legacy_extension
 run_with_progress "Fetch CUTLASS source" fetch_cutlass_with_fallback
 run_with_progress "Fetch Triton kernels source" fetch_triton_with_fallback
 
@@ -1037,21 +1091,7 @@ run_with_progress "Build and install vLLM 2080 Ti Definitive runtime" \
     VLLM_VERSION_OVERRIDE="$VERSION" \
     uv pip install --python .venv/bin/python --no-build-isolation --no-deps -e .
 
-run_step "Runtime check" .venv/bin/python - <<'PY'
-import importlib.util
-import torch
-import vllm
-
-print(f"vllm={getattr(vllm, '__version__', 'unknown')}")
-print(f"torch={torch.__version__}")
-print(f"cuda_available={torch.cuda.is_available()}")
-if torch.cuda.is_available():
-    print(f"cuda_device_count={torch.cuda.device_count()}")
-    for idx in range(torch.cuda.device_count()):
-        print(f"cuda_device_{idx}={torch.cuda.get_device_name(idx)}")
-print(f"flashinfer_available={importlib.util.find_spec('flashinfer') is not None}")
-print(f"flash_qla_available={importlib.util.find_spec('flash_qla') is not None}")
-PY
+run_with_progress "Validate runtime components" validate_runtime_components
 
 echo
 echo "BUILD OK"
