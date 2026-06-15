@@ -283,3 +283,7 @@ Acceleration components used or integrated by this runtime include:
 - TurboQuant, Marlin, CUTLASS, Triton, and related vLLM
   acceleration kernels: existing open-source acceleration work integrated and
   profiled for this hardware target.
+
+While this vLLM-2080Ti-Definitive fork won't strictly follow the main fork vLLM,
+the patches merged by vLLM update will be re-validated under SM75 specific scope.
+
