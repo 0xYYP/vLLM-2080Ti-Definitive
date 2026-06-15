@@ -271,3 +271,6 @@ fork，遵循 Apache-2.0 license。仓库保留上游项目结构，并加入面
 - TurboQuant、Marlin、CUTLASS、Triton 以及 vLLM
   相关加速 kernel：这些都是已有开源加速工作，本项目将它们整合、适配并在
   目标硬件上验证。
+
+本仓库不会严格遵循上游主线vLLM的版本更新节奏，但其每次版本迭代所引入的功能与修复，都将
+在SM75架构视角下重新评估.
