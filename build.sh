@@ -20,14 +20,18 @@ TRITON_KERNELS_DIR=${TRITON_KERNELS_DIR:-"$ROOT/.deps/triton-src"}
 BUILD_PYPI_OFFICIAL_INDEX=${BUILD_PYPI_OFFICIAL_INDEX:-https://pypi.org/simple}
 BUILD_PYPI_FOREIGN_INDEX=${BUILD_PYPI_FOREIGN_INDEX:-https://pypi.python.org/simple}
 BUILD_PYPI_DOMESTIC_INDEX=${BUILD_PYPI_DOMESTIC_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
-BUILD_GIT_FOREIGN_REPO_PREFIX=${BUILD_GIT_FOREIGN_REPO_PREFIX:-https://mirror.ghproxy.com/}
+BUILD_GIT_FOREIGN_REPO_PREFIX=${BUILD_GIT_FOREIGN_REPO_PREFIX:-https://gh-proxy.com/}
 BUILD_GIT_DOMESTIC_REPO_PREFIX=${BUILD_GIT_DOMESTIC_REPO_PREFIX:-https://ghfast.top/}
-BUILD_GIT_OFFICIAL_PROBE=${BUILD_GIT_OFFICIAL_PROBE:-https://github.com/}
-BUILD_GIT_FOREIGN_PROBE=${BUILD_GIT_FOREIGN_PROBE:-${BUILD_GIT_FOREIGN_REPO_PREFIX}https://github.com/}
-BUILD_GIT_DOMESTIC_PROBE=${BUILD_GIT_DOMESTIC_PROBE:-${BUILD_GIT_DOMESTIC_REPO_PREFIX}https://github.com/}
-BUILD_PREFLIGHT_TIMEOUT_SECONDS=${BUILD_PREFLIGHT_TIMEOUT_SECONDS:-6}
+BUILD_GIT_OFFICIAL_PROBE=${BUILD_GIT_OFFICIAL_PROBE:-${FLASHQLA_REPO}/info/refs?service=git-upload-pack}
+BUILD_GIT_FOREIGN_PROBE=${BUILD_GIT_FOREIGN_PROBE:-${BUILD_GIT_FOREIGN_REPO_PREFIX}${BUILD_GIT_OFFICIAL_PROBE}}
+BUILD_GIT_DOMESTIC_PROBE=${BUILD_GIT_DOMESTIC_PROBE:-${BUILD_GIT_DOMESTIC_REPO_PREFIX}${BUILD_GIT_OFFICIAL_PROBE}}
+# Preflight uses small URL samples to choose the fastest route before install.
+# Primary timeouts only bound the later real install/clone attempt on that route.
+BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS=${BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS:-${BUILD_PREFLIGHT_TIMEOUT_SECONDS:-5}}
+BUILD_PREFLIGHT_TIMEOUT_SECONDS=${BUILD_PREFLIGHT_TIMEOUT_SECONDS:-$BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS}
+BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS=${BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS:-60}
 BUILD_GIT_PRIMARY_TIMEOUT_SECONDS=${BUILD_GIT_PRIMARY_TIMEOUT_SECONDS:-120}
-BUILD_GIT_MIRROR_PREFIXES=${BUILD_GIT_MIRROR_PREFIXES:-https://ghfast.top/}
+BUILD_GIT_MIRROR_PREFIXES=${BUILD_GIT_MIRROR_PREFIXES:-https://gh-proxy.com/ https://ghfast.top/}
 TOTAL_STEPS=14
 STEP_INDEX=0
 BUILD_STARTED_AT=$(date +%s)
@@ -179,63 +183,127 @@ prompt_yes_no_timeout() {
   printf '%s\n' "$default_answer"
 }
 
-check_network_url() {
+measure_network_url_ms() {
   local url=$1
-  local timeout_seconds=${2:-3}
-  local status=1
+  local timeout_seconds=${2:-6}
+  local start end elapsed
+  start=$(date +%s%3N)
 
   if command -v curl >/dev/null 2>&1; then
-    curl -I -L --max-time "$timeout_seconds" --silent --show-error "$url" >/dev/null 2>&1
-    status=$?
+    curl -L --max-time "$timeout_seconds" --connect-timeout "$timeout_seconds" \
+      --fail --silent --show-error --output /dev/null "$url" >/dev/null 2>&1 || return 1
   elif command -v wget >/dev/null 2>&1; then
-    wget -q --spider --timeout="$timeout_seconds" "$url"
-    status=$?
+    wget -q --timeout="$timeout_seconds" -O /dev/null "$url" >/dev/null 2>&1 || return 1
+  else
+    return 1
   fi
-  return "$status"
+
+  end=$(date +%s%3N)
+  elapsed=$((end - start))
+  (( elapsed > 0 )) || elapsed=1
+  printf '%s\n' "$elapsed"
+}
+
+pypi_probe_url() {
+  local index_url=$1
+  index_url=${index_url%/}
+  if [[ "$index_url" == */simple ]]; then
+    printf '%s/pip/\n' "$index_url"
+  else
+    printf '%s\n' "$index_url"
+  fi
+}
+
+probe_download_route() {
+  local mode=$1
+  local pypi_url=$2
+  local git_url=$3
+  local timeout_seconds=${BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS:-8}
+  local pypi_probe
+  local pypi_ms git_ms total_ms
+
+  pypi_probe=$(pypi_probe_url "$pypi_url")
+  if ! pypi_ms=$(measure_network_url_ms "$pypi_probe" "$timeout_seconds"); then
+    printf 'Preflight: %-8s unavailable at Python index %s\n' "$mode" "$pypi_probe" >&2
+    return 1
+  fi
+  if ! git_ms=$(measure_network_url_ms "$git_url" "$timeout_seconds"); then
+    printf 'Preflight: %-8s unavailable at Git probe %s\n' "$mode" "$git_url" >&2
+    return 1
+  fi
+  total_ms=$((pypi_ms + git_ms))
+  printf 'Preflight: %-8s route %5sms total  PyPI=%sms  Git=%sms\n' \
+    "$mode" "$total_ms" "$pypi_ms" "$git_ms" >&2
+  printf '%s\t%s\t%s\t%s\n' "$total_ms" "$mode" "$pypi_ms" "$git_ms"
 }
 
 choose_download_mode() {
-  local official_ok=1 foreign_ok=1 domestic_ok=1
+  local measurements=()
+  local line selected_line
   local selected_mode="official"
+  local selected_total="unknown"
+  local selected_pypi="unknown"
+  local selected_git="unknown"
+  local probe_tmp
+  local -a probe_jobs=()
+  local item pid mode
 
-  echo "Preflight: probing download routes..."
-  if check_network_url "$BUILD_PYPI_OFFICIAL_INDEX" "$BUILD_PREFLIGHT_TIMEOUT_SECONDS" && \
-     check_network_url "$BUILD_GIT_OFFICIAL_PROBE" "$BUILD_PREFLIGHT_TIMEOUT_SECONDS"; then
-    official_ok=0
-  fi
-  if check_network_url "$BUILD_PYPI_FOREIGN_INDEX" "$BUILD_PREFLIGHT_TIMEOUT_SECONDS" && \
-     check_network_url "$BUILD_GIT_FOREIGN_PROBE" "$BUILD_PREFLIGHT_TIMEOUT_SECONDS"; then
-    foreign_ok=0
-  fi
-  if check_network_url "$BUILD_PYPI_DOMESTIC_INDEX" "$BUILD_PREFLIGHT_TIMEOUT_SECONDS" && \
-     check_network_url "$BUILD_GIT_DOMESTIC_PROBE" "$BUILD_PREFLIGHT_TIMEOUT_SECONDS"; then
-    domestic_ok=0
+  echo "Preflight: benchmarking download routes..."
+  echo "Preflight: sample timeout is ${BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS}s per URL probe."
+  if ! is_positive_integer "$BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS"; then
+    fail "BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS must be a positive integer."
   fi
 
-  if (( official_ok == 0 )); then
-    selected_mode="official"
-  elif (( foreign_ok == 0 )); then
-    selected_mode="foreign"
-  elif (( domestic_ok == 0 )); then
-    selected_mode="domestic"
-  else
+  probe_tmp=$(mktemp -d)
+  probe_download_route official "$BUILD_PYPI_OFFICIAL_INDEX" "$BUILD_GIT_OFFICIAL_PROBE" \
+    >"$probe_tmp/official.out" 2>"$probe_tmp/official.err" &
+  probe_jobs+=("$!:official")
+  probe_download_route foreign "$BUILD_PYPI_FOREIGN_INDEX" "$BUILD_GIT_FOREIGN_PROBE" \
+    >"$probe_tmp/foreign.out" 2>"$probe_tmp/foreign.err" &
+  probe_jobs+=("$!:foreign")
+  probe_download_route domestic "$BUILD_PYPI_DOMESTIC_INDEX" "$BUILD_GIT_DOMESTIC_PROBE" \
+    >"$probe_tmp/domestic.out" 2>"$probe_tmp/domestic.err" &
+  probe_jobs+=("$!:domestic")
+
+  for item in "${probe_jobs[@]}"; do
+    pid=${item%%:*}
+    wait "$pid" || true
+  done
+
+  for mode in official foreign domestic; do
+    [[ ! -s "$probe_tmp/$mode.err" ]] || cat "$probe_tmp/$mode.err" >&2
+    if [[ -s "$probe_tmp/$mode.out" ]]; then
+      line=$(head -n 1 "$probe_tmp/$mode.out")
+      measurements+=("$line")
+    fi
+  done
+
+  rm -rf "$probe_tmp"
+
+  if ((${#measurements[@]} == 0)); then
     echo "Preflight: network looks poor; no download route is currently reachable."
     local answer
     answer=$(prompt_yes_no_timeout "Continue anyway? [y/N]:" 10 n)
     [[ "$answer" == "y" ]] || fail "Build cancelled because network preflight failed."
     selected_mode="official"
+  else
+    selected_line=$(printf '%s\n' "${measurements[@]}" | sort -n -k1,1 | head -n 1)
+    selected_mode=$(printf '%s\n' "$selected_line" | awk -F '\t' '{print $2}')
+    selected_total=$(printf '%s\n' "$selected_line" | awk -F '\t' '{print $1}')
+    selected_pypi=$(printf '%s\n' "$selected_line" | awk -F '\t' '{print $3}')
+    selected_git=$(printf '%s\n' "$selected_line" | awk -F '\t' '{print $4}')
   fi
 
   case "$selected_mode" in
     official)
       BUILD_PYPI_ACTIVE_INDEX="$BUILD_PYPI_OFFICIAL_INDEX"
       BUILD_GIT_ACTIVE_PREFIX=""
-      echo "Preflight: using official download routes."
+      echo "Preflight: selected official download route (${selected_total}ms sample total; PyPI=${selected_pypi}ms; Git=${selected_git}ms)."
       ;;
     foreign)
       BUILD_PYPI_ACTIVE_INDEX="$BUILD_PYPI_FOREIGN_INDEX"
       BUILD_GIT_ACTIVE_PREFIX="$BUILD_GIT_FOREIGN_REPO_PREFIX"
-      echo "Preflight: official route is slow/unreachable; using foreign mirror route."
+      echo "Preflight: selected foreign mirror route (${selected_total}ms sample total; PyPI=${selected_pypi}ms; Git=${selected_git}ms)."
       local answer
       answer=$(prompt_yes_no_timeout "Continue with mirror route? [Y/n]:" 10 y)
       [[ "$answer" != "n" ]] || fail "Build cancelled by user."
@@ -243,7 +311,7 @@ choose_download_mode() {
     domestic)
       BUILD_PYPI_ACTIVE_INDEX="$BUILD_PYPI_DOMESTIC_INDEX"
       BUILD_GIT_ACTIVE_PREFIX="$BUILD_GIT_DOMESTIC_REPO_PREFIX"
-      echo "Preflight: official and foreign routes are slow/unreachable; using domestic mirror route."
+      echo "Preflight: selected domestic mirror route (${selected_total}ms sample total; PyPI=${selected_pypi}ms; Git=${selected_git}ms)."
       local answer
       answer=$(prompt_yes_no_timeout "Continue with domestic mirror route? [Y/n]:" 10 y)
       [[ "$answer" != "n" ]] || fail "Build cancelled by user."
@@ -454,14 +522,14 @@ run_uv_pip_with_mirror_fallback() {
   fi
 
   echo "Python package mirror fallback: enabled"
-  echo "  Primary timeout: ${timeout_seconds}s"
+  echo "  Selected-route attempt timeout: ${timeout_seconds}s"
   echo "  Mirror index: $mirror_index"
   if [[ -n "$wheelhouse_dir" ]]; then
     echo "  Local wheelhouse: $wheelhouse_dir"
   fi
   {
     echo "Python package mirror fallback: enabled"
-    echo "Primary timeout: ${timeout_seconds}s"
+    echo "Selected-route attempt timeout: ${timeout_seconds}s"
     echo "Mirror index: $mirror_index"
     if [[ -n "$wheelhouse_dir" ]]; then
       echo "Local wheelhouse: $wheelhouse_dir"
@@ -472,20 +540,20 @@ run_uv_pip_with_mirror_fallback() {
 
   local REUSE_STEP_HEADER=1
   if [[ -n "$primary_index" ]]; then
-    if run_with_progress_status "Primary index attempt" \
+    if run_with_progress_status "Selected-route index attempt" \
       "${uv_env[@]}" UV_DEFAULT_INDEX="$primary_index" timeout --preserve-status "$timeout_seconds" uv pip "$@"; then
       return 0
     fi
   else
-    if run_with_progress_status "Primary index attempt" \
+    if run_with_progress_status "Selected-route index attempt" \
       "${uv_env[@]}" timeout --preserve-status "$timeout_seconds" uv pip "$@"; then
       return 0
     fi
   fi
 
   echo
-  echo "Primary Python package install was too slow or failed; retrying with mirror."
-  echo "Primary Python package install was too slow or failed; retrying with mirror." >> "$LOG"
+  echo "Selected-route Python package install was too slow or failed; retrying with mirror."
+  echo "Selected-route Python package install was too slow or failed; retrying with mirror." >> "$LOG"
   if run_with_progress_status "Mirror index attempt" \
     "${uv_env[@]}" UV_DEFAULT_INDEX="$mirror_index" UV_INDEX_STRATEGY=unsafe-best-match uv pip "$@"; then
     return 0
@@ -568,17 +636,17 @@ fetch_flashqla_with_fallback() {
   fi
 
   echo "Git fetch fallback: enabled"
-  echo "  Primary timeout: ${timeout_seconds}s"
+  echo "  Selected-route attempt timeout: ${timeout_seconds}s"
   echo "  Mirror prefixes: ${BUILD_GIT_MIRROR_PREFIXES:-none}"
   {
     echo "Git fetch fallback: enabled"
-    echo "Primary timeout: ${timeout_seconds}s"
+    echo "Selected-route attempt timeout: ${timeout_seconds}s"
     echo "Mirror prefixes: ${BUILD_GIT_MIRROR_PREFIXES:-none}"
   } >> "$LOG"
 
   primary_repo=$(active_git_url "$FLASHQLA_REPO")
   local REUSE_STEP_HEADER=1
-  if run_with_progress_status "Primary git attempt" \
+  if run_with_progress_status "Selected-route git attempt" \
     env FLASHQLA_DIR="$FLASHQLA_DIR" timeout --preserve-status "$timeout_seconds" bash -c '
       repo=$1
       if [[ -d "$FLASHQLA_DIR/.git" ]]; then
@@ -595,8 +663,8 @@ fetch_flashqla_with_fallback() {
     [[ -n "$mirror_prefix" ]] || continue
     mirror_repo=$(git_url_with_prefix "$mirror_prefix" "$FLASHQLA_REPO")
     echo
-    echo "Primary git fetch was too slow or failed; retrying with mirror: $mirror_repo"
-    echo "Primary git fetch was too slow or failed; retrying with mirror: $mirror_repo" >> "$LOG"
+    echo "Selected-route git fetch was too slow or failed; retrying with mirror: $mirror_repo"
+    echo "Selected-route git fetch was too slow or failed; retrying with mirror: $mirror_repo" >> "$LOG"
     if run_with_progress_status "Mirror git attempt" fetch_git_repo_once "$mirror_repo"; then
       return 0
     fi
@@ -624,17 +692,17 @@ fetch_cutlass_with_fallback() {
   fi
 
   echo "CUTLASS fetch fallback: enabled"
-  echo "  Primary timeout: ${timeout_seconds}s"
+  echo "  Selected-route attempt timeout: ${timeout_seconds}s"
   echo "  Mirror prefixes: ${BUILD_GIT_MIRROR_PREFIXES:-none}"
   {
     echo "CUTLASS fetch fallback: enabled"
-    echo "Primary timeout: ${timeout_seconds}s"
+    echo "Selected-route attempt timeout: ${timeout_seconds}s"
     echo "Mirror prefixes: ${BUILD_GIT_MIRROR_PREFIXES:-none}"
   } >> "$LOG"
 
   primary_repo=$(active_git_url "$CUTLASS_REPO")
   local REUSE_STEP_HEADER=1
-  if run_with_progress_status "Primary CUTLASS attempt" \
+  if run_with_progress_status "Selected-route CUTLASS attempt" \
     env CUTLASS_DIR="$CUTLASS_DIR" timeout --preserve-status "$timeout_seconds" bash -c '
       repo=$1
       ref=$2
@@ -653,8 +721,8 @@ fetch_cutlass_with_fallback() {
     [[ -n "$mirror_prefix" ]] || continue
     mirror_repo=$(git_url_with_prefix "$mirror_prefix" "$CUTLASS_REPO")
     echo
-    echo "Primary CUTLASS fetch was too slow or failed; retrying with mirror: $mirror_repo"
-    echo "Primary CUTLASS fetch was too slow or failed; retrying with mirror: $mirror_repo" >> "$LOG"
+    echo "Selected-route CUTLASS fetch was too slow or failed; retrying with mirror: $mirror_repo"
+    echo "Selected-route CUTLASS fetch was too slow or failed; retrying with mirror: $mirror_repo" >> "$LOG"
     if run_with_progress_status "Mirror CUTLASS attempt" \
       fetch_git_tag_once "$mirror_repo" "$CUTLASS_DIR" "$CUTLASS_REVISION"; then
       return 0
@@ -683,17 +751,17 @@ fetch_triton_with_fallback() {
   fi
 
   echo "Triton fetch fallback: enabled"
-  echo "  Primary timeout: ${timeout_seconds}s"
+  echo "  Selected-route attempt timeout: ${timeout_seconds}s"
   echo "  Mirror prefixes: ${BUILD_GIT_MIRROR_PREFIXES:-none}"
   {
     echo "Triton fetch fallback: enabled"
-    echo "Primary timeout: ${timeout_seconds}s"
+    echo "Selected-route attempt timeout: ${timeout_seconds}s"
     echo "Mirror prefixes: ${BUILD_GIT_MIRROR_PREFIXES:-none}"
   } >> "$LOG"
 
   primary_repo=$(active_git_url "$TRITON_REPO")
   local REUSE_STEP_HEADER=1
-  if run_with_progress_status "Primary Triton attempt" \
+  if run_with_progress_status "Selected-route Triton attempt" \
     env TRITON_KERNELS_DIR="$TRITON_KERNELS_DIR" timeout --preserve-status "$timeout_seconds" bash -c '
       repo=$1
       ref=$2
@@ -712,8 +780,8 @@ fetch_triton_with_fallback() {
     [[ -n "$mirror_prefix" ]] || continue
     mirror_repo=$(git_url_with_prefix "$mirror_prefix" "$TRITON_REPO")
     echo
-    echo "Primary Triton fetch was too slow or failed; retrying with mirror: $mirror_repo"
-    echo "Primary Triton fetch was too slow or failed; retrying with mirror: $mirror_repo" >> "$LOG"
+    echo "Selected-route Triton fetch was too slow or failed; retrying with mirror: $mirror_repo"
+    echo "Selected-route Triton fetch was too slow or failed; retrying with mirror: $mirror_repo" >> "$LOG"
     if run_with_progress_status "Mirror Triton attempt" \
       fetch_git_branch_or_tag_once "$mirror_repo" "$TRITON_KERNELS_DIR" "$TRITON_TAG"; then
       return 0
@@ -835,8 +903,10 @@ Build settings:
   VENV=$ROOT/.venv
   Python package mirror fallback=${BUILD_PYPI_MIRROR_FALLBACK:-1}
   Python package mirror index=${BUILD_PYPI_MIRROR_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
+  Network preflight sample timeout=${BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS}s per URL probe
+  Python package selected-route attempt timeout=${BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS}s
   Python package wheelhouse=${BUILD_WHEELHOUSE_DIR:-auto:/data/wheelhouse/cu128}
-  Git primary timeout=${BUILD_GIT_PRIMARY_TIMEOUT_SECONDS}s
+  Git selected-route attempt timeout=${BUILD_GIT_PRIMARY_TIMEOUT_SECONDS}s
   Git mirror prefixes=${BUILD_GIT_MIRROR_PREFIXES:-none}
   CUTLASS repo=$CUTLASS_REPO
   CUTLASS ref=$CUTLASS_REVISION
