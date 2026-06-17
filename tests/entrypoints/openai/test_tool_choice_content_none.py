@@ -32,6 +32,11 @@ class _DummyDelegatingParser(DelegatingParser):
         return None
 
 
+class _ReasoningOnlyDelegatingParser(_DummyDelegatingParser):
+    def extract_reasoning(self, model_output: str, request):
+        return model_output, None
+
+
 def test_chat_completion_named_tool_choice_with_none_content():
     request = ChatCompletionRequest.model_validate(
         {
@@ -57,6 +62,36 @@ def test_chat_completion_named_tool_choice_with_none_content():
         enable_auto_tools=True,
     )
 
+    assert content is None
+    assert tool_calls == []
+
+
+def test_chat_completion_parse_preserves_reasoning_with_none_content():
+    request = ChatCompletionRequest.model_validate(
+        {
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+        }
+    )
+    parser = _ReasoningOnlyDelegatingParser(tokenizer=None)
+
+    reasoning, content, tool_calls = parser.parse(
+        "<think-only>",
+        request,
+        enable_auto_tools=True,
+    )
+
+    assert reasoning == "<think-only>"
     assert content is None
     assert tool_calls == []
 
