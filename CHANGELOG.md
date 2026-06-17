@@ -13,6 +13,9 @@ Edition. It is separate from the upstream vLLM package version.
 - Fixes Qwen GDN mixed prefill/decode handling when mixed batches transition
   through the recurrent attention path, including the TurboQuant attention state
   handling needed by that route.
+- Adds the explicit GDN prefill metadata used by the validated mixed
+  prefill/decode path, and re-validates the FP8 FP16-KV 128K MTP3 route on
+  dual RTX 2080 Ti.
 
 ## v0.1.9 - 2026-06-15
 
