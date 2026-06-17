@@ -555,6 +555,55 @@ current_reasoning_label() {
   printf '%s\n' "$label"
 }
 
+reasoning_parser_is_disabled() {
+  case "${REASONING_PARSER:-}" in
+    off|none|disabled|disable)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+default_qwen_reasoning_parser_applies() {
+  local model_dir_l served_l profile_l group_l
+
+  [[ "${MODEL_FAMILY:-}" == qwen* ]] || return 1
+
+  model_dir_l=${MODEL_DIR,,}
+  served_l=${SERVED_NAME,,}
+  profile_l=${PROFILE,,}
+  group_l=${PROFILE_GROUP,,}
+
+  case "$group_l" in
+    qwen3*|qwen36*)
+      return 0
+      ;;
+  esac
+  case "$profile_l" in
+    qwen27b/*)
+      return 0
+      ;;
+  esac
+  case "$model_dir_l $served_l" in
+    *qwen3*|*qwen-3*|*qwen_3*|*qwopus3*|*qwen36*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+apply_family_reasoning_defaults() {
+  # Qwen3/Qwen3.5 tokenizer configs do not always advertise the parser.
+  # Keep request thinking defaults template-driven, but make response parsing
+  # explicit so thinking text is not returned as normal content.
+  if reasoning_parser_is_disabled; then
+    return 0
+  fi
+  if default_qwen_reasoning_parser_applies; then
+    REASONING_PARSER=${REASONING_PARSER:-qwen3}
+  fi
+}
+
 current_tool_calling_label() {
   local label plugin_label
 
@@ -1470,6 +1519,7 @@ edit_reasoning_defaults_menu() {
       save_manager_state
       ;;
     "reasoning parser")
+      echo "Use off to disable the automatic parser default for diagnostics."
       REASONING_PARSER=$(prompt_optional "Reasoning parser" "${REASONING_PARSER:-}") || return 0
       save_manager_state
       ;;
@@ -2589,7 +2639,9 @@ build_args() {
   [[ "${DISABLE_CUSTOM_ALL_REDUCE:-0}" == "1" ]] && VLLM_ARGS+=(--disable-custom-all-reduce)
   [[ "${DISABLE_LOG_STATS:-0}" == "1" ]] && VLLM_ARGS+=(--disable-log-stats)
   [[ -n "${ATTENTION_BACKEND:-}" ]] && VLLM_ARGS+=(--attention-backend "$ATTENTION_BACKEND")
-  [[ -n "${REASONING_PARSER:-}" ]] && VLLM_ARGS+=(--reasoning-parser "$REASONING_PARSER")
+  if [[ -n "${REASONING_PARSER:-}" ]] && ! reasoning_parser_is_disabled; then
+    VLLM_ARGS+=(--reasoning-parser "$REASONING_PARSER")
+  fi
   [[ -n "${DEFAULT_CHAT_TEMPLATE_KWARGS:-}" ]] && VLLM_ARGS+=(--default-chat-template-kwargs "$DEFAULT_CHAT_TEMPLATE_KWARGS")
   [[ -n "${TOOL_PARSER_PLUGIN:-}" ]] && VLLM_ARGS+=(--tool-parser-plugin "$TOOL_PARSER_PLUGIN")
   [[ -n "${TOOL_CALL_PARSER:-}" ]] && VLLM_ARGS+=(--tool-call-parser "$TOOL_CALL_PARSER")
@@ -2845,8 +2897,10 @@ host, port, model_id = sys.argv[1], sys.argv[2], sys.argv[3]
 payload = {
     "model": model_id,
     "messages": [{"role": "user", "content": "Reply with OK."}],
-    "max_tokens": 8,
+    "max_tokens": 64,
     "temperature": 0,
+    "stream": False,
+    "chat_template_kwargs": {"enable_thinking": False},
 }
 req = urllib.request.Request(
     f"http://{host}:{port}/v1/chat/completions",
@@ -2856,10 +2910,17 @@ req = urllib.request.Request(
 )
 with urllib.request.urlopen(req, timeout=120) as resp:
     data = json.load(resp)
-text = data["choices"][0]["message"].get("content", "")
-if not text.strip():
+msg = data["choices"][0]["message"]
+text = (
+    msg.get("content")
+    or msg.get("reasoning_content")
+    or msg.get("reasoning")
+    or ""
+)
+text = str(text).strip()
+if not text:
     raise SystemExit("empty smoke response")
-print(text.strip().replace("\n", " ")[:120])
+print(text.replace("\n", " ")[:120])
 PY
 }
 
@@ -3155,6 +3216,7 @@ prepare_runtime_defaults() {
     SKIP_MM_PROFILING=1
   fi
   ENABLE_AUTO_TOOL_CHOICE=$(normalize_bool "${ENABLE_AUTO_TOOL_CHOICE:-0}")
+  apply_family_reasoning_defaults
   if [[ "$ENABLE_AUTO_TOOL_CHOICE" == "1" ]]; then
     TOOL_CALL_PARSER=${TOOL_CALL_PARSER:-qwen3_xml}
     VLLM_ENFORCE_STRICT_TOOL_CALLING=${VLLM_ENFORCE_STRICT_TOOL_CALLING:-1}

@@ -35,6 +35,10 @@ Launch modes:
 `profiles/templates/` contains optional chat-template presets. They are selected
 from the launcher as a global service setting; route profiles do not store chat
 templates, GPU devices, ports, reasoning defaults, or tool-calling defaults.
+For the shipped Qwen3/Qwen3.6 routes, the launcher fills in `qwen3` as the
+reasoning parser when one is not set so startup smoke and chat parsing stay
+aligned with the model's default reasoning behavior. Set `REASONING_PARSER=off`
+if you need to run without a reasoning parser for diagnostics.
 
 File names describe the intended route:
 

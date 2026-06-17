@@ -34,6 +34,9 @@ profiles/
 `profiles/templates/` 存放可选 chat template 预设。它们通过 launcher 作为全局
 服务设置选择；具体 route profile 不保存 chat template、GPU、端口、reasoning
 默认值或工具调用默认值。
+对内置 Qwen3/Qwen3.6 路线，launcher 会在未显式设置时补上 `qwen3`
+reasoning parser，让启动 smoke 和聊天解析都跟模型默认 reasoning 行为保持一致。
+如需诊断无 reasoning parser 路径，可设置 `REASONING_PARSER=off`。
 
 文件名描述路线：
 
