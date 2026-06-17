@@ -1486,8 +1486,10 @@ class GatedDeltaNetAttention(PluggableLayer, MambaBase):
         if attn_metadata.num_prefills > 0:
             prefill_state_indices = attn_metadata.prefill_state_indices
             prefill_has_initial_state = attn_metadata.prefill_has_initial_state
+            prefill_query_start_loc = attn_metadata.prefill_query_start_loc
             assert prefill_state_indices is not None
             assert prefill_has_initial_state is not None
+            assert prefill_query_start_loc is not None
             initial_state = ssm_state[prefill_state_indices].contiguous()
             initial_state[~prefill_has_initial_state, ...] = 0
             (
@@ -1501,7 +1503,7 @@ class GatedDeltaNetAttention(PluggableLayer, MambaBase):
                 beta=beta_non_spec,
                 initial_state=initial_state,
                 output_final_state=True,
-                cu_seqlens=attn_metadata.prefill_query_start_loc,
+                cu_seqlens=prefill_query_start_loc,
                 chunk_indices=attn_metadata.chunk_indices,
                 chunk_offsets=attn_metadata.chunk_offsets,
                 use_qk_l2norm_in_kernel=False,
@@ -1524,7 +1526,7 @@ class GatedDeltaNetAttention(PluggableLayer, MambaBase):
                     v=value_non_spec,
                     initial_state=initial_state.clone(),
                     inplace_final_state=False,
-                    cu_seqlens=attn_metadata.prefill_query_start_loc,
+                    cu_seqlens=prefill_query_start_loc,
                     use_qk_l2norm_in_kernel=True,
                 )
                 out_err = (core_attn_out_non_spec.squeeze(0) - ref_out).abs()

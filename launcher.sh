@@ -571,8 +571,10 @@ default_qwen_reasoning_parser_applies() {
 
   model_dir_l=${MODEL_DIR,,}
   served_l=${SERVED_NAME,,}
-  profile_l=${PROFILE,,}
-  group_l=${PROFILE_GROUP,,}
+  profile_l=${PROFILE:-}
+  profile_l=${profile_l,,}
+  group_l=${PROFILE_GROUP:-}
+  group_l=${group_l,,}
 
   case "$group_l" in
     qwen3*|qwen36*)
@@ -3022,6 +3024,37 @@ launch_server() {
   fi
 
   echo "Health check: OK"
+  if [[ "${SKIP_STARTUP_SMOKE:-0}" == "1" ]]; then
+    restore_overcommit_memory || true
+
+    local api_local="http://127.0.0.1:${PORT}/v1"
+    local api_lan=""
+    if [[ "$SERVICE_SCOPE" == "lan" ]]; then
+      api_lan="http://$(hostname -I 2>/dev/null | awk '{print $1}'):${PORT}/v1"
+    fi
+    LAST_PID_FILE="$pid_file"
+    LAST_LOG_FILE="$log_file"
+    LAST_API_LOCAL="$api_local"
+    LAST_API_LAN="$api_lan"
+    LAST_SMOKE_OUTPUT="skipped"
+    save_manager_state
+
+    echo
+    echo "START OK"
+    echo "Smoke response: skipped"
+    echo "PID file: $pid_file"
+    echo "Log: $log_file"
+    echo "Local API: $api_local"
+    if [[ -n "$api_lan" ]]; then
+      echo "LAN API:   $api_lan"
+    fi
+
+    if is_tty; then
+      show_launch_status
+    fi
+    return 0
+  fi
+
   local smoke_output
   echo "Running smoke test..."
   if ! smoke_output=$(smoke_test "$url_host" 2>&1); then
