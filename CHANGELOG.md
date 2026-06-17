@@ -3,6 +3,17 @@
 This changelog tracks the fork release version for vLLM 2080 Ti Definitive
 Edition. It is separate from the upstream vLLM package version.
 
+## v0.1.10 - 2026-06-17
+
+- Fixes the Qwen reasoning startup path by keeping `reasoning_content`
+  compatible with clients that still read the legacy field name.
+- Unifies chat reasoning and tool-call parsing so `content=None` responses do
+  not break named tool choice handling, and adds regression coverage for the
+  reasoning-only null-content path.
+- Fixes Qwen GDN mixed prefill/decode handling when mixed batches transition
+  through the recurrent attention path, including the TurboQuant attention state
+  handling needed by that route.
+
 ## v0.1.9 - 2026-06-15
 
 - Restores the validated Qwen3.6 27B FP8 + TurboQuant TQK8V4 `fast` route on
@@ -112,9 +123,4 @@ Edition. It is separate from the upstream vLLM package version.
 
 ## v0.1.1
 
-- Follow-up compatibility fixes for editable/source builds and optional CUDA
-  extension imports on SM75 environments.
-
-## v0.1.0
-
-- Initial public stable snapshot of the dual 2080 Ti / SM75 TP=2 runtime.
+- Follow-up compatibility fixes for editable/source bu
