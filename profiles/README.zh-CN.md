@@ -50,6 +50,9 @@ KV 精度定位：
 - `int8kv`：容量 / 平衡路线；当前只作为 `normal` profile 保留。
 - `tqk8v4`：TurboQuant K8V4 压缩路线；当前只保留质量通过的 `fast` profile。
 
+内置 TQK8V4 profile 使用 `MAX_BATCHED_TOKENS=2560`，这是 Qwen hybrid cache
+block 对齐后的 prefix-cache 路径已验证设置。
+
 ## 已验证 Profile
 
 ### FP8

@@ -3,6 +3,17 @@
 This changelog tracks the fork release version for vLLM 2080 Ti Definitive
 Edition. It is separate from the upstream vLLM package version.
 
+## v0.1.11 - 2026-06-29
+
+- Updates the launcher defaults for long-context serving: prefix cache is now a
+  launcher-level default, prompt token details are enabled for status
+  visibility, and Qwen routes automatically use the cache mode required by the
+  validated prefix-cache path.
+- Adds launcher-side startup safeguards for large profiles, including
+  cold-compile prewarm retry and display-GPU occupancy warnings.
+- Retunes the shipped Qwen3.6 TQK8V4 `fast` profiles for the validated prefix
+  cache path by raising their max batched tokens to `2560`.
+
 ## v0.1.10 - 2026-06-17
 
 - Fixes the Qwen reasoning startup path by keeping `reasoning_content`

@@ -86,6 +86,38 @@ pid_arg_value() {
   return 1
 }
 
+pid_has_arg() {
+  local pid=$1
+  local flag=$2
+  local part
+
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+  while IFS= read -r -d '' part; do
+    [[ "$part" == "$flag" ]] && return 0
+  done <"/proc/$pid/cmdline"
+  return 1
+}
+
+pid_prefix_cache_label() {
+  local pid=$1
+  if pid_has_arg "$pid" --no-enable-prefix-caching; then
+    printf 'disabled\n'
+  elif pid_has_arg "$pid" --enable-prefix-caching; then
+    printf 'enabled\n'
+  else
+    printf 'auto\n'
+  fi
+}
+
+pid_prompt_details_label() {
+  local pid=$1
+  if pid_has_arg "$pid" --enable-prompt-tokens-details; then
+    printf 'enabled\n'
+  else
+    printf 'disabled\n'
+  fi
+}
+
 service_api_root() {
   local pid_file=$1
   local pid=$2
@@ -203,6 +235,8 @@ render_service_status() {
     printf '  Model:   %s\n' "${SERVED_NAME:-$name}"
     printf '  API:     %s\n' "$api"
     printf '  PID:     %s\n' "$pid"
+    printf '  Prefix:  %s\n' "$(pid_prefix_cache_label "$pid")"
+    printf '  Prompt details: %s\n' "$(pid_prompt_details_label "$pid")"
     render_kv_cache_status "$pid_file" "$pid" "$name" 8
   else
     printf '  Status:  STOPPED\n'
@@ -252,6 +286,8 @@ MODEL_DIR|PROFILE_DIR|PROFILE|MODE|PORT|SERVICE_SCOPE|GPU_DEVICES|TP_SIZE|\
 CHAT_TEMPLATE_FILE|CHAT_TEMPLATE_PRESET|TEMPLATE_DIR|REASONING_PARSER|\
 DEFAULT_CHAT_TEMPLATE_KWARGS|REASONING_MODE|REASONING_BUDGET|\
 ENABLE_AUTO_TOOL_CHOICE|TOOL_CALL_PARSER|TOOL_PARSER_PLUGIN|\
+ENABLE_PREFIX_CACHING|ENABLE_PROMPT_TOKENS_DETAILS|\
+DISABLE_PREFIX_CACHING|\
 VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH|VLLM_ENFORCE_STRICT_TOOL_CALLING)
       return 0
       ;;
@@ -332,6 +368,8 @@ save_manager_state() {
     printf 'QUANTIZATION=%q\n' "${QUANTIZATION:-}"
     printf 'KV_CACHE_DTYPE=%q\n' "${KV_CACHE_DTYPE:-}"
     printf 'MAMBA_CACHE_MODE=%q\n' "${MAMBA_CACHE_MODE:-}"
+    printf 'ENABLE_PREFIX_CACHING=%q\n' "${ENABLE_PREFIX_CACHING:-1}"
+    printf 'ENABLE_PROMPT_TOKENS_DETAILS=%q\n' "${ENABLE_PROMPT_TOKENS_DETAILS:-1}"
     printf 'MAX_MODEL_LEN=%q\n' "${MAX_MODEL_LEN:-}"
     printf 'GPU_UTIL=%q\n' "${GPU_UTIL:-}"
     printf 'MAX_BATCHED_TOKENS=%q\n' "${MAX_BATCHED_TOKENS:-}"
@@ -606,6 +644,21 @@ apply_family_reasoning_defaults() {
   fi
 }
 
+apply_prefix_cache_defaults() {
+  ENABLE_PREFIX_CACHING=$(normalize_bool "${ENABLE_PREFIX_CACHING:-1}")
+  ENABLE_PROMPT_TOKENS_DETAILS=$(normalize_bool "${ENABLE_PROMPT_TOKENS_DETAILS:-1}")
+  DISABLE_PREFIX_CACHING=$(normalize_bool "${DISABLE_PREFIX_CACHING:-0}")
+
+  if [[ "$DISABLE_PREFIX_CACHING" == "1" ]]; then
+    ENABLE_PREFIX_CACHING=0
+    return 0
+  fi
+
+  if [[ "$ENABLE_PREFIX_CACHING" == "1" && "$MODEL_FAMILY" == qwen* && -z "${MAMBA_CACHE_MODE:-}" ]]; then
+    MAMBA_CACHE_MODE=align
+  fi
+}
+
 current_tool_calling_label() {
   local label plugin_label
 
@@ -629,6 +682,16 @@ current_tool_calling_label() {
   fi
 
   printf '%s\n' "$label"
+}
+
+current_prefix_cache_label() {
+  if [[ "${DISABLE_PREFIX_CACHING:-0}" == "1" ]]; then
+    printf 'disabled'
+  elif [[ "${ENABLE_PREFIX_CACHING:-1}" == "1" ]]; then
+    printf 'enabled'
+  else
+    printf 'auto'
+  fi
 }
 
 gpu_device_count() {
@@ -660,6 +723,40 @@ list_nvidia_gpus() {
         }
       }
     '
+}
+
+warn_display_gpu_occupancy() {
+  local devices=${GPU_DEVICES:-}
+  local device pids pid comm args found=0
+
+  command -v fuser >/dev/null 2>&1 || return 0
+  devices=${devices// /}
+  [[ -n "$devices" ]] || return 0
+
+  IFS=',' read -r -a parts <<< "$devices"
+  for device in "${parts[@]}"; do
+    [[ "$device" =~ ^[0-9]+$ && -e "/dev/nvidia${device}" ]] || continue
+    pids=$(fuser "/dev/nvidia${device}" 2>/dev/null || true)
+    [[ -n "$pids" ]] || continue
+    for pid in $pids; do
+      [[ "$pid" =~ ^[0-9]+$ ]] || continue
+      comm=$(ps -p "$pid" -o comm= 2>/dev/null || true)
+      args=$(ps -p "$pid" -o args= 2>/dev/null || true)
+      case "$comm $args" in
+        *Xorg*|*Xwayland*|*gnome-shell*|*kwin*|*plasmashell*|*Hyprland*|*sway*|*gdm*|*sddm*|*lightdm*)
+          if (( found == 0 )); then
+            echo
+            echo "Display GPU warning"
+            echo "  A desktop/display process is using one of the selected compute GPUs."
+            echo "  This reduces available VRAM and can lower the maximum stable context."
+            echo "  Prefer an iGPU or a non-compute display GPU for large-context profiles."
+            found=1
+          fi
+          printf '  GPU %s: pid=%s %s\n' "$device" "$pid" "${comm:-unknown}"
+          ;;
+      esac
+    done
+  done
 }
 
 profile_summary() {
@@ -1419,7 +1516,6 @@ save_current_profile_menu() {
   write_profile_entry "$target_file.tmp" SPECULATIVE_CONFIG "${SPECULATIVE_CONFIG:-}"
   write_profile_entry "$target_file.tmp" ATTENTION_BACKEND "${ATTENTION_BACKEND:-}"
   write_profile_entry "$target_file.tmp" DISABLE_HYBRID_KV_CACHE_MANAGER "${DISABLE_HYBRID_KV_CACHE_MANAGER:-}"
-  write_profile_entry "$target_file.tmp" DISABLE_PREFIX_CACHING "${DISABLE_PREFIX_CACHING:-}"
   write_profile_entry "$target_file.tmp" DISABLE_CUSTOM_ALL_REDUCE "${DISABLE_CUSTOM_ALL_REDUCE:-}"
   mv "$target_file.tmp" "$target_file"
 
@@ -1801,12 +1897,30 @@ edit_message_type_menu() {
   save_manager_state
 }
 
+edit_prefix_cache_menu() {
+  local choice
+
+  choice=$(menu_select "Prefix cache" "$(current_prefix_cache_label)" enabled disabled) || return 0
+  case "$choice" in
+    disabled)
+      DISABLE_PREFIX_CACHING=1
+      ENABLE_PREFIX_CACHING=0
+      ;;
+    *)
+      ENABLE_PREFIX_CACHING=1
+      DISABLE_PREFIX_CACHING=0
+      ENABLE_PROMPT_TOKENS_DETAILS=1
+      ;;
+  esac
+  save_manager_state
+}
+
 runtime_parameter_menu() {
   local selected choices=()
   local model_family_value profile_group_value model_variant_value served_name_value
   local quantization_value kv_value context_value gpu_util_value
   local batch_tokens_value max_sequences_value mtp_value message_type_value
-  local template_value reasoning_value tool_calling_value
+  local template_value reasoning_value tool_calling_value prefix_cache_value
 
   while true; do
     model_family_value=$(menu_value "${MODEL_FAMILY:-$(guess_model_family "${MODEL_DIR:-}")}")
@@ -1824,6 +1938,7 @@ runtime_parameter_menu() {
     template_value=$(menu_value "$(current_template_label)")
     reasoning_value=$(menu_value "$(current_reasoning_label)")
     tool_calling_value=$(menu_value "$(current_tool_calling_label)")
+    prefix_cache_value=$(menu_value "$(current_prefix_cache_label)")
 
     if is_tty; then
       clear >/dev/tty 2>/dev/null || true
@@ -1847,6 +1962,7 @@ runtime_parameter_menu() {
       "Chat template: $template_value"
       "Reasoning defaults: $reasoning_value"
       "Tool calling: $tool_calling_value"
+      "Prefix cache: $prefix_cache_value"
       "Advanced options"
       "Edit all fields"
       "Return"
@@ -1907,6 +2023,9 @@ runtime_parameter_menu() {
         ;;
       "Tool calling:"*)
         edit_tool_calling_menu
+        ;;
+      "Prefix cache:"*)
+        edit_prefix_cache_menu
         ;;
       "Advanced options")
         edit_advanced_parameters
@@ -2635,7 +2754,12 @@ build_args() {
   [[ "${ENFORCE_EAGER:-0}" == "1" ]] && VLLM_ARGS+=(--enforce-eager)
   [[ "${NO_ASYNC_SCHEDULING:-0}" == "1" ]] && VLLM_ARGS+=(--no-async-scheduling)
   [[ "${DISABLE_HYBRID_KV_CACHE_MANAGER:-0}" == "1" ]] && VLLM_ARGS+=(--disable-hybrid-kv-cache-manager)
-  [[ "${DISABLE_PREFIX_CACHING:-0}" == "1" ]] && VLLM_ARGS+=(--no-enable-prefix-caching)
+  if [[ "${DISABLE_PREFIX_CACHING:-0}" == "1" ]]; then
+    VLLM_ARGS+=(--no-enable-prefix-caching)
+  elif [[ "${ENABLE_PREFIX_CACHING:-1}" == "1" ]]; then
+    VLLM_ARGS+=(--enable-prefix-caching)
+  fi
+  [[ "${ENABLE_PROMPT_TOKENS_DETAILS:-1}" == "1" ]] && VLLM_ARGS+=(--enable-prompt-tokens-details)
   [[ "${LANGUAGE_MODEL_ONLY:-0}" == "1" ]] && VLLM_ARGS+=(--language-model-only)
   [[ "${SKIP_MM_PROFILING:-0}" == "1" ]] && VLLM_ARGS+=(--skip-mm-profiling)
   [[ "${DISABLE_CUSTOM_ALL_REDUCE:-0}" == "1" ]] && VLLM_ARGS+=(--disable-custom-all-reduce)
@@ -2870,6 +2994,101 @@ wait_for_ready() {
   return 2
 }
 
+cold_compile_admission_failure() {
+  local log_file=$1
+
+  [[ "${VLLM_COMPILE_PREWARM_RETRY:-0}" != "1" ]] || return 1
+  [[ "${VLLM_COMPILE_PREWARM:-1}" != "0" ]] || return 1
+  [[ -s "$log_file" ]] || return 1
+
+  grep -qE 'To serve at least one request.*max seq len|estimated maximum model length is [0-9]+' "$log_file" 2>/dev/null || return 1
+  grep -qE 'Compiling a graph|Cache the graph of compile range|saved AOT compiled function|Dynamo bytecode transform time' "$log_file" 2>/dev/null || return 1
+  return 0
+}
+
+cold_compile_prewarm_len() {
+  local log_file=$1
+  local target=${MAX_MODEL_LEN:-0}
+  local estimate len
+
+  [[ "$target" =~ ^[0-9]+$ && "$target" -gt 0 ]] || return 1
+  estimate=$(grep -Eo 'estimated maximum model length is [0-9]+' "$log_file" 2>/dev/null | awk '{print $NF}' | tail -n 1)
+  if [[ "$estimate" =~ ^[0-9]+$ && "$estimate" -gt 4096 ]]; then
+    len=$((estimate - 4096))
+  else
+    len=$((target * 4 / 5))
+  fi
+  (( len > 4096 )) || return 1
+  len=$((len / 1024 * 1024))
+  (( len >= 4096 && len < target )) || return 1
+  echo "$len"
+}
+
+run_compile_prewarm() {
+  local host_arg=$1
+  local url_host=$2
+  local prewarm_len=$3
+  local original_len=$MAX_MODEL_LEN
+  local original_name=$SERVED_NAME
+  local original_pid=${CURRENT_SERVER_PID:-}
+  local prewarm_name prewarm_safe prewarm_log prewarm_pid_file args_text ready_rc=0
+
+  prewarm_name="${SERVED_NAME}-compile-prewarm-${prewarm_len}"
+  prewarm_safe=$(printf '%s' "$prewarm_name" | tr -c 'A-Za-z0-9_.-' '_' | sed 's/_*$//')
+  [[ -n "$prewarm_safe" ]] || prewarm_safe="vllm-compile-prewarm"
+  prewarm_log="$LOG_DIR/vllm-${prewarm_safe}-${STAMP}.log"
+  prewarm_pid_file="$LOG_DIR/vllm-${prewarm_safe}.pid"
+
+  MAX_MODEL_LEN=$prewarm_len
+  SERVED_NAME=$prewarm_name
+  build_args "$host_arg"
+  printf -v args_text '%q ' "${VLLM_ARGS[@]}"
+
+  {
+    echo "============================================================"
+    echo "$PROJECT_NAME v$VERSION compile prewarm"
+    echo "Launch time: $(date '+%F %T %Z')"
+    echo "Original served name: $original_name"
+    echo "Original max model len: $original_len"
+    echo "Prewarm max model len: $prewarm_len"
+    echo "Model: $MODEL_DIR"
+    echo "Mode: $MODE"
+    echo "GPU devices: ${GPU_DEVICES:-}"
+    echo "TP size: ${TP_SIZE:-}"
+    echo "Command: $RUNTIME_ROOT/.venv/bin/python -m vllm.entrypoints.openai.api_server $args_text"
+    echo "============================================================"
+  } > "$prewarm_log"
+
+  echo
+  echo "Cold compile admission failure detected."
+  echo "Running compile prewarm at max_model_len=$prewarm_len, then retrying the original $original_len context."
+  echo "  Prewarm log: $prewarm_log"
+
+  if command -v setsid >/dev/null 2>&1; then
+    nohup setsid "$RUNTIME_ROOT/.venv/bin/python" -m vllm.entrypoints.openai.api_server "${VLLM_ARGS[@]}" >>"$prewarm_log" 2>&1 &
+  else
+    nohup "$RUNTIME_ROOT/.venv/bin/python" -m vllm.entrypoints.openai.api_server "${VLLM_ARGS[@]}" >>"$prewarm_log" 2>&1 &
+  fi
+  CURRENT_SERVER_PID=$!
+  echo "$CURRENT_SERVER_PID" > "$prewarm_pid_file"
+
+  wait_for_ready "$prewarm_log" "$url_host" || ready_rc=$?
+  cleanup_failed_launch "$prewarm_pid_file" || true
+
+  MAX_MODEL_LEN=$original_len
+  SERVED_NAME=$original_name
+  CURRENT_SERVER_PID=$original_pid
+  build_args "$host_arg"
+
+  if [[ "$ready_rc" == "0" ]]; then
+    echo "Compile prewarm: OK"
+    return 0
+  fi
+
+  echo "Compile prewarm failed. See: $prewarm_log" >&2
+  return 1
+}
+
 smoke_test() {
   local url_host=$1
   local model_id model_output
@@ -2969,6 +3188,7 @@ launch_server() {
   fi
 
   check_checkpoint_mmap_policy || return 1
+  warn_display_gpu_occupancy || true
 
   {
     echo "============================================================"
@@ -3013,6 +3233,24 @@ launch_server() {
   local ready_rc=0
   wait_for_ready "$log_file" "$url_host" || ready_rc=$?
   if [[ "$ready_rc" != "0" ]]; then
+    local prewarm_len retry_rc
+    if cold_compile_admission_failure "$log_file"; then
+      prewarm_len=$(cold_compile_prewarm_len "$log_file" || true)
+      if [[ -n "$prewarm_len" ]]; then
+        cleanup_failed_launch "$pid_file"
+        if run_compile_prewarm "$host_arg" "$url_host" "$prewarm_len"; then
+          echo
+          echo "Retrying original launch after compile prewarm..."
+          local old_stamp=$STAMP
+          STAMP=$(date +%Y%m%d-%H%M%S)
+          VLLM_COMPILE_PREWARM_RETRY=1 launch_server
+          retry_rc=$?
+          STAMP=$old_stamp
+          unset VLLM_COMPILE_PREWARM_RETRY
+          return "$retry_rc"
+        fi
+      fi
+    fi
     echo
     echo "START FAILED"
     echo "Log: $log_file"
@@ -3248,6 +3486,7 @@ prepare_runtime_defaults() {
     LANGUAGE_MODEL_ONLY=1
     SKIP_MM_PROFILING=1
   fi
+  apply_prefix_cache_defaults
   ENABLE_AUTO_TOOL_CHOICE=$(normalize_bool "${ENABLE_AUTO_TOOL_CHOICE:-0}")
   apply_family_reasoning_defaults
   if [[ "$ENABLE_AUTO_TOOL_CHOICE" == "1" ]]; then
@@ -3284,6 +3523,7 @@ Launch summary:
   W/A type:             $(guess_precision_scheme "$MODEL_DIR" "${QUANTIZATION:-}")
   GPU devices:          ${GPU_DEVICES:-$(detect_default_gpu_devices)}
   KV precision:         ${KV_CACHE_DTYPE:-fp16}
+  Prefix cache:         $(current_prefix_cache_label)
   Mamba cache mode:     ${MAMBA_CACHE_MODE:-auto}
   Context tokens:       $MAX_MODEL_LEN
   GPU util:             $GPU_UTIL
@@ -3294,6 +3534,7 @@ Launch summary:
   Chat template:        $(current_template_label)
   Reasoning default:    $(current_reasoning_label)
   Tool calling:         $(current_tool_calling_label)
+  Prompt details:       ${ENABLE_PROMPT_TOKENS_DETAILS:-1}
   Mode:                 $MODE
   MTP graph policy:     VLLM_SM75_SPEC_SYNC_MODE=${VLLM_SM75_SPEC_SYNC_MODE:-auto}, VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=${VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH:-0}
   Strict tool calling:  VLLM_ENFORCE_STRICT_TOOL_CALLING=${VLLM_ENFORCE_STRICT_TOOL_CALLING:-0}
@@ -3380,6 +3621,7 @@ render_main_menu() {
   printf '     vLLM quant:       %s\n' "$(menu_value "${QUANTIZATION:-auto}")"
   printf '     W/A type:         %s\n' "$(menu_value "$(guess_precision_scheme "${MODEL_DIR:-}" "${QUANTIZATION:-}")")"
   printf '     KV precision:     %s\n' "$(menu_value "${KV_CACHE_DTYPE:-fp16}")"
+  printf '     Prefix cache:     %s\n' "$(menu_value "$(current_prefix_cache_label)")"
   printf '     Context tokens:   %s\n' "$(menu_value "${MAX_MODEL_LEN:-$(default_context_tokens)}")"
   printf '     GPU util:         %s\n' "$(menu_value "${GPU_UTIL:-$(default_gpu_util)}")"
   printf '     Batch tokens:     %s\n' "$(menu_value "${MAX_BATCHED_TOKENS:-2048}")"

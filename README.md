@@ -8,7 +8,7 @@ The definitive vLLM runtime for dual RTX 2080 Ti / SM75 serving.
 This is a hardware-focused fork that preserves the patched source, launch
 profiles, and runtime notes needed to reproduce the working 2080 Ti vLLM stack.
 
-Fork release: `v0.1.10`
+Fork release: `v0.1.11`
 Base vLLM: `0.21.0`
 
 Headline evidence: Qwen3.6 27B reaches `100+ tok/s` single-request decode on
@@ -116,7 +116,7 @@ recommended checkpoint also has a useful throughput/context tradeoff on dual 208
   size 2
 - Validated host OS: Ubuntu 22.04/24.04 LTS or Debian 12, on Linux kernel 6.x
 - CUDA/PyTorch: CUDA 12.8, `torch 2.11.0+cu128`
-- Fork release: `v0.1.10`
+- Fork release: `v0.1.11`
 - Base vLLM: `0.21.0`
 - Repository identity: `vllm-2080ti-definitive`
 - Runtime identity: `vllm-sm75-tp2-cu128`
@@ -149,13 +149,17 @@ the checkpoint directory, apply or edit a profile, select `safe` / `normal` /
 configure chat templates and tool calling, start the server, stop the server,
 or save a custom profile.
 
+Prefix cache is enabled by default as a global launcher setting. It is not saved
+inside route profiles. For Qwen routes, the launcher also applies the matching
+cache mode needed by the validated prefix-cache path.
+
 Tool calling is supported through the OpenAI-compatible serving API. The
 launcher exposes automatic tool choice, tool parser selection, and strict
 structured tool output as global runtime settings.
 
 After a successful launch, the status panel shows `RUNNING`, the served model
-name, PID, OpenAI-compatible API URL, log file, and cache capacity when vLLM
-reports it.
+name, PID, OpenAI-compatible API URL, log file, prefix-cache state, prompt token
+detail state, and cache capacity when vLLM reports it.
 
 For scripted use:
 

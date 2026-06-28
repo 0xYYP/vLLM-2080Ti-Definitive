@@ -54,6 +54,10 @@ KV positioning:
 - `tqk8v4`: TurboQuant K8V4 compression route; currently shipped only for
   quality-passed `fast` profiles.
 
+The shipped TQK8V4 profiles use `MAX_BATCHED_TOKENS=2560`, which is the
+validated setting for the prefix-cache path with aligned Qwen hybrid cache
+blocks.
+
 ## Validated Profiles
 
 ### FP8

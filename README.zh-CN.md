@@ -8,7 +8,7 @@
 这是一个硬件定向的 vLLM fork，用来保存已经跑通的 2080 Ti vLLM
 栈：补丁源码、启动 profile、运行时说明和稳定环境记录。
 
-Fork 发布版本：`v0.1.10`
+Fork 发布版本：`v0.1.11`
 基础 vLLM：`0.21.0`
 
 核心实测：双 2080 Ti TP=2 runtime 下，Qwen3.6 27B 单请求 decode 达到
@@ -117,7 +117,7 @@ FP16/default KV 空间。
   size 2
 - 已验证主机系统：Ubuntu 22.04/24.04 LTS 或 Debian 12，Linux kernel 6.x
 - CUDA/PyTorch：CUDA 12.8，`torch 2.11.0+cu128`
-- Fork 发布版本：`v0.1.10`
+- Fork 发布版本：`v0.1.11`
 - 基础 vLLM：`0.21.0`
 - 仓库身份：`vllm-2080ti-definitive`
 - 运行时身份：`vllm-sm75-tp2-cu128`
@@ -149,11 +149,15 @@ FP16/default KV 空间。
 切换仅本地或局域网访问、配置 chat template 和工具调用、启动服务、停止服务，
 也可以保存自定义 profile。
 
+Prefix cache 默认作为 launcher 全局设置开启，不保存到具体 route profile 里。
+对 Qwen 路线，launcher 会自动应用已验证 prefix-cache 路径所需的 cache mode。
+
 支持 OpenAI-compatible 工具调用。launcher 提供自动工具选择、tool parser 选择
 和严格结构化 tool 输出等全局运行参数。
 
 启动成功后，状态区会显示 `RUNNING`、服务模型名、PID、OpenAI-compatible API
-地址、日志文件位置，以及 vLLM 能上报时的 cache 容量。
+地址、日志文件位置、prefix-cache 状态、prompt token details 状态，以及 vLLM
+能上报时的 cache 容量。
 
 非交互启动示例：
 
