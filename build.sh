@@ -32,7 +32,6 @@ BUILD_PREFLIGHT_TIMEOUT_SECONDS=${BUILD_PREFLIGHT_TIMEOUT_SECONDS:-$BUILD_PREFLI
 BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS=${BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS:-60}
 BUILD_GIT_PRIMARY_TIMEOUT_SECONDS=${BUILD_GIT_PRIMARY_TIMEOUT_SECONDS:-120}
 BUILD_GIT_MIRROR_PREFIXES=${BUILD_GIT_MIRROR_PREFIXES:-https://gh-proxy.com/ https://ghfast.top/}
-TOTAL_STEPS=15
 STEP_INDEX=0
 BUILD_STARTED_AT=$(date +%s)
 VERSION=${VERSION:-$FORK_RELEASE}
@@ -89,10 +88,16 @@ detect_memory_gb() {
 
 select_max_jobs() {
   local threads=$1
-  local jobs
-  jobs=$((threads / 2))
-  (( jobs >= 1 )) || jobs=1
-  echo "$jobs"
+  local mem_gb=$2
+  local reserve_gb=3
+  local per_job_gb=3
+  local mem_limited_jobs
+
+  mem_limited_jobs=$(( (mem_gb - reserve_gb) / per_job_gb ))
+  (( mem_limited_jobs >= 1 )) || mem_limited_jobs=1
+  (( mem_limited_jobs <= threads )) || mem_limited_jobs=$threads
+
+  echo "$mem_limited_jobs"
 }
 
 validate_max_jobs_range() {
@@ -160,6 +165,41 @@ validate_cuda_dev_files() {
       echo "  sudo apt-get install --reinstall cuda-cudart-dev-12-8"
     } >&2
     fail "Incomplete CUDA development toolkit at CUDA_HOME=$CUDA_HOME"
+  fi
+}
+
+reset_stale_fetchcontent_subbuilds() {
+  local stale_dir
+  local -a dirs=(
+    "$FLASHQLA_DIR/../cutlass-subbuild"
+    "$FLASHQLA_DIR/../deepgemm-subbuild"
+    "$FLASHQLA_DIR/../triton_kernels-subbuild"
+    "$FLASHQLA_DIR/../cutlass-build"
+    "$FLASHQLA_DIR/../deepgemm-build"
+    "$FLASHQLA_DIR/../triton_kernels-build"
+  )
+
+  for stale_dir in "${dirs[@]}"; do
+    if [[ -e "$stale_dir/CMakeCache.txt" ]]; then
+      echo "Preflight: removing stale FetchContent cache at $stale_dir"
+      rm -rf "$stale_dir"
+    fi
+  done
+}
+
+dir_has_entries() {
+  local dir=$1
+  [[ -d "$dir" ]] || return 1
+  find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .
+}
+
+refresh_empty_checkout() {
+  local checkout_dir=$1
+  local expected_path=$2
+
+  if [[ -d "$checkout_dir/.git" ]] && ! dir_has_entries "$expected_path"; then
+    echo "Preflight: $expected_path is empty; refreshing checkout at $checkout_dir"
+    rm -rf "$checkout_dir"
   fi
 }
 
@@ -385,7 +425,7 @@ check_cpu_cores() {
 }
 
 check_memory_headroom() {
-  local mem_kb mem_gb
+  local mem_kb mem_gb recommended_jobs
   mem_kb=$(awk '/MemTotal:/ { print $2 }' /proc/meminfo 2>/dev/null || echo 0)
   mem_gb=$(( mem_kb / 1024 / 1024 ))
   if (( mem_gb < 16 )); then
@@ -393,6 +433,8 @@ check_memory_headroom() {
   else
     echo "Preflight: system memory is OK (${mem_gb}GB)."
   fi
+  recommended_jobs=$(select_max_jobs "$CPU_THREADS" "$mem_gb")
+  echo "Preflight: auto build threads would use $recommended_jobs job(s) on this host."
 }
 
 check_disk_headroom() {
@@ -638,11 +680,17 @@ active_git_url() {
   fi
 }
 
+git_in_safe_repo() {
+  local dir=$1
+  shift
+  git -c safe.directory="$dir" -C "$dir" "$@"
+}
+
 fetch_git_repo_once() {
   local repo=$1
   if [[ -d "$FLASHQLA_DIR/.git" ]]; then
-    git -C "$FLASHQLA_DIR" fetch --depth=1 "$repo"
-    git -C "$FLASHQLA_DIR" checkout -q FETCH_HEAD
+    git_in_safe_repo "$FLASHQLA_DIR" fetch --depth=1 "$repo"
+    git_in_safe_repo "$FLASHQLA_DIR" checkout -q FETCH_HEAD
   else
     git clone --depth=1 "$repo" "$FLASHQLA_DIR"
   fi
@@ -654,8 +702,8 @@ fetch_git_tag_once() {
   local ref=$3
 
   if [[ -d "$dir/.git" ]]; then
-    git -C "$dir" fetch --depth=1 origin "tag" "$ref"
-    git -C "$dir" checkout -q "$ref"
+    git_in_safe_repo "$dir" fetch --depth=1 origin "tag" "$ref"
+    git_in_safe_repo "$dir" checkout -q "$ref"
   else
     git clone --depth=1 --branch "$ref" --single-branch "$repo" "$dir"
   fi
@@ -667,8 +715,8 @@ fetch_git_branch_or_tag_once() {
   local ref=$3
 
   if [[ -d "$dir/.git" ]]; then
-    git -C "$dir" fetch --depth=1 origin "refs/tags/$ref:refs/tags/$ref"
-    git -C "$dir" checkout -q "$ref"
+    git_in_safe_repo "$dir" fetch --depth=1 origin "refs/tags/$ref:refs/tags/$ref"
+    git_in_safe_repo "$dir" checkout -q "$ref"
   else
     git clone --depth=1 --branch "$ref" --single-branch "$repo" "$dir"
   fi
@@ -703,9 +751,14 @@ fetch_flashqla_with_fallback() {
   if run_with_progress_status "Selected-route git attempt" \
     env FLASHQLA_DIR="$FLASHQLA_DIR" timeout --preserve-status "$timeout_seconds" bash -c '
       repo=$1
+      git_in_safe_repo() {
+        local dir=$1
+        shift
+        git -c safe.directory="$dir" -C "$dir" "$@"
+      }
       if [[ -d "$FLASHQLA_DIR/.git" ]]; then
-        git -C "$FLASHQLA_DIR" fetch --depth=1 "$repo"
-        git -C "$FLASHQLA_DIR" checkout -q FETCH_HEAD
+        git_in_safe_repo "$FLASHQLA_DIR" fetch --depth=1 "$repo"
+        git_in_safe_repo "$FLASHQLA_DIR" checkout -q FETCH_HEAD
       else
         git clone --depth=1 "$repo" "$FLASHQLA_DIR"
       fi
@@ -761,9 +814,14 @@ fetch_cutlass_with_fallback() {
       repo=$1
       ref=$2
       dir=$3
+      git_in_safe_repo() {
+        local repo_dir=$1
+        shift
+        git -c safe.directory="$repo_dir" -C "$repo_dir" "$@"
+      }
       if [[ -d "$dir/.git" ]]; then
-        git -C "$dir" fetch --depth=1 origin tag "$ref"
-        git -C "$dir" checkout -q "$ref"
+        git_in_safe_repo "$dir" fetch --depth=1 origin tag "$ref"
+        git_in_safe_repo "$dir" checkout -q "$ref"
       else
         git clone --depth=1 --branch "$ref" --single-branch "$repo" "$dir"
       fi
@@ -803,6 +861,7 @@ fetch_triton_with_fallback() {
   if [[ -e "$TRITON_KERNELS_DIR" && ! -d "$TRITON_KERNELS_DIR/.git" ]]; then
     fail "TRITON_KERNELS_DIR exists but is not a git checkout: $TRITON_KERNELS_DIR"
   fi
+  refresh_empty_checkout "$TRITON_KERNELS_DIR" "$TRITON_KERNELS_SRC_DIR"
 
   echo "Triton fetch fallback: enabled"
   echo "  Selected-route attempt timeout: ${timeout_seconds}s"
@@ -820,9 +879,14 @@ fetch_triton_with_fallback() {
       repo=$1
       ref=$2
       dir=$3
+      git_in_safe_repo() {
+        local repo_dir=$1
+        shift
+        git -c safe.directory="$repo_dir" -C "$repo_dir" "$@"
+      }
       if [[ -d "$dir/.git" ]]; then
-        git -C "$dir" fetch --depth=1 origin "refs/tags/$ref:refs/tags/$ref"
-        git -C "$dir" checkout -q "$ref"
+        git_in_safe_repo "$dir" fetch --depth=1 origin "refs/tags/$ref:refs/tags/$ref"
+        git_in_safe_repo "$dir" checkout -q "$ref"
       else
         git clone --depth=1 --branch "$ref" --single-branch "$repo" "$dir"
       fi
@@ -849,12 +913,9 @@ fetch_triton_with_fallback() {
 }
 
 install_torch_from_wheelhouse() {
-  local wheelhouse_dir=${BUILD_WHEELHOUSE_DIR:-}
-  if [[ -z "$wheelhouse_dir" && -d /data/wheelhouse/cu128 ]]; then
-    wheelhouse_dir=/data/wheelhouse/cu128
-  fi
+  local wheelhouse_dir
+  wheelhouse_dir=$(resolve_torch_wheelhouse_dir)
   [[ -n "$wheelhouse_dir" ]] || return 0
-  [[ -d "$wheelhouse_dir" ]] || return 0
 
   run_with_progress "Install torch from local wheelhouse" \
     env UV_NO_INDEX=1 UV_FIND_LINKS="$wheelhouse_dir" UV_LINK_MODE=copy \
@@ -928,6 +989,42 @@ run_step() {
   "$@" 2>&1 | tee -a "$LOG"
 }
 
+resolve_torch_wheelhouse_dir() {
+  local wheelhouse_dir=${BUILD_WHEELHOUSE_DIR:-}
+  if [[ -z "$wheelhouse_dir" && -d /data/wheelhouse/cu128 ]]; then
+    wheelhouse_dir=/data/wheelhouse/cu128
+  fi
+  if [[ -n "$wheelhouse_dir" && -d "$wheelhouse_dir" ]]; then
+    printf '%s\n' "$wheelhouse_dir"
+  fi
+}
+
+compute_total_steps() {
+  local total=0
+
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    total=$((total + 1))
+  fi
+
+  total=$((total + 1))  # CUDA compiler
+
+  if [[ -d .venv && ! -x .venv/bin/python ]]; then
+    total=$((total + 1))
+  elif [[ ! -d .venv ]]; then
+    total=$((total + 1))
+  fi
+
+  if [[ -n "$(resolve_torch_wheelhouse_dir)" ]]; then
+    total=$((total + 1))
+  fi
+
+  total=$((total + 5))  # build frontend + requirement install/revalidation
+  total=$((total + 6))  # FlashQLA/CUTLASS/Triton fetch+install steps
+  total=$((total + 2))  # runtime install + runtime validation
+
+  printf '%s\n' "$total"
+}
+
 mkdir -p "$LOG_DIR"
 touch "$LOG"
 banner | tee -a "$LOG"
@@ -943,16 +1040,27 @@ MEMORY_GB=${MEMORY_GB:-$(detect_memory_gb)}
 if ! is_positive_integer "$MEMORY_GB"; then
   fail "MEMORY_GB must be a positive integer when set explicitly."
 fi
-if [[ -z "${MAX_JOBS:-}" ]]; then
-  MAX_JOBS=$(select_max_jobs "$CPU_THREADS")
-  MAX_JOBS_SOURCE=auto
-else
-  validate_max_jobs_range "$MAX_JOBS" "$CPU_THREADS"
-  MAX_JOBS_SOURCE=manual
+if [[ -n "${BUILD_MAX_JOBS:-}" && -n "${MAX_JOBS:-}" && "${BUILD_MAX_JOBS}" != "${MAX_JOBS}" ]]; then
+  fail "BUILD_MAX_JOBS and MAX_JOBS must match when both are set."
 fi
+if [[ -n "${BUILD_MAX_JOBS:-}" ]]; then
+  MAX_JOBS="$BUILD_MAX_JOBS"
+  MAX_JOBS_SOURCE=env:BUILD_MAX_JOBS
+elif [[ -n "${MAX_JOBS:-}" ]]; then
+  MAX_JOBS_SOURCE=env:MAX_JOBS
+else
+  MAX_JOBS=$(select_max_jobs "$CPU_THREADS" "$MEMORY_GB")
+  if (( MAX_JOBS < CPU_THREADS )); then
+    MAX_JOBS_SOURCE=auto-memory
+  else
+    MAX_JOBS_SOURCE=auto
+  fi
+fi
+validate_max_jobs_range "$MAX_JOBS" "$CPU_THREADS"
 export CPU_THREADS
 export MEMORY_GB
 export MAX_JOBS
+export BUILD_MAX_JOBS=${BUILD_MAX_JOBS:-$MAX_JOBS}
 
 cd "$ROOT"
 
@@ -981,6 +1089,7 @@ if [[ ! -x "$CUDA_HOME/bin/nvcc" ]]; then
   fail "nvcc not found at $CUDA_HOME/bin/nvcc."
 fi
 validate_cuda_dev_files
+reset_stale_fetchcontent_subbuilds
 choose_download_mode
 confirm_install
 
@@ -1003,6 +1112,7 @@ export VLLM_CUTLASS_SRC_DIR=${VLLM_CUTLASS_SRC_DIR:-$CUTLASS_DIR}
 export TRITON_KERNELS_SRC_DIR=${TRITON_KERNELS_SRC_DIR:-"$TRITON_KERNELS_DIR/python/triton_kernels/triton_kernels"}
 export CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL:-$MAX_JOBS}
 export NVCC_THREADS=${NVCC_THREADS:-1}
+TOTAL_STEPS=$(compute_total_steps)
 
 cat <<EOF | tee -a "$LOG"
 
@@ -1021,6 +1131,7 @@ Build settings:
   CPU_THREADS=$CPU_THREADS
   MEMORY_GB=$MEMORY_GB
   MAX_JOBS=$MAX_JOBS ($MAX_JOBS_SOURCE)
+  BUILD_MAX_JOBS=$BUILD_MAX_JOBS
   CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL
   NVCC_THREADS=$NVCC_THREADS
   CMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE
@@ -1050,7 +1161,10 @@ else
 fi
 run_step "CUDA compiler" "$CUDA_HOME/bin/nvcc" --version
 
-if [[ ! -d .venv ]]; then
+if [[ -d .venv && ! -x .venv/bin/python ]]; then
+  echo "Preflight: existing .venv is invalid or points to a missing Python; recreating it."
+  run_with_progress "Recreate Python virtualenv" uv venv --clear --python "${PYTHON_VERSION:-3.11}" .venv
+elif [[ ! -d .venv ]]; then
   run_with_progress "Create Python virtualenv" uv venv --python "${PYTHON_VERSION:-3.11}" .venv
 fi
 
