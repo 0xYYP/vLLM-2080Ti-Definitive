@@ -280,6 +280,44 @@ read_profile_value() {
   ' "$file"
 }
 
+ROUTE_PROFILE_KEYS=(
+  SERVED_NAME
+  COMPATIBLE_MODES
+  MODEL_FAMILY
+  PROFILE_GROUP
+  MODEL_VARIANT
+  QUANTIZATION
+  KV_CACHE_DTYPE
+  MAX_MODEL_LEN
+  GPU_UTIL
+  MAX_BATCHED_TOKENS
+  MAX_NUM_SEQS
+  MTP_K
+  MESSAGE_TYPE
+  MM_LIMIT_JSON
+  LANGUAGE_MODEL_ONLY
+  SKIP_MM_PROFILING
+  HF_OVERRIDES_JSON
+  ADDITIONAL_CONFIG_JSON
+  SPECULATIVE_CONFIG
+  COMPILATION_CONFIG_JSON
+  ATTENTION_BACKEND
+  DISABLE_HYBRID_KV_CACHE_MANAGER
+  DISABLE_CUSTOM_ALL_REDUCE
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN
+  VLLM_INT8KV_FA_CASCADE_DEQUANT
+  VLLM_INT8KV_FA_CASCADE_TILE_TOKENS
+  VLLM_INT8KV_FA_CONTINUATION_DEQUANT
+  VLLM_INT8KV_FA_PREFILL
+)
+
+reset_route_profile_fields() {
+  local key
+  for key in "${ROUTE_PROFILE_KEYS[@]}"; do
+    unset "$key"
+  done
+}
+
 profile_key_is_global() {
   case "$1" in
 MODEL_DIR|PROFILE_DIR|PROFILE|MODE|PORT|SERVICE_SCOPE|GPU_DEVICES|TP_SIZE|\
@@ -305,7 +343,7 @@ source_profile_defaults() {
   while IFS= read -r key; do
     [[ -n "$key" ]] || continue
     profile_key_is_global "$key" && continue
-    if [[ -v "$key" ]]; then
+    if [[ ${!key+x} ]]; then
       continue
     fi
     value=$(read_profile_value "$file" "$key")
@@ -319,6 +357,7 @@ apply_profile_overrides() {
   [[ -f "$file" ]] || return 0
 
   local key value
+  reset_route_profile_fields
   while IFS= read -r key; do
     [[ -n "$key" ]] || continue
     profile_key_is_global "$key" && continue
@@ -691,6 +730,18 @@ current_prefix_cache_label() {
   else
     printf 'auto'
   fi
+}
+
+current_tq_diagnostics_label() {
+  if [[ "${KV_CACHE_DTYPE:-}" != turboquant_* ]]; then
+    printf 'n/a'
+    return 0
+  fi
+  printf 'FORCE_DECODE_SDPA=%s, FORCE_CONTINUATION_SDPA=%s, MAX_KV_SPLITS=%s, K8V4_FP8_FORMAT=%s' \
+    "${VLLM_TURBOQUANT_FORCE_DECODE_SDPA:-0}" \
+    "${VLLM_TURBOQUANT_FORCE_CONTINUATION_SDPA:-0}" \
+    "${VLLM_TURBOQUANT_MAX_KV_SPLITS:-auto}" \
+    "${VLLM_TURBOQUANT_K8V4_FP8_FORMAT:-auto}"
 }
 
 gpu_device_count() {
@@ -3219,6 +3270,7 @@ launch_server() {
     echo "Port: $PORT"
     echo "Scope: $SERVICE_SCOPE"
     echo "MTP graph policy: VLLM_SM75_SPEC_SYNC_MODE=${VLLM_SM75_SPEC_SYNC_MODE:-auto}, VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=${VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH:-0}"
+    echo "TQ diagnostics: $(current_tq_diagnostics_label)"
     echo "Strict tool calling: VLLM_ENFORCE_STRICT_TOOL_CALLING=${VLLM_ENFORCE_STRICT_TOOL_CALLING:-0}"
     echo "Command: $RUNTIME_ROOT/.venv/bin/python -m vllm.entrypoints.openai.api_server $args_text"
     echo "============================================================"
@@ -3229,6 +3281,7 @@ launch_server() {
   echo "  Log: $log_file"
   echo "  Mode: $MODE"
   echo "  MTP graph policy: VLLM_SM75_SPEC_SYNC_MODE=${VLLM_SM75_SPEC_SYNC_MODE:-auto}, VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=${VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH:-0}"
+  echo "  TQ diagnostics: $(current_tq_diagnostics_label)"
   echo "  Strict tool calling: VLLM_ENFORCE_STRICT_TOOL_CALLING=${VLLM_ENFORCE_STRICT_TOOL_CALLING:-0}"
   echo "  Served name: $SERVED_NAME"
   echo "  Model: $MODEL_DIR"
@@ -3535,6 +3588,7 @@ Launch summary:
   W/A type:             $(guess_precision_scheme "$MODEL_DIR" "${QUANTIZATION:-}")
   GPU devices:          ${GPU_DEVICES:-$(detect_default_gpu_devices)}
   KV precision:         ${KV_CACHE_DTYPE:-fp16}
+  TQ diagnostics:       $(current_tq_diagnostics_label)
   Prefix cache:         $(current_prefix_cache_label)
   Mamba cache mode:     ${MAMBA_CACHE_MODE:-auto}
   Context tokens:       $MAX_MODEL_LEN

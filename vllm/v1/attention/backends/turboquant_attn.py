@@ -58,7 +58,8 @@ from vllm.v1.worker.workspace import (
 )
 from vllm.v1.attention.ops.triton_turboquant_decode import (
     _tq_full_dequant_kv,
-    _use_fp8_e4b15,
+    _fp8_format_code,
+    _fp8_format_name,
     triton_turboquant_decode_attention,
 )
 from vllm.v1.attention.ops.triton_turboquant_store import triton_turboquant_store
@@ -113,6 +114,12 @@ _GEMMA4_TQ_DECODE_D512_SDPA_FALLBACK = (
 _GEMMA4_TQ_DECODE_D256_SDPA_FALLBACK = (
     os.getenv("VLLM_GEMMA4_TQ_DECODE_D256_SDPA_FALLBACK", "0") == "1"
 )
+_TQ_FORCE_DECODE_SDPA = (
+    os.getenv("VLLM_TURBOQUANT_FORCE_DECODE_SDPA", "0") == "1"
+)
+_TQ_FORCE_CONTINUATION_SDPA = (
+    os.getenv("VLLM_TURBOQUANT_FORCE_CONTINUATION_SDPA", "0") == "1"
+)
 _GEMMA4_TQ4NC_SHARED_DRAFT_SDPA_FALLBACK = (
     os.getenv("VLLM_GEMMA4_TQ4NC_SHARED_DRAFT_SDPA_FALLBACK", "0") == "1"
 )
@@ -166,6 +173,9 @@ _TQ_CONTINUATION_SDPA_Q_CHUNK = int(
 _TQ_CONTINUATION_SDPA_MAX_QK_CELLS = int(
     os.getenv("VLLM_TURBOQUANT_CONTINUATION_SDPA_MAX_QK_CELLS", "0")
 )
+_TQ_FORCE_DECODE_SDPA_MAX_QK_CELLS = int(
+    os.getenv("VLLM_TURBOQUANT_FORCE_DECODE_SDPA_MAX_QK_CELLS", "131072")
+)
 _TQ_CUDAGRAPH_SPEC_DECODE_SAFE = (
     os.getenv("VLLM_TURBOQUANT_CUDAGRAPH_SPEC_DECODE_SAFE", "0") == "1"
 )
@@ -173,6 +183,24 @@ _TQ_DEBUG_MIXED = os.getenv("VLLM_TURBOQUANT_DEBUG_MIXED", "0") == "1"
 _SKIP_PREFILL_STORE_FOR_PROFILING = (
     os.getenv("VLLM_TURBOQUANT_SKIP_PREFILL_STORE", "0") == "1"
 )
+
+
+def _read_tq_max_kv_splits_override() -> int | None:
+    value = os.getenv("VLLM_TURBOQUANT_MAX_KV_SPLITS")
+    if value is None or value == "":
+        return None
+    try:
+        splits = int(value)
+    except ValueError as err:
+        raise ValueError(
+            "VLLM_TURBOQUANT_MAX_KV_SPLITS must be a positive integer"
+        ) from err
+    if splits <= 0:
+        raise ValueError("VLLM_TURBOQUANT_MAX_KV_SPLITS must be a positive integer")
+    return splits
+
+
+_TQ_MAX_KV_SPLITS_OVERRIDE = _read_tq_max_kv_splits_override()
 _GEMMA4_TQ4NC_DEBUG_CONTINUATION = (
     os.getenv("VLLM_GEMMA4_TQ4NC_DEBUG_CONTINUATION", "0") == "1"
 )
@@ -521,7 +549,6 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         )
 
         self.tq_config = TurboQuantConfig.from_cache_dtype(kv_cache_dtype, head_size)
-
         # Pre-compute kernel constants from config (avoid repeated arithmetic)
         cfg = self.tq_config
         self._mse_bytes = (
@@ -531,6 +558,18 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         )
         self._val_data_bytes = math.ceil(head_size * cfg.effective_value_quant_bits / 8)
         self._n_centroids = cfg.n_centroids if not cfg.key_fp8 else 1
+        if cfg.key_fp8:
+            device_index = torch.cuda.current_device() if torch.cuda.is_available() else 0
+            fp8_override = os.getenv(
+                "VLLM_TURBOQUANT_K8V4_FP8_FORMAT",
+                "auto",
+            ).strip().lower() or "auto"
+            logger.info_once(
+                "TurboQuant raw FP8 key format is %s "
+                "(VLLM_TURBOQUANT_K8V4_FP8_FORMAT=%s)",
+                _fp8_format_name(device_index),
+                fp8_override,
+            )
 
         self._fi_prefill_workspace = None
         self._fi_prefill_backend = _DEFAULT_TQ_FI_BACKEND
@@ -586,8 +625,25 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         # and benchmarks show no regression vs dynamic in eager mode).
         vllm_config = get_current_vllm_config()
         self.max_num_kv_splits = (
-            vllm_config.attention_config.tq_max_kv_splits_for_cuda_graph
+            _TQ_MAX_KV_SPLITS_OVERRIDE
+            or vllm_config.attention_config.tq_max_kv_splits_for_cuda_graph
         )
+        if _TQ_MAX_KV_SPLITS_OVERRIDE is not None:
+            logger.info_once(
+                "TurboQuant decode max KV splits forced to %s by "
+                "VLLM_TURBOQUANT_MAX_KV_SPLITS",
+                self.max_num_kv_splits,
+            )
+        if _TQ_FORCE_DECODE_SDPA:
+            logger.info_once(
+                "TurboQuant decode is forced to full-dequant SDPA fallback by "
+                "VLLM_TURBOQUANT_FORCE_DECODE_SDPA=1"
+            )
+        if _TQ_FORCE_CONTINUATION_SDPA:
+            logger.info_once(
+                "TurboQuant continuation prefill is forced to full-dequant "
+                "SDPA fallback by VLLM_TURBOQUANT_FORCE_CONTINUATION_SDPA=1"
+            )
 
     def _get_flashinfer_prefill_wrapper(self, device: torch.device):
         if not self._use_flashinfer_prefill:
@@ -1082,15 +1138,22 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
             layer
         )
         if attn_metadata.force_spec_decode:
-            attn_out = self._spec_decode_attention(
-                q,
-                kv_cache,
-                attn_metadata,
-                Pi,
-                centroids,
-                PiT,
-                layer,
-            )
+            if _TQ_FORCE_DECODE_SDPA:
+                k = key[:N].view(N, self.num_kv_heads, self.head_size)
+                v = value[:N].view(N, self.num_kv_heads, self.head_size)
+                attn_out = self._spec_decode_attention_sdpa_fallback(
+                    q, k, v, kv_cache, attn_metadata, Pi, centroids, layer
+                )
+            else:
+                attn_out = self._spec_decode_attention(
+                    q,
+                    kv_cache,
+                    attn_metadata,
+                    Pi,
+                    centroids,
+                    PiT,
+                    layer,
+                )
             if output.ndim == 3:
                 output[:N] = attn_out.to(output.dtype)
             else:
@@ -1201,15 +1264,35 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                         num_decodes,
                         decode_meta.max_query_len,
                     )
-                attn_out[:num_decode_tokens] = self._spec_decode_attention(
-                    q[:num_decode_tokens],
-                    kv_cache,
-                    decode_meta,
-                    Pi,
-                    centroids,
-                    PiT,
-                    layer,
-                )
+                if _TQ_FORCE_DECODE_SDPA:
+                    k_dec = key[:num_decode_tokens].view(
+                        num_decode_tokens, self.num_kv_heads, self.head_size
+                    )
+                    v_dec = value[:num_decode_tokens].view(
+                        num_decode_tokens, self.num_kv_heads, self.head_size
+                    )
+                    attn_out[:num_decode_tokens] = (
+                        self._spec_decode_attention_sdpa_fallback(
+                            q[:num_decode_tokens],
+                            k_dec,
+                            v_dec,
+                            kv_cache,
+                            decode_meta,
+                            Pi,
+                            centroids,
+                            layer,
+                        )
+                    )
+                else:
+                    attn_out[:num_decode_tokens] = self._spec_decode_attention(
+                        q[:num_decode_tokens],
+                        kv_cache,
+                        decode_meta,
+                        Pi,
+                        centroids,
+                        PiT,
+                        layer,
+                    )
             elif use_decode_sdpa or use_shared_draft_decode_sdpa:
                 k_dec = key[:num_decode_tokens].view(
                     num_decode_tokens, self.num_kv_heads, self.head_size
@@ -1365,8 +1448,68 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                 key_fp8=self.tq_config.key_fp8,
                 norm_correction=self.tq_config.norm_correction,
                 PiT=PiT,
+                max_num_kv_splits=self.max_num_kv_splits,
                 sliding_window=self._decode_sliding_window,
             ).to(query.dtype)
+
+        return output
+
+    def _spec_decode_attention_sdpa_fallback(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        kv_cache: torch.Tensor,
+        attn_metadata: TurboQuantMetadata,
+        Pi: torch.Tensor,
+        centroids: torch.Tensor,
+        layer: Any,
+    ) -> torch.Tensor:
+        _, Hq, _ = query.shape
+        Hk = key.shape[1]
+        qsl = attn_metadata.query_start_loc_cpu.tolist()
+        seq_lens = attn_metadata.seq_lens_cpu.tolist()
+        output = torch.empty_like(query)
+
+        for i, seq_len in enumerate(seq_lens):
+            q_start = qsl[i]
+            q_end = qsl[i + 1]
+            q_len = q_end - q_start
+            if q_len <= 0:
+                continue
+
+            seq_len = int(seq_len)
+            cached_len = max(seq_len - q_len, 0)
+            q_seq = query[q_start:q_end]
+            k_seq = key[q_start:q_end]
+            v_seq = value[q_start:q_end]
+            if cached_len == 0:
+                q_t = q_seq.transpose(0, 1).contiguous()
+                k_t = k_seq.transpose(0, 1).contiguous()
+                v_t = v_seq.transpose(0, 1).contiguous()
+                out = F.scaled_dot_product_attention(
+                    q_t,
+                    k_t,
+                    v_t,
+                    is_causal=True,
+                    scale=self.scale,
+                    enable_gqa=(Hk < Hq),
+                ).transpose(0, 1)
+            else:
+                out = self._continuation_prefill(
+                    layer,
+                    q_seq,
+                    k_seq,
+                    v_seq,
+                    kv_cache,
+                    attn_metadata.block_table[i : i + 1],
+                    cached_len,
+                    seq_len,
+                    Pi,
+                    centroids,
+                    force_sdpa=True,
+                )
+            output[q_start:q_end] = out.to(query.dtype)
 
         return output
 
@@ -1425,6 +1568,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
             PiT=PiT,
             output_buf=torch.empty_like(query),
             lse_buf=prefix_lse,
+            max_num_kv_splits=self.max_num_kv_splits,
             sliding_window=self._decode_sliding_window,
         )
 
@@ -1730,6 +1874,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                     out = torch.cat(pieces, dim=0)
                 elif (
                     _SPEC_CONTINUATION_DECODE_FASTPATH
+                    and not _TQ_FORCE_CONTINUATION_SDPA
                     and q_len <= _CONTINUATION_DECODE_THRESHOLD
                     and kv_cache.dim() != 5
                 ):
@@ -1760,6 +1905,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                             key_fp8=self.tq_config.key_fp8,
                             norm_correction=self.tq_config.norm_correction,
                             PiT=PiT,
+                            max_num_kv_splits=self.max_num_kv_splits,
                             sliding_window=self._decode_sliding_window,
                         )
                     else:
@@ -1787,7 +1933,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                                 seq_len,
                                 Pi,
                                 centroids,
-                                force_sdpa=False,
+                                force_sdpa=_TQ_FORCE_CONTINUATION_SDPA,
                             )
                 else:
                     # Large continuation: dequant cached K/V and use
@@ -1803,7 +1949,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                         seq_len,
                         Pi,
                         centroids,
-                        force_sdpa=False,
+                        force_sdpa=_TQ_FORCE_CONTINUATION_SDPA,
                     )
                 output[q_start:q_end] = out.to(query.dtype)
 
@@ -1988,7 +2134,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                 KEY_FP8=1 if self.tq_config.key_fp8 else 0,
                 BLOCK_D=BLOCK_D,
                 NORM_CORRECTION=1 if self.tq_config.norm_correction else 0,
-                FP8_E4B15=_use_fp8_e4b15(device.index or 0),
+                FP8_FORMAT=_fp8_format_code(device.index or 0),
                 num_warps=4,
             )
 
@@ -2128,10 +2274,25 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                 return out.unsqueeze(0).to(query.dtype)
 
             q_chunk = _TQ_CONTINUATION_SDPA_Q_CHUNK
-            if q_chunk > 0 and _TQ_CONTINUATION_SDPA_MAX_QK_CELLS > 0:
+            qk_cap = _TQ_CONTINUATION_SDPA_MAX_QK_CELLS
+            if force_sdpa and _TQ_FORCE_DECODE_SDPA_MAX_QK_CELLS > 0:
+                qk_cap = (
+                    min(qk_cap, _TQ_FORCE_DECODE_SDPA_MAX_QK_CELLS)
+                    if qk_cap > 0
+                    else _TQ_FORCE_DECODE_SDPA_MAX_QK_CELLS
+                )
+            if force_sdpa and q_chunk <= 0:
+                q_chunk = max(
+                    1,
+                    min(
+                        q_len,
+                        qk_cap // max(seq_len, 1) if qk_cap > 0 else q_len,
+                    ),
+                )
+            if q_chunk > 0 and qk_cap > 0:
                 capped_q_chunk = max(
                     1,
-                    min(q_chunk, _TQ_CONTINUATION_SDPA_MAX_QK_CELLS // max(seq_len, 1)),
+                    min(q_chunk, qk_cap // max(seq_len, 1)),
                 )
                 if capped_q_chunk < q_chunk:
                     logger.info_once(
@@ -2139,7 +2300,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                         "requested=%d effective=%d max_qk_cells=%d seq_len=%d",
                         q_chunk,
                         capped_q_chunk,
-                        _TQ_CONTINUATION_SDPA_MAX_QK_CELLS,
+                        qk_cap,
                         seq_len,
                     )
                     q_chunk = capped_q_chunk
@@ -2209,6 +2370,8 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         return shared_target is not None
 
     def _use_decode_sdpa_fallback(self) -> bool:
+        if _TQ_FORCE_DECODE_SDPA:
+            return True
         if _GEMMA4_TQ_DECODE_D256_SDPA_FALLBACK and self.head_size >= 256:
             return True
         return _GEMMA4_TQ_DECODE_D512_SDPA_FALLBACK and self.head_size >= 512
