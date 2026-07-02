@@ -93,11 +93,11 @@ while IFS= read -r -d '' file; do
     for compatible_mode in "${mode_parts[@]}"; do
       compatible_mode=${compatible_mode//[[:space:]]/}
       case "$compatible_mode" in
-        safe|normal|fast)
+        safe|normal|fast|aggressive)
           [[ "$compatible_mode" == "safe" ]] && has_safe=1
         ;;
       *)
-        echo "ERROR $rel: COMPATIBLE_MODES must contain only safe/normal/fast, got $compatible_modes" >&2
+        echo "ERROR $rel: COMPATIBLE_MODES must contain only safe/normal/fast/aggressive, got $compatible_modes" >&2
         ((errors += 1))
         ;;
     esac

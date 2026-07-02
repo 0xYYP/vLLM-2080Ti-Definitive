@@ -466,17 +466,16 @@ mode_is_compatible() {
   local compatible_modes=${2:-safe,normal,fast}
   local candidate
 
-  # aggressive intentionally has no shipped profile directory. It can run
-  # fast-compatible routes only when the user explicitly selects the mode.
-  if [[ "$mode" == "aggressive" ]]; then
-    mode=fast
-  fi
   for candidate in ${compatible_modes//,/ }; do
     candidate=${candidate//[[:space:]]/}
     case "$candidate" in
       stable) candidate=safe ;;
       speed) candidate=normal ;;
     esac
+    if [[ "$mode" == "aggressive" ]]; then
+      [[ "$candidate" == "aggressive" || "$candidate" == "fast" ]] && return 0
+      continue
+    fi
     [[ "$candidate" == "$mode" ]] && return 0
   done
   return 1
@@ -503,7 +502,7 @@ profile_compatible_modes_for_current() {
   local mtp=${MTP_K:-0}
 
   if [[ "$mode" == "aggressive" ]]; then
-    echo fast
+    echo aggressive
     return 0
   fi
 
@@ -2629,7 +2628,7 @@ validate_mode_kv_policy() {
         ;;
     esac
     if [[ "$MODE" == "aggressive" ]]; then
-      [[ "$candidate" == "fast" ]] && mode_ok=1 && break
+      [[ "$candidate" == "fast" || "$candidate" == "aggressive" ]] && mode_ok=1 && break
       continue
     fi
     if [[ "$candidate" == "$MODE" ]]; then

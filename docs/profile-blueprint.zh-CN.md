@@ -27,6 +27,11 @@
 | `qwen27b/fast/int4/tqk8v4-two250K-mtp3-text-only.env` | 通过 | INT4；fast；TQK8V4；双工作区 250K；MTP3 | 1739.23 / 99.91 | 当前最好的双工作区 fast 路线。 |
 | `qwen27b/normal/int4/int8kv-two250K-mtp3-text-only.env` | 通过 | INT4；normal；INT8 KV；双工作区 250K；MTP3 | 1740.51 / 49.06 | 可用 fallback，decode 慢。 |
 | `qwen27b/normal/int4/int8kv-512K-yarn-mtp3-text-only.env` | 通过 | INT4；normal；INT8 KV；512K YaRN；MTP3 | 1734.14 / 48.16 | GPU util 0.94 下已验证 512K。 |
+| `qwen35b/normal/fp8/fp16kv-256K-nomtp-text-only.env` | 通过 | 官方 FP8；normal；FP16 KV；256K；noMTP | 6705.13 / 97.33 | 当前正式 35B 容量文本路线。 |
+| `qwen35b/normal/fp8/fp16kv-136K-nomtp-text-image.env` | 通过 | 官方 FP8；normal；FP16 KV；136K；noMTP；图文 | 5485.13 / 95.20 | 当前正式 35B 图文路线。 |
+| `qwen35b/aggressive/fp8/fp16kv-256K-nomtp-text-only.env` | 通过 | 官方 FP8；aggressive；FP16 KV；256K；noMTP | 6843.01 / 124.01 | 通过 launcher 预热回冲后可稳定起服；当前 35B aggressive 文本容量路线。 |
+| `qwen35b/aggressive/fp8/fp16kv-136K-nomtp-text-image.env` | 通过 | 官方 FP8；aggressive；FP16 KV；136K；noMTP；图文 | 5422.83 / 124.11 | 当前 35B aggressive 图文路线；短测 decode 明显高于 normal 图文。 |
+| `qwen35b/fast/fp8/fp16kv-178K-mtp3-text-only.env` | 通过 | 官方 FP8；fast；FP16 KV；178K；MTP3 | 5889.20 / 195.95 | 当前正式 35B fast 文本路线。 |
 
 ## 不保留路线
 

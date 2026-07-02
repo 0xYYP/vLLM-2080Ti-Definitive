@@ -8,11 +8,13 @@ The definitive vLLM runtime for dual RTX 2080 Ti / SM75 serving.
 This is a hardware-focused fork that preserves the patched source, launch
 profiles, and runtime notes needed to reproduce the working 2080 Ti vLLM stack.
 
-Fork release: `v0.1.11`
+Fork release: `v0.1.12`
 Base vLLM: `0.21.0`
 
-Headline evidence: Qwen3.6 27B reaches `100+ tok/s` single-request decode on
-the dual 2080 Ti TP=2 runtime.
+Headline evidence: Qwen3.6 27B reaches `100+ tok/s` single-request decode, and
+official Qwen3.6 35B FP8 now validates 256K text-only normal/aggressive
+noMTP routes, 136K text+image normal/aggressive routes, and a 178K fast/MTP3
+route on the same dual 2080 Ti TP=2 runtime.
 
 Language: English | [简体中文](README.zh-CN.md)
 
@@ -42,16 +44,17 @@ that can match or exceed it on the physical resources that matter for LLM
 serving, then use vLLM runtime work to turn those resources into real tokens.
 
 That is the first value of this fork: take old but strong Turing silicon and
-make it behave like a serious 27B/31B-class inference platform through Marlin,
-FlashQLA/FlashInfer, TurboQuant/INT8 KV, MTP, and CUDAGraph integration.
+make it behave like a serious 27B/31B/35B-class inference platform through
+Marlin, FlashQLA/FlashInfer, TurboQuant/INT8 KV, MTP, and CUDAGraph
+integration.
 
 ## 🧩 Core Routes
 
 Serving shape:
 
 - This project optimizes for extreme single-concurrency performance on dual
-  2080 Ti: one personal-agent style workload, one serious 27B/31B model, and
-  the largest practical context window this hardware can sustain.
+  2080 Ti: one personal-agent style workload, one serious 27B/31B/35B model,
+  and the largest practical context window this hardware can sustain.
 - It is not a multi-tenant serving stack. Multi-agent use is supported best as
   queued workspace isolation, not as parallel long-prefill throughput. Long
   prefill work is capacity-safe when tuned, but it is effectively serialized by
@@ -76,6 +79,25 @@ TurboQuant KV, 256K native context, YaRN capacity, and image serving.
 | Fast prefill path | 🟢 FlashQLA / FlashInfer | 🟢 FlashQLA / FlashInfer | 🟢 FlashQLA / FlashInfer |
 | Multimodal image serving | 🟢 supported | 🟢 supported | 🟢 supported |
 | Current preset status | 🟢 normal / fast / safe | 🟢 normal / safe | 🟢 fast |
+
+### Qwen3.6 35B Official FP8 Mature Secondary Route
+
+Official `Qwen/Qwen3.6-35B-A3B-FP8` is the current mature secondary route for
+users who want a stronger Qwen-family agent model without leaving the validated
+dual 2080 Ti runtime. The current shipped set includes 256K text-only
+normal/aggressive noMTP lanes, 136K text+image normal/aggressive lanes, and an
+FP16-KV MTP3 speed preset. The official noMTP quality run completed
+`Ragent6 0.2.2 zh-CN` full60 at `79.6` weighted with `0` invalid cases.
+
+| Feature | FP16 KV |
+|---|---|
+| Official FP8 weight route | 🟢 supported |
+| MTP decoding | 🟢 noMTP / MTP3 validated |
+| Validated context | 🟢 256K text-only / 136K text+image / 178K fast |
+| No-eager / CUDAGraph | 🟢 supported |
+| Fast prefill path | 🟢 FlashInfer |
+| Multimodal image serving | 🟢 supported |
+| Current preset status | 🟢 normal / aggressive / fast |
 
 ### Gemma4 31B Experimental Route
 
@@ -102,6 +124,7 @@ recommended checkpoint also has a useful throughput/context tradeoff on dual 208
 | Model route | Weight route | Model cards | Status |
 |---|---|---|---|
 | Qwen3.6 27B FP8 | FP8 | [Qwen/Qwen3.6-27B-FP8](https://huggingface.co/Qwen/Qwen3.6-27B-FP8)<br>[Jackrong/Qwopus3.6-27B-v2-FP8](https://huggingface.co/Jackrong/Qwopus3.6-27B-v2-FP8) | 🟢 Recommended |
+| Qwen3.6 35B official FP8 | FP8 | [Qwen/Qwen3.6-35B-A3B-FP8](https://huggingface.co/Qwen/Qwen3.6-35B-A3B-FP8) | 🟢 Recommended |
 | Qwen3.6 27B AWQ | AWQ-INT4 | [QuantTrio/Qwen3.6-27B-AWQ](https://huggingface.co/QuantTrio/Qwen3.6-27B-AWQ)<br>[mconcat/Qwopus3.6-27B-v2-AWQ-4bit](https://huggingface.co/mconcat/Qwopus3.6-27B-v2-AWQ-4bit) | 🟢 Recommended |
 | Qwen3.6 27B GPTQ | GPTQ-INT4 | [llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4) | 🟢 Recommended |
 | Qwen3.6 27B NVFP4 | NVFP4 | [unsloth/Qwen3.6-27B-NVFP4](https://huggingface.co/unsloth/Qwen3.6-27B-NVFP4) | 🟡 Supported |
@@ -116,7 +139,7 @@ recommended checkpoint also has a useful throughput/context tradeoff on dual 208
   size 2
 - Validated host OS: Ubuntu 22.04/24.04 LTS or Debian 12, on Linux kernel 6.x
 - CUDA/PyTorch: CUDA 12.8, `torch 2.11.0+cu128`
-- Fork release: `v0.1.11`
+- Fork release: `v0.1.12`
 - Base vLLM: `0.21.0`
 - Repository identity: `vllm-2080ti-definitive`
 - Runtime identity: `vllm-sm75-tp2-cu128`
@@ -145,9 +168,9 @@ extensions, and prints a clear success or failure result with a build log path.
 
 The launcher is the interactive service manager. From the menu you can choose
 the checkpoint directory, apply or edit a profile, select `safe` / `normal` /
-`fast`, choose GPU/TP devices, set the port, switch local-only or LAN access,
-configure chat templates and tool calling, start the server, stop the server,
-or save a custom profile.
+`fast` / `aggressive`, choose GPU/TP devices, set the port, switch local-only
+or LAN access, configure chat templates and tool calling, start the server,
+stop the server, or save a custom profile.
 
 Prefix cache is enabled by default as a global launcher setting. It is not saved
 inside route profiles. For Qwen routes, the launcher also applies the matching
@@ -174,8 +197,9 @@ CUDA_VISIBLE_DEVICES=0,1 \
 ```
 
 Profiles declare compatible modes, not a recommended launch mode. Set
-`MODE=safe`, `MODE=normal`, or `MODE=fast` explicitly when you want a specific
-mode; the launcher validates that choice against the profile.
+`MODE=safe`, `MODE=normal`, `MODE=fast`, or `MODE=aggressive` explicitly when
+you want a specific mode; the launcher validates that choice against the
+profile.
 
 3. Update an existing checkout:
 
@@ -192,8 +216,9 @@ asks whether to run `build.sh` immediately.
 
 Start from [Profile Guide](profiles/README.md). Profiles are organized as
 `profiles/<model>/<mode>/<weight>/<route>.env`, for example
-`qwen27b/normal/int4/fp16kv-256K-mtp3-text-only.env` and
-`qwen27b/fast/int4/tqk8v4-256K-mtp3-text-only.env`.
+`qwen27b/normal/int4/fp16kv-256K-mtp3-text-only.env`,
+`qwen35b/aggressive/fp8/fp16kv-256K-nomtp-text-only.env`, and
+`qwen35b/normal/fp8/fp16kv-136K-nomtp-text-image.env`.
 
 Available modes:
 

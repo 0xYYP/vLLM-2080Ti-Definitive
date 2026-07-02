@@ -556,7 +556,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "MAX_JOBS": lambda: os.getenv("MAX_JOBS", None),
     # Number of threads to use for nvcc
     # By default this is 1.
-    # If set, `MAX_JOBS` will be reduced to avoid oversubscribing the CPU.
+    # This does not reduce `MAX_JOBS`; it only controls nvcc's internal
+    # worker threading.
     "NVCC_THREADS": lambda: os.getenv("NVCC_THREADS", None),
     # If set, vllm will use precompiled binaries (*.so)
     "VLLM_USE_PRECOMPILED": lambda: (
@@ -1087,6 +1088,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # so that vLLM can verify if p2p is actually working.
     # See https://github.com/vllm-project/vllm/blob/a9b15c606fea67a072416ea0ea115261a2756058/vllm/distributed/device_communicators/custom_all_reduce_utils.py#L101-L108 for details. # noqa
     "VLLM_SKIP_P2P_CHECK": lambda: os.getenv("VLLM_SKIP_P2P_CHECK", "1") == "1",
+    # Custom all-reduce graph input handling. "auto" keeps the registered fast
+    # path for FULL decode graphs and uses the pre-registered staging buffer for
+    # PIECEWISE/prefill graphs, where some SM75 graph-private allocations cannot
+    # be exported through CUDA IPC.
+    "VLLM_CUSTOM_ALLREDUCE_GRAPH_INPUT_MODE": lambda: os.getenv(
+        "VLLM_CUSTOM_ALLREDUCE_GRAPH_INPUT_MODE", "auto"
+    ).lower(),
     # List of quantization kernels that should be disabled, used for testing
     # and performance comparisons. Currently only affects MPLinearKernel
     # selection

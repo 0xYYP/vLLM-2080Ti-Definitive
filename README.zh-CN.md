@@ -8,11 +8,12 @@
 这是一个硬件定向的 vLLM fork，用来保存已经跑通的 2080 Ti vLLM
 栈：补丁源码、启动 profile、运行时说明和稳定环境记录。
 
-Fork 发布版本：`v0.1.11`
+Fork 发布版本：`v0.1.12`
 基础 vLLM：`0.21.0`
 
 核心实测：双 2080 Ti TP=2 runtime 下，Qwen3.6 27B 单请求 decode 达到
-`100+ tok/s`。
+`100+ tok/s`；官方 Qwen3.6 35B FP8 现已跑通 256K 纯文本 normal/aggressive
+noMTP、136K 图文 normal/aggressive，以及 178K fast/MTP3 路线。
 
 语言：[English](README.md) | 简体中文
 
@@ -48,14 +49,14 @@ Fork 发布版本：`v0.1.11`
 
 这就是本 fork 的首要价值：把老但仍然很强的 Turing 硅片，通过 Marlin、
 FlashQLA/FlashInfer、TurboQuant/INT8 KV、MTP 和 CUDAGraph 集成，
-变成一个严肃可用的 27B/31B 级别推理平台。
+变成一个严肃可用的 27B/31B/35B 级别推理平台。
 
 ## 🧩 核心路线
 
 服务形态：
 
 - 本项目追求的是双 2080 Ti 上的极限单并发性能：一个个人 agent 场景、
-  一个足够强的 27B/31B 模型，以及这套硬件能稳定承载的最大实用上下文。
+  一个足够强的 27B/31B/35B 模型，以及这套硬件能稳定承载的最大实用上下文。
 - 它不是多租户 serving 集群。多 agent 使用更适合作为排队式工作区隔离，
   而不是并行长 prefill 吞吐。长上下文并发在调好参数后可以安全排队，
   但在这个 TP=2 profile 下实际会被 runtime scheduler 串行化。
@@ -77,6 +78,24 @@ FP16/INT8/TurboQuant KV、256K 原生上下文、YaRN 容量和图像多模态�
 | 快速 prefill 路线 | 🟢 FlashQLA / FlashInfer | 🟢 FlashQLA / FlashInfer | 🟢 FlashQLA / FlashInfer |
 | 图像多模态 | 🟢 支持 | 🟢 支持 | 🟢 支持 |
 | 当前预设状态 | 🟢 normal / fast / safe | 🟢 normal / safe | 🟢 fast |
+
+### Qwen3.6 35B 官方 FP8 成熟第二路线
+
+官方 `Qwen/Qwen3.6-35B-A3B-FP8` 是当前成熟的第二路线，适合需要更强
+Qwen 系 agent 模型、但仍希望留在已验证双 2080 Ti runtime 上的场景。当前正式
+预设包含 256K 纯文本 normal/aggressive noMTP、136K 图文 normal/aggressive，
+以及一条 FP16 KV 的 MTP3 速度预设。官方 noMTP 质量线已经跑完
+`Ragent6 0.2.2 zh-CN` full60，`weighted_score=79.6`，`invalid_cases=0`。
+
+| 功能 | FP16 KV |
+|---|---|
+| 官方 FP8 权重路线 | 🟢 支持 |
+| MTP 解码 | 🟢 noMTP / MTP3 已验证 |
+| 已验证上下文 | 🟢 256K 纯文本 / 136K 图文 / 178K fast |
+| No-eager / CUDAGraph | 🟢 支持 |
+| 快速 prefill 路线 | 🟢 FlashInfer |
+| 图像多模态 | 🟢 支持 |
+| 当前预设状态 | 🟢 normal / aggressive / fast |
 
 ### Gemma4 31B 实验路线
 
@@ -103,6 +122,7 @@ FP16/default KV 空间。
 | 模型路线 | 权重路线 | 模型卡 | 状态 |
 |---|---|---|---|
 | Qwen3.6 27B FP8 | FP8 | [Qwen/Qwen3.6-27B-FP8](https://huggingface.co/Qwen/Qwen3.6-27B-FP8)<br>[Jackrong/Qwopus3.6-27B-v2-FP8](https://huggingface.co/Jackrong/Qwopus3.6-27B-v2-FP8) | 🟢 推荐 |
+| Qwen3.6 35B 官方 FP8 | FP8 | [Qwen/Qwen3.6-35B-A3B-FP8](https://huggingface.co/Qwen/Qwen3.6-35B-A3B-FP8) | 🟢 推荐 |
 | Qwen3.6 27B AWQ | AWQ-INT4 | [QuantTrio/Qwen3.6-27B-AWQ](https://huggingface.co/QuantTrio/Qwen3.6-27B-AWQ)<br>[mconcat/Qwopus3.6-27B-v2-AWQ-4bit](https://huggingface.co/mconcat/Qwopus3.6-27B-v2-AWQ-4bit) | 🟢 推荐 |
 | Qwen3.6 27B GPTQ | GPTQ-INT4 | [llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4) | 🟢 推荐 |
 | Qwen3.6 27B NVFP4 | NVFP4 | [unsloth/Qwen3.6-27B-NVFP4](https://huggingface.co/unsloth/Qwen3.6-27B-NVFP4) | 🟡 支持 |
@@ -117,7 +137,7 @@ FP16/default KV 空间。
   size 2
 - 已验证主机系统：Ubuntu 22.04/24.04 LTS 或 Debian 12，Linux kernel 6.x
 - CUDA/PyTorch：CUDA 12.8，`torch 2.11.0+cu128`
-- Fork 发布版本：`v0.1.11`
+- Fork 发布版本：`v0.1.12`
 - 基础 vLLM：`0.21.0`
 - 仓库身份：`vllm-2080ti-definitive`
 - 运行时身份：`vllm-sm75-tp2-cu128`
@@ -145,9 +165,9 @@ FP16/default KV 空间。
 ```
 
 `launcher.sh` 是交互式服务管理器。你可以在菜单里选择 checkpoint 目录、套用或
-修改 profile、选择 `safe` / `normal` / `fast` 模式、选择 GPU/TP、设置端口、
-切换仅本地或局域网访问、配置 chat template 和工具调用、启动服务、停止服务，
-也可以保存自定义 profile。
+修改 profile、选择 `safe` / `normal` / `fast` / `aggressive` 模式、选择
+GPU/TP、设置端口、切换仅本地或局域网访问、配置 chat template 和工具调用、
+启动服务、停止服务，也可以保存自定义 profile。
 
 Prefix cache 默认作为 launcher 全局设置开启，不保存到具体 route profile 里。
 对 Qwen 路线，launcher 会自动应用已验证 prefix-cache 路径所需的 cache mode。
@@ -172,7 +192,8 @@ CUDA_VISIBLE_DEVICES=0,1 \
 ```
 
 Profile 只声明兼容模式，不再提供推荐启动模式。需要指定模式时，显式传
-`MODE=safe`、`MODE=normal` 或 `MODE=fast`；launcher 会根据 profile 做二次校验。
+`MODE=safe`、`MODE=normal`、`MODE=fast` 或 `MODE=aggressive`；launcher
+会根据 profile 做二次校验。
 
 3. 更新已有 checkout：
 
@@ -188,8 +209,9 @@ release archive，并保留本地 `.venv`、`.deps`、日志、结果、缓存�
 
 从 [Profile 导引](profiles/README.zh-CN.md) 开始选。Profile 按
 `profiles/<model>/<mode>/<weight>/<route>.env` 组织，例如
-`qwen27b/normal/int4/fp16kv-256K-mtp3-text-only.env` 和
-`qwen27b/fast/int4/tqk8v4-256K-mtp3-text-only.env`。
+`qwen27b/normal/int4/fp16kv-256K-mtp3-text-only.env`、
+`qwen35b/aggressive/fp8/fp16kv-256K-nomtp-text-only.env` 和
+`qwen35b/normal/fp8/fp16kv-136K-nomtp-text-image.env`。
 
 可用模式：
 

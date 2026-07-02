@@ -3,6 +3,21 @@
 This changelog tracks the fork release version for vLLM 2080 Ti Definitive
 Edition. It is separate from the upstream vLLM package version.
 
+## v0.1.12 - 2026-07-02
+
+- Integrates the SM75 custom all-reduce graph-input auto policy so the official
+  Qwen3.6 35B FP8 release route can keep the validated fast decode path while
+  avoiding the PIECEWISE graph-capture startup crash.
+- Finalizes the current build/install reliability fixes, including safer build
+  parallelism defaults, broken virtualenv self-heal, dependency checkout reuse,
+  and rebuild recovery for fresh source installs.
+- Adds the validated official Qwen3.6 35B FP8 profile set: 256K text-only
+  `normal` and `aggressive`, 136K text+image `normal` and `aggressive`, and a
+  178K `fast` MTP3 route.
+- Promotes `aggressive` as a first-class documented launcher/profile mode and
+  refreshes the shipped profile guides and route tables around the current
+  27B/35B validated lanes.
+
 ## v0.1.11 - 2026-06-29
 
 - Updates the launcher defaults for long-context serving: prefix cache is now a
