@@ -79,23 +79,14 @@ FP16/INT8/TurboQuant KV、256K 原生上下文、YaRN 容量和图像多模态�
 | 图像多模态 | 🟢 支持 | 🟢 支持 | 🟢 支持 |
 | 当前预设状态 | 🟢 normal / fast / safe | 🟢 normal / safe | 🟢 fast |
 
-### Qwen3.6 35B 官方 FP8 成熟第二路线
+### Qwen3.6 35B 成熟第二主线
 
-官方 `Qwen/Qwen3.6-35B-A3B-FP8` 是当前成熟的第二路线，适合需要更强
-Qwen 系 agent 模型、但仍希望留在已验证双 2080 Ti runtime 上的场景。当前正式
-预设包含 256K 纯文本 normal/aggressive noMTP、136K 图文 normal/aggressive，
-以及一条 FP16 KV 的 MTP3 速度预设。官方 noMTP 质量线已经跑完
-`Ragent6 0.2.2 zh-CN` full60，`weighted_score=79.6`，`invalid_cases=0`。
+Qwen3.6 35B FP8 MoE 是同一套双 2080 Ti 已验证 runtime 上的成熟第二主线。
+它整体上继承了 27B 主线的大部分支持能力：MTP、FP16 KV 长上下文服务、
+FlashQLA / FlashInfer 快速 prefill，以及图像多模态都已经支持。
 
-| 功能 | FP16 KV |
-|---|---|
-| 官方 FP8 权重路线 | 🟢 支持 |
-| MTP 解码 | 🟢 noMTP / MTP3 已验证 |
-| 已验证上下文 | 🟢 256K 纯文本 / 136K 图文 / 178K fast |
-| No-eager / CUDAGraph | 🟢 支持 |
-| 快速 prefill 路线 | 🟢 FlashInfer |
-| 图像多模态 | 🟢 支持 |
-| 当前预设状态 | 🟢 normal / aggressive / fast |
+当前正式预设覆盖 FP16 KV 的 256K 纯文本 `normal` / `aggressive`、FP16 KV
+的 136K 图文 `normal` / `aggressive`，以及一条 178K 的 `fast` MTP3 预设。
 
 ### Gemma4 31B 实验路线
 
@@ -122,7 +113,7 @@ FP16/default KV 空间。
 | 模型路线 | 权重路线 | 模型卡 | 状态 |
 |---|---|---|---|
 | Qwen3.6 27B FP8 | FP8 | [Qwen/Qwen3.6-27B-FP8](https://huggingface.co/Qwen/Qwen3.6-27B-FP8)<br>[Jackrong/Qwopus3.6-27B-v2-FP8](https://huggingface.co/Jackrong/Qwopus3.6-27B-v2-FP8) | 🟢 推荐 |
-| Qwen3.6 35B 官方 FP8 | FP8 | [Qwen/Qwen3.6-35B-A3B-FP8](https://huggingface.co/Qwen/Qwen3.6-35B-A3B-FP8) | 🟢 推荐 |
+| Qwen3.6 35B FP8 | FP8 | [Qwen/Qwen3.6-35B-A3B-FP8](https://huggingface.co/Qwen/Qwen3.6-35B-A3B-FP8)<br>[Jackrong/Qwopus3.6-35B-A3B-Coder-FP8](https://huggingface.co/Jackrong/Qwopus3.6-35B-A3B-Coder-FP8)<br>[kyr0/Ornith-35B-FP8-E4M3-MTP](https://huggingface.co/kyr0/Ornith-35B-FP8-E4M3-MTP) | 🟢 推荐 |
 | Qwen3.6 27B AWQ | AWQ-INT4 | [QuantTrio/Qwen3.6-27B-AWQ](https://huggingface.co/QuantTrio/Qwen3.6-27B-AWQ)<br>[mconcat/Qwopus3.6-27B-v2-AWQ-4bit](https://huggingface.co/mconcat/Qwopus3.6-27B-v2-AWQ-4bit) | 🟢 推荐 |
 | Qwen3.6 27B GPTQ | GPTQ-INT4 | [llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4) | 🟢 推荐 |
 | Qwen3.6 27B NVFP4 | NVFP4 | [unsloth/Qwen3.6-27B-NVFP4](https://huggingface.co/unsloth/Qwen3.6-27B-NVFP4) | 🟡 支持 |
@@ -219,9 +210,6 @@ release archive，并保留本地 `.venv`、`.deps`、日志、结果、缓存�
 - `fast`：高性能模式，但不推荐用于稳定生产部署。
 - `aggressive`：更加激进的模式，性能与质量风险最高。
 - `safe`：安全模式，速度较慢，但输出质量高度稳定，用于排障。
-
-后续目标 profile 和实测进度记录在
-[Profile 蓝图草案](docs/profile-blueprint.zh-CN.md)。
 
 ## 🚀 MTP 与 KV 精度
 

@@ -6,9 +6,6 @@
 `Profile` 是 `launcher.sh` 选择的相对 `.env` 路径；具体 checkpoint 仍然通过
 `MODEL_DIR` 单独选择。
 
-目标 profile 和未完成路线追踪见
-[Profile 蓝图草案](profile-blueprint.zh-CN.md)。
-
 ## 证据口径
 
 完整通过表示真实请求返回 HTTP 200、stream 正常结束，并且中文质量 smoke 没有
@@ -31,9 +28,10 @@
 - Profile 按 `profiles/<model>/<mode>/<weight>/<route>.env` 组织。
 - `normal` 是当前推荐生产路线；`fast` 只保留质量 smoke 通过的高性能路线；
   `safe` 是 launcher 的 eager 回退档，不作为当前正式 profile 目录。
-- 官方 Qwen3.6 35B FP8 是当前成熟的第二路线。正式预设现在覆盖 256K
-  `normal` / `aggressive` noMTP 纯文本路线、136K `normal` / `aggressive`
-  noMTP 图文路线，以及一条 178K `fast` MTP3 速度预设。
+- 同一套双 2080 Ti runtime 也已经验证了 Qwen3.6 35B FP8 MoE 路线。正式
+  预设现在覆盖 256K `normal` / `aggressive` noMTP 纯文本路线、136K
+  `normal` / `aggressive` noMTP 图文路线，以及一条 178K `fast` MTP3
+  速度预设。
 - FP8 + FP16KV `normal` 正式上下文为 256K，并且 `262016/128` 长提示 smoke
   已通过。
 - FP8 + FP16KV `aggressive` 也已验证到 256K。正式记录的吞吐仍以

@@ -2706,9 +2706,22 @@ set_sm75_runtime_env() {
     export VLLM_INT8KV_FA_CASCADE_TILE_TOKENS=${VLLM_INT8KV_FA_CASCADE_TILE_TOKENS:-65536}
   fi
   if [[ "${KV_CACHE_DTYPE:-}" == turboquant_* ]]; then
+    local tq_continuation_reserve_default=65536
+    if [[ "${ENABLE_PREFIX_CACHING:-1}" == "1" ]]; then
+      local tq_max_model_len=${MAX_MODEL_LEN:-0}
+      local tq_max_num_seqs=${MAX_NUM_SEQS:-1}
+      if [[ "$tq_max_model_len" =~ ^[0-9]+$ && "$tq_max_num_seqs" =~ ^[0-9]+$ ]] \
+        && (( tq_max_model_len >= 240000 )) \
+        && (( tq_max_num_seqs <= 1 )); then
+        # Long single-seq TQ continuation/prefix-cache lanes need the larger
+        # workspace reserved up front; otherwise the first large continuation
+        # grows the workspace at runtime and can trip OOM or bad split paths.
+        tq_continuation_reserve_default=262144
+      fi
+    fi
     export VLLM_TURBOQUANT_USE_FLASHINFER_PREFILL=${VLLM_TURBOQUANT_USE_FLASHINFER_PREFILL:-1}
     export VLLM_TURBOQUANT_FLASHINFER_BACKEND=${VLLM_TURBOQUANT_FLASHINFER_BACKEND:-fa2}
-    export VLLM_TURBOQUANT_CONTINUATION_WORKSPACE_RESERVE_TOKENS=${VLLM_TURBOQUANT_CONTINUATION_WORKSPACE_RESERVE_TOKENS:-65536}
+    export VLLM_TURBOQUANT_CONTINUATION_WORKSPACE_RESERVE_TOKENS=${VLLM_TURBOQUANT_CONTINUATION_WORKSPACE_RESERVE_TOKENS:-$tq_continuation_reserve_default}
     export VLLM_TURBOQUANT_CUDAGRAPH_SPEC_DECODE_SAFE=${VLLM_TURBOQUANT_CUDAGRAPH_SPEC_DECODE_SAFE:-1}
     export VLLM_TURBOQUANT_CONTINUATION_SDPA_Q_CHUNK=${VLLM_TURBOQUANT_CONTINUATION_SDPA_Q_CHUNK:-512}
     export VLLM_TURBOQUANT_CONTINUATION_SDPA_MAX_QK_CELLS=${VLLM_TURBOQUANT_CONTINUATION_SDPA_MAX_QK_CELLS:-16777216}

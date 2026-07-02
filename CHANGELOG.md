@@ -14,9 +14,10 @@ Edition. It is separate from the upstream vLLM package version.
 - Adds the validated official Qwen3.6 35B FP8 profile set: 256K text-only
   `normal` and `aggressive`, 136K text+image `normal` and `aggressive`, and a
   178K `fast` MTP3 route.
-- Promotes `aggressive` as a first-class documented launcher/profile mode and
-  refreshes the shipped profile guides and route tables around the current
-  27B/35B validated lanes.
+- Fixes the shipped Qwen3.6 27B `fast` TQK8V4 256K prefix-cache continuation
+  route by promoting the validated `GPU_UTIL=0.96` profile values and making
+  the launcher auto-reserve the larger continuation workspace for long
+  single-sequence TurboQuant lanes.
 
 ## v0.1.11 - 2026-06-29
 

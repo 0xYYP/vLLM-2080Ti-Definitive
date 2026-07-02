@@ -82,9 +82,9 @@ Tested checkpoint: Jackrong/Qwopus3.6-27B-v2-FP8, about 29G.
 | `qwen27b/fast/fp8/tqk8v4-256K-mtp3-text-only.env` | fast | 256K | TQK8V4 | 3 | text-only | 1 | 1615.81 / 81.06 |
 | `qwen27b/fast/fp8/tqk8v4-240K-mtp3-text-image.env` | fast | 240K | TQK8V4 | 3 | text+image | 1 | 1605.61 / 80.67 |
 
-### Qwen3.6 35B Official FP8
+### Qwen3.6 35B FP8
 
-Tested checkpoint: Qwen/Qwen3.6-35B-A3B-FP8, about 36G.
+Tested checkpoint target: Qwen/Qwen3.6-35B-A3B-FP8, about 36G.
 
 | Profile | Compatible modes | Context | KV | MTP | Messages | Seqs | Throughput |
 |---|---|---:|---|---:|---|---:|---:|
@@ -94,9 +94,11 @@ Tested checkpoint: Qwen/Qwen3.6-35B-A3B-FP8, about 36G.
 | `qwen35b/aggressive/fp8/fp16kv-136K-nomtp-text-image.env` | aggressive | 136K | FP16 | 0 | text+image | 1 | 5422.83 / 124.11 |
 | `qwen35b/fast/fp8/fp16kv-178K-mtp3-text-only.env` | fast | 178K | FP16 | 3 | text-only | 1 | 5889.20 / 195.95 |
 
-### AWQ/GPTQ-INT4
+### Qwen3.6 27B AWQ/GPTQ-INT4
 
-Tested checkpoint: GPTQ-INT4, about 19G.
+Tested checkpoints: QuantTrio/Qwen3.6-27B-AWQ, mconcat/Qwopus3.6-27B-v2-AWQ-4bit,
+and llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4,
+about 19G.
 
 | Profile | Compatible modes | Context | KV | MTP | Messages | Seqs | Throughput |
 |---|---|---:|---|---:|---|---:|---:|
@@ -107,14 +109,3 @@ Tested checkpoint: GPTQ-INT4, about 19G.
 | `qwen27b/fast/int4/fp16kv-256K-mtp3-text-only.env` | fast | 256K | FP16 | 3 | text-only | 1 | 1734.98 / 87.00 |
 | `qwen27b/fast/int4/tqk8v4-256K-mtp3-text-only.env` | fast | 256K | TQK8V4 | 3 | text-only | 1 | 1744.67 / 100.81 |
 | `qwen27b/fast/int4/tqk8v4-two250K-mtp3-text-only.env` | fast | 250K per workspace | TQK8V4 | 3 | text-only | 2 | 1739.23 / 99.91 |
-
-Throughput uses the `4096/128` test shape and is shown as
-`prefill tok/s / decode tok/s`. Chinese quality smoke is run before throughput;
-routes that fail quality are not kept as profiles. The official Qwen3.6 35B
-rows above were revalidated on the same `4096/128` synthetic lane. The 256K
-normal route also passed a near-full `262016/128` long-prompt smoke, the 256K
-aggressive route passed the same long-prompt smoke through the launcher's
-prewarm-and-retry startup path, the 136K text+image normal and aggressive
-routes both passed `138240/128`, `139008/64` also passed at the edge, and
-`139136/32` exceeds the `139264` service limit. The 178K fast route passed a
-near-full `182144/128` long-prompt smoke.

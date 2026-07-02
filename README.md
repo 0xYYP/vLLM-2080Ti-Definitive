@@ -80,24 +80,16 @@ TurboQuant KV, 256K native context, YaRN capacity, and image serving.
 | Multimodal image serving | 🟢 supported | 🟢 supported | 🟢 supported |
 | Current preset status | 🟢 normal / fast / safe | 🟢 normal / safe | 🟢 fast |
 
-### Qwen3.6 35B Official FP8 Mature Secondary Route
+### Qwen3.6 35B Mature Secondary Route
 
-Official `Qwen/Qwen3.6-35B-A3B-FP8` is the current mature secondary route for
-users who want a stronger Qwen-family agent model without leaving the validated
-dual 2080 Ti runtime. The current shipped set includes 256K text-only
-normal/aggressive noMTP lanes, 136K text+image normal/aggressive lanes, and an
-FP16-KV MTP3 speed preset. The official noMTP quality run completed
-`Ragent6 0.2.2 zh-CN` full60 at `79.6` weighted with `0` invalid cases.
+Qwen3.6 35B FP8 MoE is the mature secondary route on the same validated dual
+2080 Ti runtime. It broadly inherits the same support surface as the 27B lane:
+MTP, FP16-KV long-context serving, FlashQLA / FlashInfer fast prefill, and
+multimodal image serving are all supported on the shipped 35B presets.
 
-| Feature | FP16 KV |
-|---|---|
-| Official FP8 weight route | 🟢 supported |
-| MTP decoding | 🟢 noMTP / MTP3 validated |
-| Validated context | 🟢 256K text-only / 136K text+image / 178K fast |
-| No-eager / CUDAGraph | 🟢 supported |
-| Fast prefill path | 🟢 FlashInfer |
-| Multimodal image serving | 🟢 supported |
-| Current preset status | 🟢 normal / aggressive / fast |
+The current shipped set covers FP16-KV 256K text-only `normal` /
+`aggressive`, FP16-KV 136K text+image `normal` / `aggressive`, and a 178K
+`fast` MTP3 preset.
 
 ### Gemma4 31B Experimental Route
 
@@ -124,7 +116,7 @@ recommended checkpoint also has a useful throughput/context tradeoff on dual 208
 | Model route | Weight route | Model cards | Status |
 |---|---|---|---|
 | Qwen3.6 27B FP8 | FP8 | [Qwen/Qwen3.6-27B-FP8](https://huggingface.co/Qwen/Qwen3.6-27B-FP8)<br>[Jackrong/Qwopus3.6-27B-v2-FP8](https://huggingface.co/Jackrong/Qwopus3.6-27B-v2-FP8) | 🟢 Recommended |
-| Qwen3.6 35B official FP8 | FP8 | [Qwen/Qwen3.6-35B-A3B-FP8](https://huggingface.co/Qwen/Qwen3.6-35B-A3B-FP8) | 🟢 Recommended |
+| Qwen3.6 35B FP8 | FP8 | [Qwen/Qwen3.6-35B-A3B-FP8](https://huggingface.co/Qwen/Qwen3.6-35B-A3B-FP8)<br>[Jackrong/Qwopus3.6-35B-A3B-Coder-FP8](https://huggingface.co/Jackrong/Qwopus3.6-35B-A3B-Coder-FP8)<br>[kyr0/Ornith-35B-FP8-E4M3-MTP](https://huggingface.co/kyr0/Ornith-35B-FP8-E4M3-MTP) | 🟢 Recommended |
 | Qwen3.6 27B AWQ | AWQ-INT4 | [QuantTrio/Qwen3.6-27B-AWQ](https://huggingface.co/QuantTrio/Qwen3.6-27B-AWQ)<br>[mconcat/Qwopus3.6-27B-v2-AWQ-4bit](https://huggingface.co/mconcat/Qwopus3.6-27B-v2-AWQ-4bit) | 🟢 Recommended |
 | Qwen3.6 27B GPTQ | GPTQ-INT4 | [llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GPTQ-Int4) | 🟢 Recommended |
 | Qwen3.6 27B NVFP4 | NVFP4 | [unsloth/Qwen3.6-27B-NVFP4](https://huggingface.co/unsloth/Qwen3.6-27B-NVFP4) | 🟡 Supported |

@@ -36,10 +36,10 @@ are not capacity evidence.
 - `normal` is the current recommended production route. `fast` keeps only
   high-performance routes that passed quality smoke. `safe` is the launcher
   eager fallback mode, not the current shipped profile directory.
-- Official Qwen3.6 35B FP8 is the current mature secondary route. The shipped
-  preset set now covers 256K `normal` and `aggressive` noMTP text-only lanes,
-  136K `normal` and `aggressive` noMTP text+image lanes, and a 178K `fast`
-  MTP3 speed preset.
+- The same dual-2080-Ti runtime also validates Qwen3.6 35B FP8 MoE lanes. The
+  shipped preset set now covers 256K `normal` and `aggressive` noMTP
+  text-only lanes, 136K `normal` and `aggressive` noMTP text+image lanes, and
+  a 178K `fast` MTP3 speed preset.
 - FP8 + FP16KV `normal` is formally 256K and passes a long-prompt smoke at
   `262016/128`.
 - FP8 + FP16KV `aggressive` is also validated at 256K. Its recorded throughput
