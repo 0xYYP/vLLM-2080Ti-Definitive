@@ -18,6 +18,7 @@ LOG_DIR=${LOG_DIR:-"$MANAGER_ROOT/run-logs"}
 STATE_FILE=${STATE_FILE:-"$LOG_DIR/start-manager.state"}
 STAMP=$(date +%Y%m%d-%H%M%S)
 VERSION=${VERSION:-$FORK_RELEASE}
+MENU_DIGIT_TIMEOUT=${LAUNCHER_MENU_DIGIT_TIMEOUT:-0.8}
 
 banner() {
   cat <<EOF
@@ -847,7 +848,7 @@ menu_select() {
   local options=("$@")
   local count=${#options[@]}
   local idx=0
-  local key answer answer_rest selected_index number_buffer=""
+  local key next_key answer answer_rest selected_index number_buffer=""
 
   (( count > 0 )) || return 1
   for i in "${!options[@]}"; do
@@ -877,7 +878,7 @@ menu_select() {
       done
       echo
       if (( count >= 10 )); then
-        echo "Use Up/Down, Enter to select. Type a number then Enter for 10+ items. Esc returns."
+        echo "Use Up/Down, Enter to select. Number keys select directly. Esc returns."
         [[ -n "$number_buffer" ]] && echo "Input: $number_buffer"
       else
         echo "Press a number to select, Enter for the highlighted item."
@@ -919,7 +920,26 @@ menu_select() {
 
       if [[ "$key" =~ ^[0-9]$ ]]; then
         number_buffer+="$key"
-        if (( number_buffer > count )); then
+        if [[ "$number_buffer" =~ ^[0-9]+$ ]] \
+          && (( 10#$number_buffer >= 1 && 10#$number_buffer <= count )); then
+          if menu_index_prefix_exists "$number_buffer" "$count"; then
+            next_key=""
+            read -rsn1 -t "$MENU_DIGIT_TIMEOUT" next_key </dev/tty || true
+            if [[ "$next_key" =~ ^[0-9]$ ]]; then
+              number_buffer+="$next_key"
+            elif [[ -z "$next_key" ]]; then
+              printf '%s\n' "${options[$((10#$number_buffer - 1))]}"
+              return 0
+            fi
+          fi
+          if [[ "$number_buffer" =~ ^[0-9]+$ ]] \
+            && (( 10#$number_buffer >= 1 && 10#$number_buffer <= count )) \
+            && ! menu_index_prefix_exists "$number_buffer" "$count"; then
+            printf '%s\n' "${options[$((10#$number_buffer - 1))]}"
+            return 0
+          fi
+        fi
+        if ! menu_index_prefix_exists "$number_buffer" "$count"; then
           echo "Please enter a listed number." >&2
           number_buffer=""
           sleep 1
@@ -973,7 +993,7 @@ menu_select() {
     if [[ "$key" =~ ^[0-9]$ ]]; then
       selected_index="$key"
       if (( count >= 10 && key == 1 )); then
-        read -rsn1 -t 0.25 answer </dev/tty || true
+        read -rsn1 -t "$MENU_DIGIT_TIMEOUT" answer </dev/tty || true
         if [[ "$answer" =~ ^[0-9]$ ]]; then
           selected_index="${key}${answer}"
         fi
@@ -999,6 +1019,19 @@ menu_select() {
     echo "Please press a listed number." >&2
     sleep 1
   done
+}
+
+menu_index_prefix_exists() {
+  local prefix=$1
+  local max=$2
+  local i
+
+  [[ "$prefix" =~ ^[0-9]+$ ]] || return 1
+  for ((i = 1; i <= max; i++)); do
+    [[ "$i" == "$prefix" ]] && continue
+    [[ "$i" == "$prefix"* ]] && return 0
+  done
+  return 1
 }
 
 read_menu_key() {
