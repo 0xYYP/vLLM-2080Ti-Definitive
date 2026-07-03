@@ -1,0 +1,57 @@
+# Local vLLM 2080 Ti runtime service.
+#
+# Build from repository root:
+#   MAX_JOBS=4 docker compose -f docker/docker-compose.yml build vllm
+# Start:
+#   docker compose -f docker/docker-compose.yml up -d vllm
+
+services:
+  vllm:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        MAX_JOBS: ${MAX_JOBS:-4}
+        FLASHQLA_REPO: ${FLASHQLA_REPO:-https://github.com/weicj/FlashQLA-SM70-SM75.git}
+        FLASHQLA_REF: ${FLASHQLA_REF:-3ab27d77d8ca01d7a4718903b726add1a8886c0e}
+    image: ${VLLM_IMAGE:-local/vllm-2080ti-definitive:v0.1.12}
+    container_name: ${VLLM_CONTAINER_NAME:-vllm-2080ti}
+    restart: unless-stopped
+    ipc: host
+    ports:
+      - "${VLLM_HOST_PORT:-8000}:8000"
+    volumes:
+      - ${MODEL_ROOT:-/data/models}:/models:ro
+      - vllm-torch-cache:/tmp/torch_extensions_cache
+      - vllm-triton-cache:/tmp/triton-cache
+      - vllm-inductor-cache:/tmp/torchinductor-cache
+    environment:
+      - MODEL_DIR=${MODEL_DIR:-/models/Qwen3.6-27B-GPTQ-Int4}
+      - PROFILE=${PROFILE:-qwen27b/fast/int4/tqk8v4-256K-mtp3-text-only.env}
+      - MODE=${MODE:-fast}
+      - PORT=8000
+      - GPU_UTIL=${GPU_UTIL:-0.96}
+      - CHAT_TEMPLATE_FILE=/opt/vllm/docker/chat_template_no_thinking.jinja
+      - DEFAULT_CHAT_TEMPLATE_KWARGS={"enable_thinking":false}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0,1}
+      - TORCH_CUDA_ARCH_LIST=7.5
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - FLASHINFER_ENABLE_AOT=1
+      - NCCL_DEBUG=WARN
+      - PYTHONUNBUFFERED=1
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-2}
+              capabilities: [gpu]
+
+volumes:
+  vllm-torch-cache:
+  vllm-triton-cache:
+  vllm-inductor-cache:
