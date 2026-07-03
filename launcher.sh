@@ -254,13 +254,17 @@ is_tty() {
   [[ -t 0 && -t 1 ]] || { : </dev/tty >/dev/tty; } 2>/dev/null
 }
 
+lower_text() {
+  printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
+}
+
 pause_enter() {
   is_tty || return 0
   read -r -p "Press Enter to continue..." _
 }
 
 normalize_bool() {
-  case "${1,,}" in
+  case "$(lower_text "${1:-}")" in
     1|yes|y|true|on) echo 1 ;;
     *) echo 0 ;;
   esac
@@ -289,6 +293,7 @@ ROUTE_PROFILE_KEYS=(
   MODEL_VARIANT
   QUANTIZATION
   KV_CACHE_DTYPE
+  KV_CACHE_DTYPE_SKIP_LAYERS
   MAX_MODEL_LEN
   GPU_UTIL
   MAX_BATCHED_TOKENS
@@ -309,7 +314,10 @@ ROUTE_PROFILE_KEYS=(
   VLLM_INT8KV_FA_CASCADE_DEQUANT
   VLLM_INT8KV_FA_CASCADE_TILE_TOKENS
   VLLM_INT8KV_FA_CONTINUATION_DEQUANT
+  VLLM_INT8KV_FA_DIRECT_PAGED
+  VLLM_INT8KV_FA_FIRST_CHUNK_DEQUANT
   VLLM_INT8KV_FA_PREFILL
+  VLLM_INT8KV_ALIGNED_HEAD_STRIDE
 )
 
 reset_route_profile_fields() {
@@ -407,6 +415,7 @@ save_manager_state() {
     printf 'GPU_DEVICES=%q\n' "${GPU_DEVICES:-}"
     printf 'QUANTIZATION=%q\n' "${QUANTIZATION:-}"
     printf 'KV_CACHE_DTYPE=%q\n' "${KV_CACHE_DTYPE:-}"
+    printf 'KV_CACHE_DTYPE_SKIP_LAYERS=%q\n' "${KV_CACHE_DTYPE_SKIP_LAYERS:-}"
     printf 'MAMBA_CACHE_MODE=%q\n' "${MAMBA_CACHE_MODE:-}"
     printf 'ENABLE_PREFIX_CACHING=%q\n' "${ENABLE_PREFIX_CACHING:-1}"
     printf 'ENABLE_PROMPT_TOKENS_DETAILS=%q\n' "${ENABLE_PROMPT_TOKENS_DETAILS:-1}"
@@ -646,12 +655,10 @@ default_qwen_reasoning_parser_applies() {
 
   [[ "${MODEL_FAMILY:-}" == qwen* ]] || return 1
 
-  model_dir_l=${MODEL_DIR,,}
-  served_l=${SERVED_NAME,,}
-  profile_l=${PROFILE:-}
-  profile_l=${profile_l,,}
-  group_l=${PROFILE_GROUP:-}
-  group_l=${group_l,,}
+  model_dir_l=$(lower_text "${MODEL_DIR:-}")
+  served_l=$(lower_text "${SERVED_NAME:-}")
+  profile_l=$(lower_text "${PROFILE:-}")
+  group_l=$(lower_text "${PROFILE_GROUP:-}")
 
   case "$group_l" in
     qwen3*|qwen36*)
@@ -822,6 +829,7 @@ profile_summary() {
     MODEL_VARIANT
     QUANTIZATION
     KV_CACHE_DTYPE
+    KV_CACHE_DTYPE_SKIP_LAYERS
     MAX_MODEL_LEN
     GPU_UTIL
     MAX_BATCHED_TOKENS
@@ -957,7 +965,7 @@ menu_select() {
       read -r -t 0.5 answer_rest </dev/tty || answer_rest=""
       answer="${answer}${answer_rest}"
       for i in "${!options[@]}"; do
-        if [[ "${answer,,}" == "${options[$i],,}" ]]; then
+        if [[ "$(lower_text "$answer")" == "$(lower_text "${options[$i]}")" ]]; then
           printf '%s\n' "${options[$i]}"
           return 0
         fi
@@ -1011,7 +1019,7 @@ menu_select() {
     read -r -t 0.5 answer_rest </dev/tty || answer_rest=""
     answer="${answer}${answer_rest}"
     for i in "${!options[@]}"; do
-      if [[ "${answer,,}" == "${options[$i],,}" ]]; then
+      if [[ "$(lower_text "$answer")" == "$(lower_text "${options[$i]}")" ]]; then
         printf '%s\n' "${options[$i]}"
         return 0
       fi
@@ -1121,7 +1129,7 @@ prompt_required_dir() {
     else
       answer=$(read_line_with_esc "$label [required, Esc/q to cancel]: ") || return 1
     fi
-    case "${answer,,}" in
+    case "$(lower_text "$answer")" in
       q|quit|exit)
         return 1
         ;;
@@ -1160,7 +1168,7 @@ prompt_checkpoint_dir() {
       answer=$(read_line_with_esc "Checkpoint directory [required, Esc/q to quit]: ") || return 1
     fi
 
-    case "${answer,,}" in
+    case "$(lower_text "$answer")" in
       q|quit|exit)
         echo "Start cancelled." >&2
         return 1
@@ -1222,7 +1230,7 @@ prompt_segmented() {
     IFS= read -rsn1 key </dev/tty || true
     printf '\n' >/dev/tty
     [[ "$key" == $'\x1b' || "$key" == $'\x04' ]] && return 1
-    case "${key,,}" in
+    case "$(lower_text "$key")" in
       "" )
         printf '%s\n' "$current"
         return 0
@@ -1235,7 +1243,7 @@ prompt_segmented() {
     fi
 
     if ((${#options[@]} == 2)); then
-      case "${key,,}" in
+      case "$(lower_text "$key")" in
         left|l)
           printf '%s\n' "${options[0]}"
           return 0
@@ -1251,7 +1259,7 @@ prompt_segmented() {
     read -r -t 0.5 answer_rest </dev/tty || answer_rest=""
     answer="${answer}${answer_rest}"
     for option in "${options[@]}"; do
-      if [[ "${answer,,}" == "${option,,}" ]]; then
+      if [[ "$(lower_text "$answer")" == "$(lower_text "$option")" ]]; then
         printf '%s\n' "$option"
         return 0
       fi
@@ -2154,7 +2162,7 @@ input_port_menu() {
 
   while true; do
     answer=$(read_line_with_esc "Port [$current] (q to cancel, Esc to return): ") || return 0
-    case "${answer,,}" in
+    case "$(lower_text "$answer")" in
       q|quit|exit)
         return 0
         ;;
@@ -2597,7 +2605,8 @@ stop_service() {
 }
 
 guess_model_family() {
-  local dir=${1,,}
+  local dir
+  dir=$(lower_text "${1:-}")
   if [[ "$dir" == *gemma* ]]; then
     echo gemma4
   else
@@ -2606,7 +2615,8 @@ guess_model_family() {
 }
 
 guess_quantization() {
-  local dir=${1,,}
+  local dir
+  dir=$(lower_text "${1:-}")
   if [[ "$dir" == *fp8* ]]; then
     echo fp8
   elif [[ "$dir" == *gptq* ]]; then
@@ -2623,7 +2633,7 @@ guess_quantization() {
 guess_precision_scheme() {
   local dir=${1:-${MODEL_DIR:-}}
   local quantization=${2:-${QUANTIZATION:-$(guess_quantization "$dir")}}
-  dir=${dir,,}
+  dir=$(lower_text "$dir")
 
   if [[ "$dir" == *w8a8* || "$quantization" == "quark" ]]; then
     echo W8A8
@@ -2846,6 +2856,14 @@ build_args() {
 
   [[ -n "${QUANTIZATION:-}" ]] && VLLM_ARGS+=(--quantization "$QUANTIZATION")
   [[ -n "${KV_CACHE_DTYPE:-}" ]] && VLLM_ARGS+=(--kv-cache-dtype "$KV_CACHE_DTYPE")
+  if [[ -n "${KV_CACHE_DTYPE_SKIP_LAYERS:-}" ]]; then
+    local skip_layers_text=${KV_CACHE_DTYPE_SKIP_LAYERS//,/ }
+    local skip_layers=()
+    read -r -a skip_layers <<< "$skip_layers_text"
+    if ((${#skip_layers[@]} > 0)); then
+      VLLM_ARGS+=(--kv-cache-dtype-skip-layers "${skip_layers[@]}")
+    fi
+  fi
   [[ -n "${MAMBA_CACHE_MODE:-}" ]] && VLLM_ARGS+=(--mamba-cache-mode "$MAMBA_CACHE_MODE")
   [[ "${ENFORCE_EAGER:-0}" == "1" ]] && VLLM_ARGS+=(--enforce-eager)
   [[ "${NO_ASYNC_SCHEDULING:-0}" == "1" ]] && VLLM_ARGS+=(--no-async-scheduling)
@@ -3621,6 +3639,7 @@ Launch summary:
   W/A type:             $(guess_precision_scheme "$MODEL_DIR" "${QUANTIZATION:-}")
   GPU devices:          ${GPU_DEVICES:-$(detect_default_gpu_devices)}
   KV precision:         ${KV_CACHE_DTYPE:-fp16}
+  KV fp16 skip layers:  ${KV_CACHE_DTYPE_SKIP_LAYERS:-none}
   TQ diagnostics:       $(current_tq_diagnostics_label)
   Prefix cache:         $(current_prefix_cache_label)
   Mamba cache mode:     ${MAMBA_CACHE_MODE:-auto}
@@ -3893,6 +3912,16 @@ run_start_flow() {
   START_TIMEOUT=${START_TIMEOUT:-900}
   print_review
   if [[ "${PRINT_CONFIG:-0}" == "1" ]] || has_arg "--print-config" "$@"; then
+    local host_arg args_text
+    if [[ "$SERVICE_SCOPE" == "lan" ]]; then
+      host_arg="0.0.0.0"
+    else
+      host_arg="127.0.0.1"
+    fi
+    build_args "$host_arg"
+    printf -v args_text '%q ' "${VLLM_ARGS[@]}"
+    echo "Command:"
+    echo "  $RUNTIME_ROOT/.venv/bin/python -m vllm.entrypoints.openai.api_server $args_text"
     return 0
   fi
   launch_server
@@ -3906,7 +3935,12 @@ main() {
     exit 0
   fi
 
-  if [[ ! -x "$RUNTIME_ROOT/.venv/bin/python" ]]; then
+  local print_only=0
+  if [[ "${PRINT_CONFIG:-0}" == "1" ]] || has_arg "--print-config" "$@"; then
+    print_only=1
+  fi
+
+  if [[ "$print_only" != "1" && ! -x "$RUNTIME_ROOT/.venv/bin/python" ]]; then
     banner
     die ".venv is missing under RUNTIME_ROOT=$RUNTIME_ROOT. Run ./build.sh first or set RUNTIME_ROOT."
   fi

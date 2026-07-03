@@ -59,6 +59,8 @@ KV positioning:
 - `fp16kv`: quality route.
 - `int8kv`: capacity / balance route; currently shipped only as `normal`
   profiles.
+- `hybrid-int8kv`: experimental balance route that keeps selected attention
+  layers on fp16 KV with `KV_CACHE_DTYPE_SKIP_LAYERS`.
 - `tqk8v4`: TurboQuant K8V4 compression route; currently shipped only for
   quality-passed `fast` profiles.
 - Official Qwen3.6 35B currently ships as FP8 weight + FP16 KV presets for
@@ -81,6 +83,12 @@ Tested checkpoint: Jackrong/Qwopus3.6-27B-v2-FP8, about 29G.
 | `qwen27b/fast/fp8/fp16kv-112K-mtp3-text-only.env` | fast | 112K | FP16 | 3 | text-only | 1 | 1615.58 / 83.69 |
 | `qwen27b/fast/fp8/tqk8v4-256K-mtp3-text-only.env` | fast | 256K | TQK8V4 | 3 | text-only | 1 | 1615.81 / 81.06 |
 | `qwen27b/fast/fp8/tqk8v4-240K-mtp3-text-image.env` | fast | 240K | TQK8V4 | 3 | text+image | 1 | 1605.61 / 80.67 |
+
+Experimental candidate, not yet promoted:
+
+| Profile | Compatible modes | Context | KV | MTP | Messages | Seqs | Target |
+|---|---|---:|---|---:|---|---:|---|
+| `qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env` | fast | 65K | Hybrid INT8 | 3 | text-only | 1 | [Hybrid KV gate](../docs/hybrid-kv-balanced-route.md) |
 
 ### Qwen3.6 35B FP8
 

@@ -20,6 +20,8 @@
 
 - FP16/default KV 是质量路线。
 - INT8 KV 是容量 / 平衡路线；当前只保留 `normal` / piecewise profile。
+- Hybrid INT8 KV 是实验平衡路线：通过 `KV_CACHE_DTYPE_SKIP_LAYERS` 让部分
+  attention 层保留 fp16 KV，其余层使用 `int8_per_token_head`。
 - TQK8V4 是 TurboQuant 压缩路线；当前只保留质量通过的 `fast` profile。
 - TQ4NC 有过容量实验，但当前正式 profile 不采用。
 
@@ -46,6 +48,9 @@
   残缺输出。
 - 旧 `fast` + INT8KV 的兼容问题仍应修复，但这不代表把该路线重新晋升为
   fast 正式 profile。
+- Hybrid INT8 KV 有一条 65K experimental 候选，记录在
+  [Hybrid KV 平衡路线](hybrid-kv-balanced-route.zh-CN.md)。它必须在双 2080 Ti
+  runtime 上通过 0.80x KV、0.70x 长上下文 decode 和质量门槛后才能晋升。
 - 吞吐背景记录见
   [Qwen3.6 KV 吞吐 Sweep](qwen36-kv-throughput-sweep.zh-CN.md) 和
   [MTP 任务敏感性](mtp-task-sensitivity.md)。

@@ -25,6 +25,9 @@ are not capacity evidence.
 - FP16/default KV is the quality route.
 - INT8 KV is the capacity / balance route; currently shipped only as
   `normal` / piecewise profiles.
+- Hybrid INT8 KV is an experimental balance route: selected attention layers
+  stay on fp16 KV via `KV_CACHE_DTYPE_SKIP_LAYERS`, while the rest use
+  `int8_per_token_head`.
 - TQK8V4 is the TurboQuant compression route; currently shipped only for
   quality-passed `fast` profiles.
 - TQ4NC had capacity experiments, but is not used in the current shipped
@@ -57,6 +60,10 @@ are not capacity evidence.
   Chinese quality smoke showed repeated or broken output.
 - Legacy `fast` + INT8KV compatibility issues should be reported and fixed, but
   those fixes do not promote the route back into the shipped fast catalog.
+- Hybrid INT8 KV has a 65K experimental candidate documented in
+  [Hybrid KV Balanced Route](hybrid-kv-balanced-route.md). It is not promoted
+  until it passes the documented 0.80x KV, 0.70x long-decode, and quality gates
+  on the dual-2080-Ti runtime.
 - Throughput background is kept in
   [Qwen3.6 KV Throughput Sweep](qwen36-kv-throughput-sweep.md) and
   [MTP Task Sensitivity](mtp-task-sensitivity.md).

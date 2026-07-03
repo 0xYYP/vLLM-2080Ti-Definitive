@@ -56,6 +56,8 @@ KV 精度定位：
 
 - `fp16kv`：质量路线。
 - `int8kv`：容量 / 平衡路线；当前只作为 `normal` profile 保留。
+- `hybrid-int8kv`：实验平衡路线，通过 `KV_CACHE_DTYPE_SKIP_LAYERS` 让部分
+  attention 层保留 fp16 KV。
 - `tqk8v4`：TurboQuant K8V4 压缩路线；当前只保留质量通过的 `fast` profile。
 - 官方 Qwen3.6 35B 当前提供 FP8 权重 + FP16 KV 的纯文本和图文预设。
 
@@ -75,6 +77,12 @@ block 对齐后的 prefix-cache 路径已验证设置。
 | `qwen27b/fast/fp8/fp16kv-112K-mtp3-text-only.env` | fast | 112K | FP16 | 3 | text-only | 1 | 1615.58 / 83.69 |
 | `qwen27b/fast/fp8/tqk8v4-256K-mtp3-text-only.env` | fast | 256K | TQK8V4 | 3 | text-only | 1 | 1615.81 / 81.06 |
 | `qwen27b/fast/fp8/tqk8v4-240K-mtp3-text-image.env` | fast | 240K | TQK8V4 | 3 | text+image | 1 | 1605.61 / 80.67 |
+
+实验候选，尚未晋升：
+
+| Profile | 兼容模式 | 上下文 | KV | MTP | 消息 | 并发 | 目标 |
+|---|---|---:|---|---:|---|---:|---|
+| `qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env` | fast | 65K | Hybrid INT8 | 3 | text-only | 1 | [Hybrid KV 门槛](../docs/hybrid-kv-balanced-route.zh-CN.md) |
 
 ### Qwen3.6 35B FP8
 
