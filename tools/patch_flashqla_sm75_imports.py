@@ -36,7 +36,7 @@ try:
         chunk_gated_delta_rule_bwd,
         chunk_gated_delta_rule,
     )
-except ValueError:
+except (ImportError, OSError, RuntimeError, ValueError):
     chunk_gated_delta_rule_fwd = None
     chunk_gated_delta_rule_bwd = None
     chunk_gated_delta_rule = None
@@ -55,7 +55,7 @@ __all__ = [
 
 try:
     from .gated_delta_rule import chunk_gated_delta_rule
-except ValueError:
+except (ImportError, OSError, RuntimeError, ValueError):
     chunk_gated_delta_rule = None
 
 __all__ = ["chunk_gated_delta_rule"]
@@ -68,7 +68,7 @@ __all__ = ["chunk_gated_delta_rule"]
 
 try:
     from .chunk import chunk_gated_delta_rule
-except ValueError:
+except (ImportError, OSError, RuntimeError, ValueError):
     chunk_gated_delta_rule = None
 
 __all__ = ["chunk_gated_delta_rule"]

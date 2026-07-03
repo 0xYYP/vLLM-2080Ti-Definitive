@@ -24,20 +24,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv (fast Python package manager)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:${PATH}"
+# Install a pinned uv from PyPI instead of executing a remote installer script.
+ARG UV_VERSION=0.5.31
+RUN python3.11 -m venv /opt/uv-bootstrap \
+    && /opt/uv-bootstrap/bin/pip install --no-cache-dir "uv==${UV_VERSION}" \
+    && ln -sf /opt/uv-bootstrap/bin/uv /usr/local/bin/uv
 
 WORKDIR /build
 
-# Copy source code
-COPY . .
+# Copy dependency metadata before source code so package-install layers remain
+# cacheable when only application source changes.
+COPY requirements requirements
 
 # Build environment variables
 ENV TORCH_CUDA_ARCH_LIST=7.5
 ENV FLASHINFER_ENABLE_AOT=1
 ENV FLASHQLA_DIR=/build/FlashQLA-SM70-SM75
-ENV PYTHONPATH="/build/FlashQLA-SM70-SM75:${PYTHONPATH}"
+ENV PYTHONPATH=/build/FlashQLA-SM70-SM75
 # Use all available CPU cores for parallel compilation (max 16 to avoid OOM)
 # GitHub Actions has 2-4 cores, local machines may have more
 ARG MAX_JOBS=16
@@ -55,6 +58,9 @@ ENV PATH="/build/.venv/bin:${PATH}"
 RUN uv pip install -U pip setuptools wheel
 RUN uv pip install -r requirements/build/cuda.txt --torch-backend=cu128
 RUN uv pip install -r requirements/cuda.txt --torch-backend=cu128
+
+# Copy source code after dependency installation to preserve Docker layer cache.
+COPY . .
 
 # FlashQLA is fetched during Docker builds so the image does not depend on
 # callers cloning this repository with submodules.
@@ -100,15 +106,17 @@ ENV PATH="/usr/local/cuda/bin:${PATH}"
 
 # Install runtime dependencies (Python 3.11 via deadsnakes PPA)
 # python3.11-dev needed for FlashQLA CUDA kernel compilation (Python.h)
-# libcuda stub needed for Triton compilation at runtime
+# CUDA stubs are exposed through LIBRARY_PATH for runtime kernel compilation.
+# Do not put the stub on the runtime linker path; NVIDIA's injected driver
+# libcuda.so.1 must win when GPUs are mounted.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common \
     && add-apt-repository ppa:deadsnakes/ppa -y \
     && apt-get update && apt-get install -y --no-install-recommends \
         python3.11 python3.11-venv python3.11-dev libpython3.11 \
         curl build-essential ninja-build \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/lib/x86_64-linux-gnu/libcuda.so.1
+    && rm -rf /var/lib/apt/lists/*
+ENV LIBRARY_PATH=/usr/local/cuda/lib64/stubs
 
 # Copy Python environment (with fixed editable paths)
 COPY --from=builder /build/.venv /opt/venv

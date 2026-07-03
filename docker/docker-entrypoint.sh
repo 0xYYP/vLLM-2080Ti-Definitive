@@ -58,6 +58,7 @@ profile_key_is_global() {
 
 resolve_profile_file() {
     if [[ -n "${PROFILE_FILE:-}" ]]; then
+        [[ -f "$PROFILE_FILE" ]] || return 1
         printf '%s\n' "$PROFILE_FILE"
         return 0
     fi

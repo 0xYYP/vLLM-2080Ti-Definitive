@@ -5,7 +5,9 @@
         {{- content }}
     {%- elif content is iterable and content is not mapping %}
         {%- for item in content %}
-            {%- if 'image' in item or 'image_url' in item or item.type == 'image' %}
+            {%- if item is not mapping %}
+                {{- raise_exception('Unexpected non-object item in content.') }}
+            {%- elif 'image' in item or 'image_url' in item or (item.type is defined and item.type == 'image') %}
                 {%- if is_system_content %}
                     {{- raise_exception('System message cannot contain images.') }}
                 {%- endif %}
@@ -16,7 +18,7 @@
                     {{- 'Picture ' ~ image_count.value ~ ': ' }}
                 {%- endif %}
                 {{- '<|vision_start|><|image_pad|><|vision_end|>' }}
-            {%- elif 'video' in item or item.type == 'video' %}
+            {%- elif 'video' in item or (item.type is defined and item.type == 'video') %}
                 {%- if is_system_content %}
                     {{- raise_exception('System message cannot contain videos.') }}
                 {%- endif %}
