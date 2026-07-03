@@ -30,7 +30,10 @@ profiles/qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env
 早期 hybrid skip-layer profiles 在 Qwen hybrid 模型上可能启动失败，因为 compact KV
 page、fp16 skip page 和 Mamba align padding 使用了不同的 page-size 口径。现在 Mamba
 align 会把 fp16 skip page 纳入兼容 page-size 计算；但 FP8 和 INT8 hybrid profiles
-都仍需服务器启动、吞吐和质量证据，才能脱离 experimental。
+都仍需服务器启动、吞吐和质量证据，才能脱离 experimental。INT8 候选会显式关闭
+INT8 FlashInfer prefill 路径，因为当前 CUDA 12.8 / FlashInfer 0.6.8 runtime 下，
+生成的 SM75 head-dim-256 kernel 可能 NVCC 编译失败；这是一条保守启动路线，不是
+已晋升的性能路线。
 
 它面向 65K 验证 lane，而不是最大上下文容量。只有拿到真实双 RTX 2080 Ti
 吞吐和质量证据后，这条路线才能从 experimental 晋升。

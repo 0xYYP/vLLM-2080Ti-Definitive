@@ -35,7 +35,10 @@ because compact KV pages, fp16 skip pages, and Mamba align padding were computed
 from different page sizes. The Mamba align path now includes the fp16 skip page
 in its compatible page-size calculation, but both FP8 and INT8 hybrid profiles
 remain experimental until server startup, throughput, and quality evidence are
-recorded.
+recorded. The INT8 candidate explicitly disables the INT8 FlashInfer prefill
+path because its generated SM75 head-dim-256 kernel can fail NVCC compilation on
+the current CUDA 12.8 / FlashInfer 0.6.8 runtime; this is a conservative startup
+route, not a promoted performance route.
 
 It targets the 65K validation lane instead of maximum context capacity. The
 route is experimental until the throughput and quality gates below have real
