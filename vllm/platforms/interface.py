@@ -536,6 +536,23 @@ class Platform:
 
         kv_quant_mode = get_kv_quant_mode(cache_config.cache_dtype)
 
+        def include_skip_layer_page(
+            compact_page_size_1_token: int,
+        ) -> int:
+            if not cache_config.kv_cache_dtype_skip_layers:
+                return compact_page_size_1_token
+
+            skip_page_size_1_token = FullAttentionSpec(
+                block_size=1,
+                num_kv_heads=model_config.get_num_kv_heads(parallel_config),
+                head_size=model_config.get_head_size(),
+                dtype=model_config.dtype,
+            ).page_size_bytes
+            # Hybrid skip layers keep fp16 KV pages alongside compact KV pages.
+            # Use lcm so the later page-size unifier can grow block_size for
+            # both layouts without padding compact attention pages to fp16.
+            return lcm(compact_page_size_1_token, skip_page_size_1_token)
+
         # Compute attention page size for 1 token
         if model_config.use_mla:
             attn_page_size_1_token = MLAAttentionSpec(
@@ -568,27 +585,18 @@ class Platform:
                 kv_quant_mode=kv_quant_mode,
                 tq_slot_size=tq_cfg.slot_size_aligned,
             ).page_size_bytes
-            if cache_config.kv_cache_dtype_skip_layers:
-                skip_page = FullAttentionSpec(
-                    block_size=1,
-                    num_kv_heads=model_config.get_num_kv_heads(parallel_config),
-                    head_size=model_config.get_head_size(),
-                    dtype=model_config.dtype,
-                ).page_size_bytes
-                # lcm, not max: skip_page is often not a multiple of
-                # tq_page, so max would leave per-layer page sizes
-                # un-unifiable downstream.
-                attn_page_size_1_token = lcm(tq_page, skip_page)
-            else:
-                attn_page_size_1_token = tq_page
+            attn_page_size_1_token = include_skip_layer_page(tq_page)
         else:
-            attn_page_size_1_token = FullAttentionSpec(
+            compact_page_size_1_token = FullAttentionSpec(
                 block_size=1,
                 num_kv_heads=model_config.get_num_kv_heads(parallel_config),
                 head_size=model_config.get_head_size(),
                 dtype=kv_cache_dtype,
                 kv_quant_mode=kv_quant_mode,
             ).page_size_bytes
+            attn_page_size_1_token = include_skip_layer_page(
+                compact_page_size_1_token
+            )
 
         # Compute mamba page size
         model_cls, _ = ModelRegistry.resolve_model_cls(

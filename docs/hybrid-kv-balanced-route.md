@@ -14,19 +14,28 @@ fp16/default KV.
 
 ## Candidate Profile
 
-The current allocator-compatible Qwen3.6 27B FP8 candidate is:
+The current Qwen3.6 27B FP8 candidate is:
 
 ```text
 profiles/qwen27b/experimental/fp8/hybrid-fp8kv-65K-mtp3-text-only.env
 ```
 
-The original INT8 candidate is kept for allocator work, but it currently fails
-startup on Qwen hybrid models because aligned `int8_per_token_head`, fp16 skip
-layers, and Mamba align mode produce non-divisible KV page sizes:
+This profile exists to test allocator compatibility and the speed/quality
+tradeoff. FP8 KV is not yet a recommended 2080 Ti route; promote it only if the
+validation gates below beat the existing fp16/int8/TQ choices.
+
+The INT8 candidate is still kept as the quality-oriented compact-KV route:
 
 ```text
 profiles/qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env
 ```
+
+Earlier hybrid skip-layer profiles could fail startup on Qwen hybrid models
+because compact KV pages, fp16 skip pages, and Mamba align padding were computed
+from different page sizes. The Mamba align path now includes the fp16 skip page
+in its compatible page-size calculation, but both FP8 and INT8 hybrid profiles
+remain experimental until server startup, throughput, and quality evidence are
+recorded.
 
 It targets the 65K validation lane instead of maximum context capacity. The
 route is experimental until the throughput and quality gates below have real

@@ -12,19 +12,25 @@
 
 ## 候选 Profile
 
-当前更可能兼容 allocator 的 Qwen3.6 27B FP8 候选为：
+当前 Qwen3.6 27B FP8 候选为：
 
 ```text
 profiles/qwen27b/experimental/fp8/hybrid-fp8kv-65K-mtp3-text-only.env
 ```
 
-原 INT8 候选保留给 allocator 后续改造，但它当前在 Qwen hybrid 模型上启动失败：
-aligned `int8_per_token_head`、fp16 skip layers 和 Mamba align mode 会产生不可整除的
-KV page size。
+这个 profile 用来验证 allocator 兼容性以及速度/质量取舍。FP8 KV 还不是已经推荐的
+2080 Ti 路线；只有验证门槛证明它优于现有 fp16/int8/TQ 取舍后，才应晋升。
+
+INT8 候选仍然保留，作为偏质量的 compact-KV 路线：
 
 ```text
 profiles/qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env
 ```
+
+早期 hybrid skip-layer profiles 在 Qwen hybrid 模型上可能启动失败，因为 compact KV
+page、fp16 skip page 和 Mamba align padding 使用了不同的 page-size 口径。现在 Mamba
+align 会把 fp16 skip page 纳入兼容 page-size 计算；但 FP8 和 INT8 hybrid profiles
+都仍需服务器启动、吞吐和质量证据，才能脱离 experimental。
 
 它面向 65K 验证 lane，而不是最大上下文容量。只有拿到真实双 RTX 2080 Ti
 吞吐和质量证据后，这条路线才能从 experimental 晋升。
