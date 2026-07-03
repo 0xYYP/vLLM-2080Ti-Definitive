@@ -8,13 +8,21 @@ This is an experimental route for the long-context balance target:
   against the fp16 control.
 
 The route is not a new KV format. It uses vLLM's existing
-`--kv-cache-dtype-skip-layers` support: most attention layers use
-`int8_per_token_head`, while selected attention layers skip KV quantization and
-stay on fp16/default KV.
+`--kv-cache-dtype-skip-layers` support: most attention layers use a compact KV
+dtype, while selected attention layers skip KV quantization and stay on
+fp16/default KV.
 
 ## Candidate Profile
 
-The current Qwen3.6 27B FP8 candidate is:
+The current allocator-compatible Qwen3.6 27B FP8 candidate is:
+
+```text
+profiles/qwen27b/experimental/fp8/hybrid-fp8kv-65K-mtp3-text-only.env
+```
+
+The original INT8 candidate is kept for allocator work, but it currently fails
+startup on Qwen hybrid models because aligned `int8_per_token_head`, fp16 skip
+layers, and Mamba align mode produce non-divisible KV page sizes:
 
 ```text
 profiles/qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env
@@ -29,12 +37,12 @@ The skip list was generated from a Qwen3.6 27B config with 16 attention layers:
 ```bash
 python3 tools/hybrid_kv_plan.py \
   --model-dir "$MODEL_DIR" \
-  --aligned-int8
+  --kv-dtype fp8
 ```
 
-For `head_size=256`, aligned `int8_per_token_head` estimates to `0.5312x` fp16
-KV per quantized attention layer. Keeping 9 of 16 attention layers in fp16 gives
-an estimated hybrid KV ratio of `0.7949x`, below the `0.80x` capacity gate.
+For `head_size=256`, fp8 KV estimates to `0.5000x` fp16 KV per quantized
+attention layer. Keeping 9 of 16 attention layers in fp16 gives an estimated
+hybrid KV ratio of `0.7812x`, below the `0.80x` capacity gate.
 
 ## Validation Gates
 
@@ -45,14 +53,14 @@ sampling settings for all controls.
 
 ```bash
 MODEL_DIR="$MODEL_DIR" \
-PROFILE=qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env \
+PROFILE=qwen27b/experimental/fp8/hybrid-fp8kv-65K-mtp3-text-only.env \
 MODE=fast \
 ./launcher.sh --print-config
 ```
 
 The output must show:
 
-- `KV precision: int8_per_token_head`
+- `KV precision: fp8`
 - `KV fp16 skip layers: 3,11,19,27,35,39,47,55,63`
 - `MAX_MODEL_LEN=66048`
 - `MAX_BATCHED_TOKENS=2560`
@@ -80,12 +88,12 @@ tools/profile_request.py \
 ```bash
 tools/profile_request.py \
   --model-dir "$MODEL_DIR" \
-  --served-name qwen27b-fp8-hybrid-int8kv-65K-mtp3-text-only-cu128 \
+  --served-name qwen27b-fp8-hybrid-fp8kv-65K-mtp3-text-only-cu128 \
   --base-url http://127.0.0.1:8000/v1 \
   --endpoint completions \
   --prompt-tokens 65536 \
   --gen-tokens 512 \
-  --label hybrid_int8_65k \
+  --label hybrid_fp8_65k \
   --out /tmp/hybrid_kv_65k.jsonl \
   --ignore-eos \
   --pure-filler
@@ -104,11 +112,12 @@ same run.
 
 3. Quality gate:
 
-- Run the Chinese quality smoke on fp16, all-int8, and hybrid.
-- Run the same NIAH points on fp16, all-int8, and hybrid. Start with the known
-  long-context middle-depth points before expanding to a full heatmap.
+- Run the Chinese quality smoke on fp16, the all-compact-KV control, and hybrid.
+- Run the same NIAH points on fp16, the all-compact-KV control, and hybrid.
+  Start with the known long-context middle-depth points before expanding to a
+  full heatmap.
 - The needle text must be present in generated samples before blaming KV
   quantization.
 
-Promote the route only if fp16 passes, all-int8 does not reveal an eval or
-prompt issue, and hybrid has no material smoke/NIAH loss.
+Promote the route only if fp16 passes, the all-compact-KV control does not
+reveal an eval or prompt issue, and hybrid has no material smoke/NIAH loss.

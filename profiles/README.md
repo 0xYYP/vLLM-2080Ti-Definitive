@@ -88,7 +88,8 @@ Experimental candidate, not yet promoted:
 
 | Profile | Compatible modes | Context | KV | MTP | Messages | Seqs | Target |
 |---|---|---:|---|---:|---|---:|---|
-| `qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env` | fast | 65K | Hybrid INT8 | 3 | text-only | 1 | [Hybrid KV gate](../docs/hybrid-kv-balanced-route.md) |
+| `qwen27b/experimental/fp8/hybrid-fp8kv-65K-mtp3-text-only.env` | fast | 65K | Hybrid FP8 | 3 | text-only | 1 | [Hybrid KV gate](../docs/hybrid-kv-balanced-route.md) |
+| `qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env` | fast | 65K | Hybrid INT8 | 3 | text-only | 1 | allocator-blocked |
 
 ### Qwen3.6 35B FP8
 

@@ -7,13 +7,20 @@
 - 中文质量 smoke 和 Needle-in-a-Haystack 相对 fp16 control 基本无损。
 
 这不是新的 KV 格式。它使用 vLLM 已有的
-`--kv-cache-dtype-skip-layers`：大部分 attention 层使用
-`int8_per_token_head`，指定的 attention 层跳过 KV 量化，保留 fp16/default
-KV。
+`--kv-cache-dtype-skip-layers`：大部分 attention 层使用更紧凑的 KV dtype，
+指定的 attention 层跳过 KV 量化，保留 fp16/default KV。
 
 ## 候选 Profile
 
-当前 Qwen3.6 27B FP8 候选为：
+当前更可能兼容 allocator 的 Qwen3.6 27B FP8 候选为：
+
+```text
+profiles/qwen27b/experimental/fp8/hybrid-fp8kv-65K-mtp3-text-only.env
+```
+
+原 INT8 候选保留给 allocator 后续改造，但它当前在 Qwen hybrid 模型上启动失败：
+aligned `int8_per_token_head`、fp16 skip layers 和 Mamba align mode 会产生不可整除的
+KV page size。
 
 ```text
 profiles/qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env
@@ -27,12 +34,12 @@ skip list 来自 Qwen3.6 27B config，共 16 个 attention 层：
 ```bash
 python3 tools/hybrid_kv_plan.py \
   --model-dir "$MODEL_DIR" \
-  --aligned-int8
+  --kv-dtype fp8
 ```
 
-在 `head_size=256` 下，aligned `int8_per_token_head` 的单个量化 attention
-层 KV 估算为 fp16 的 `0.5312x`。16 个 attention 层里保留 9 个 fp16 层，
-整体 hybrid KV 估算为 `0.7949x`，低于 `0.80x` 容量门槛。
+在 `head_size=256` 下，fp8 KV 的单个量化 attention 层 KV 估算为 fp16 的
+`0.5000x`。16 个 attention 层里保留 9 个 fp16 层，整体 hybrid KV 估算为
+`0.7812x`，低于 `0.80x` 容量门槛。
 
 ## 验证门槛
 
@@ -43,14 +50,14 @@ tokenizer 和采样设置。
 
 ```bash
 MODEL_DIR="$MODEL_DIR" \
-PROFILE=qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env \
+PROFILE=qwen27b/experimental/fp8/hybrid-fp8kv-65K-mtp3-text-only.env \
 MODE=fast \
 ./launcher.sh --print-config
 ```
 
 输出必须包含：
 
-- `KV precision: int8_per_token_head`
+- `KV precision: fp8`
 - `KV fp16 skip layers: 3,11,19,27,35,39,47,55,63`
 - `MAX_MODEL_LEN=66048`
 - `MAX_BATCHED_TOKENS=2560`
@@ -78,12 +85,12 @@ tools/profile_request.py \
 ```bash
 tools/profile_request.py \
   --model-dir "$MODEL_DIR" \
-  --served-name qwen27b-fp8-hybrid-int8kv-65K-mtp3-text-only-cu128 \
+  --served-name qwen27b-fp8-hybrid-fp8kv-65K-mtp3-text-only-cu128 \
   --base-url http://127.0.0.1:8000/v1 \
   --endpoint completions \
   --prompt-tokens 65536 \
   --gen-tokens 512 \
-  --label hybrid_int8_65k \
+  --label hybrid_fp8_65k \
   --out /tmp/hybrid_kv_65k.jsonl \
   --ignore-eos \
   --pure-filler
@@ -101,10 +108,10 @@ hybrid_decode_tok_s >= fp16_decode_tok_s * 0.70
 
 3. 质量门槛：
 
-- 中文质量 smoke 要同时跑 fp16、全 int8、hybrid。
-- NIAH 要在 fp16、全 int8、hybrid 上跑相同点位。先用已知敏感的长上下文中间深度
-  点位，确认后再扩成完整 heatmap。
+- 中文质量 smoke 要同时跑 fp16、全 compact-KV control、hybrid。
+- NIAH 要在 fp16、全 compact-KV control、hybrid 上跑相同点位。先用已知敏感的
+  长上下文中间深度点位，确认后再扩成完整 heatmap。
 - 判定 KV 量化问题前，必须确认生成样本里确实包含 needle 文本。
 
-只有 fp16 通过、全 int8 没暴露 eval/prompt 问题，并且 hybrid 没有实质性
-smoke/NIAH 损失时，才能晋升这条路线。
+只有 fp16 通过、全 compact-KV control 没暴露 eval/prompt 问题，并且 hybrid 没有
+实质性 smoke/NIAH 损失时，才能晋升这条路线。

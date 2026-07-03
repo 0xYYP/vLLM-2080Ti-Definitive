@@ -82,7 +82,8 @@ block 对齐后的 prefix-cache 路径已验证设置。
 
 | Profile | 兼容模式 | 上下文 | KV | MTP | 消息 | 并发 | 目标 |
 |---|---|---:|---|---:|---|---:|---|
-| `qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env` | fast | 65K | Hybrid INT8 | 3 | text-only | 1 | [Hybrid KV 门槛](../docs/hybrid-kv-balanced-route.zh-CN.md) |
+| `qwen27b/experimental/fp8/hybrid-fp8kv-65K-mtp3-text-only.env` | fast | 65K | Hybrid FP8 | 3 | text-only | 1 | [Hybrid KV 门槛](../docs/hybrid-kv-balanced-route.zh-CN.md) |
+| `qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env` | fast | 65K | Hybrid INT8 | 3 | text-only | 1 | allocator-blocked |
 
 ### Qwen3.6 35B FP8
 
