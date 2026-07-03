@@ -53,6 +53,7 @@ MODE=fast \
 - `KV precision: int8_per_token_head`
 - `KV fp16 skip layers: 3,11,19,27,35,39,47,55,63`
 - `MAX_MODEL_LEN=66048`
+- `MAX_BATCHED_TOKENS=2560`
 - `MTP_K=3`
 
 2. 吞吐门槛：
