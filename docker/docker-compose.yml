@@ -30,6 +30,7 @@ services:
       - PROFILE=${PROFILE:-qwen27b/fast/int4/tqk8v4-256K-mtp3-text-only.env}
       - MODE=${MODE:-fast}
       - PORT=8000
+      - SERVICE_SCOPE=${SERVICE_SCOPE:-lan}
       - GPU_UTIL=${GPU_UTIL:-0.96}
       - CHAT_TEMPLATE_FILE=/opt/vllm/docker/chat_template_no_thinking.jinja
       - DEFAULT_CHAT_TEMPLATE_KWARGS={"enable_thinking":false}

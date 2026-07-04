@@ -2,11 +2,11 @@
 # vLLM 2080Ti FlashQLA - Multi-stage Docker Build
 # ============================================================
 # Builder:  nvidia/cuda:12.8.1-devel-ubuntu24.04  (includes nvcc)
-# Runtime:  nvidia/cuda:12.8.1-runtime-ubuntu24.04 (smaller)
+# Runtime:  nvidia/cuda:12.8.1-devel-ubuntu24.04  (keeps nvcc for FlashQLA JIT)
 # ============================================================
 
 # --------------- Builder stage ---------------
-FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS builder
+FROM docker.io/nvidia/cuda:12.8.1-devel-ubuntu24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV CUDA_HOME=/usr/local/cuda
@@ -35,12 +35,17 @@ WORKDIR /build
 # Copy dependency metadata before source code so package-install layers remain
 # cacheable when only application source changes.
 COPY requirements requirements
+COPY docker/build_network_routes.sh docker/fetch_git_with_mirrors.sh docker/uv_pip_with_fallback.sh docker/
 
 # Build environment variables
 ENV TORCH_CUDA_ARCH_LIST=7.5
+ENV UV_TORCH_BACKEND=cu128
 ENV FLASHINFER_ENABLE_AOT=1
 ENV FLASHQLA_DIR=/build/FlashQLA-SM70-SM75
 ENV PYTHONPATH=/build/FlashQLA-SM70-SM75
+ENV VLLM_CUTLASS_SRC_DIR=/build/.deps/cutlass-src
+ENV TRITON_SRC_DIR=/build/.deps/triton-src
+ENV TRITON_KERNELS_SRC_DIR=/build/.deps/triton-src/python/triton_kernels/triton_kernels
 # Use all available CPU cores for parallel compilation (max 16 to avoid OOM)
 # GitHub Actions has 2-4 cores, local machines may have more
 ARG MAX_JOBS=16
@@ -50,43 +55,69 @@ ENV TORCH_EXTENSIONS_DIR=/opt/torch_extensions_cache
 ENV VLLM_TARGET_DEVICE=cuda
 ARG FLASHQLA_REPO=https://github.com/weicj/FlashQLA-SM70-SM75.git
 ARG FLASHQLA_REF=3ab27d77d8ca01d7a4718903b726add1a8886c0e
+ARG BUILD_NETWORK_PREFLIGHT=1
+ARG BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS=5
+ARG BUILD_PYPI_OFFICIAL_INDEX=https://pypi.org/simple
+ARG BUILD_PYPI_FOREIGN_INDEX=https://pypi.python.org/simple
+ARG BUILD_PYPI_DOMESTIC_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS=60
+ARG BUILD_PYPI_MIRROR_INDEX=
+ARG BUILD_PYPI_MIRROR_FALLBACK=1
+ARG BUILD_WHEELHOUSE_DIR=
+ARG BUILD_GIT_ACTIVE_PREFIX=
+ARG BUILD_GIT_FOREIGN_REPO_PREFIX=https://gh-proxy.com/
+ARG BUILD_GIT_DOMESTIC_REPO_PREFIX=https://ghfast.top/
+ARG BUILD_GIT_OFFICIAL_PROBE=
+ARG BUILD_GIT_FOREIGN_PROBE=
+ARG BUILD_GIT_DOMESTIC_PROBE=
+ARG BUILD_GIT_PRIMARY_TIMEOUT_SECONDS=120
+ARG BUILD_GIT_MIRROR_PREFIXES=
+ARG CUTLASS_REPO=https://github.com/nvidia/cutlass.git
+ARG CUTLASS_REVISION=v4.4.2
+ARG TRITON_REPO=https://github.com/triton-lang/triton.git
+ARG TRITON_TAG=v3.6.0
 
 # Create venv and install deps
 RUN uv venv --python 3.11 /build/.venv
 ENV PATH="/build/.venv/bin:${PATH}"
 
-RUN uv pip install -U pip setuptools wheel
-RUN uv pip install -r requirements/build/cuda.txt --torch-backend=cu128
-RUN uv pip install -r requirements/cuda.txt --torch-backend=cu128
+RUN bash docker/uv_pip_with_fallback.sh install -U pip setuptools wheel
+RUN bash docker/uv_pip_with_fallback.sh install -r requirements/build/cuda.txt
+RUN bash docker/uv_pip_with_fallback.sh install -r requirements/cuda.txt
 
 # Copy source code after dependency installation to preserve Docker layer cache.
 COPY . .
 
 # FlashQLA is fetched during Docker builds so the image does not depend on
-# callers cloning this repository with submodules.
-RUN git init "$FLASHQLA_DIR" \
-    && git -C "$FLASHQLA_DIR" remote add origin "$FLASHQLA_REPO" \
-    && git -C "$FLASHQLA_DIR" fetch --depth=1 origin "$FLASHQLA_REF" \
-    && git -C "$FLASHQLA_DIR" checkout -q FETCH_HEAD
+# callers cloning this repository with submodules. Reuse the repository's
+# Git mirror fallback chain for environments where direct GitHub access is weak.
+RUN bash docker/fetch_git_with_mirrors.sh \
+    --repo "$FLASHQLA_REPO" \
+    --target "$FLASHQLA_DIR" \
+    --mode commit \
+    --ref "$FLASHQLA_REF"
 RUN test -f "$FLASHQLA_DIR/flash_qla/ops/gated_delta_rule/legacy/sm_legacy.py"
 RUN python tools/patch_flashqla_sm75_imports.py "$FLASHQLA_DIR" tools/flashqla_sm75_patches
-RUN uv pip install --no-deps -e "$FLASHQLA_DIR"
-RUN python - <<'PY'
-import importlib
+RUN bash docker/uv_pip_with_fallback.sh install --no-deps -e "$FLASHQLA_DIR"
+RUN python -c 'import importlib; import flash_qla; legacy = importlib.import_module("flash_qla.ops.gated_delta_rule.legacy.sm_legacy"); assert legacy is not None, "FlashQLA legacy module import failed"; print(f"flash_qla={flash_qla.__file__}"); print(f"flash_qla_legacy={legacy.__file__}")'
 
-import flash_qla
-
-legacy = importlib.import_module("flash_qla.ops.gated_delta_rule.legacy.sm_legacy")
-if legacy is None:
-    raise SystemExit("FlashQLA legacy module import failed")
-print(f"flash_qla={flash_qla.__file__}")
-print(f"flash_qla_legacy={legacy.__file__}")
-PY
+# Pre-fetch build-time Git dependencies so editable vLLM install stays on the
+# same mirror/fallback policy as the main build.sh path.
+RUN bash docker/fetch_git_with_mirrors.sh \
+    --repo "$CUTLASS_REPO" \
+    --target "$VLLM_CUTLASS_SRC_DIR" \
+    --mode ref \
+    --ref "$CUTLASS_REVISION"
+RUN bash docker/fetch_git_with_mirrors.sh \
+    --repo "$TRITON_REPO" \
+    --target "$TRITON_SRC_DIR" \
+    --mode ref \
+    --ref "$TRITON_TAG"
 
 # Build vLLM (editable install so __file__ resolves correctly)
 # SETUPTOOLS_SCM_PRETEND_VERSION needed because .git is excluded by .dockerignore
 ENV SETUPTOOLS_SCM_PRETEND_VERSION=0.1.12
-RUN uv pip install --no-build-isolation -e .
+RUN uv pip install --no-build-isolation --no-deps -e .
 
 # Fix editable install paths: /build -> /opt/vllm (for runtime stage)
 RUN SITE=$(/build/.venv/bin/python -c "import site; print(site.getsitepackages()[0])") && \
@@ -96,7 +127,7 @@ RUN SITE=$(/build/.venv/bin/python -c "import site; print(site.getsitepackages()
 
 # --------------- Runtime stage ---------------
 # Must use devel image for FlashQLA CUDA kernel compilation (requires nvcc)
-FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS runtime
+FROM docker.io/nvidia/cuda:12.8.1-devel-ubuntu24.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV CUDA_HOME=/usr/local/cuda

@@ -2,13 +2,16 @@
 set -euo pipefail
 
 ROOT=${ROOT:-/opt/vllm}
-PROFILE_DIR=${PROFILE_DIR:-"$ROOT/profiles"}
-TEMPLATE_DIR=${TEMPLATE_DIR:-"$PROFILE_DIR/templates"}
-MODEL_DIR=${MODEL_DIR:-/models/Qwen3.6-27B-GPTQ-Int4}
-PROFILE=${PROFILE:-qwen27b/fast/int4/tqk8v4-256K-mtp3-text-only.env}
-MODE=${MODE:-fast}
-PORT=${PORT:-8000}
-HOST=${HOST:-0.0.0.0}
+export RUNTIME_ROOT=${RUNTIME_ROOT:-"$ROOT"}
+export PROFILE_DIR=${PROFILE_DIR:-"$ROOT/profiles"}
+export TEMPLATE_DIR=${TEMPLATE_DIR:-"$PROFILE_DIR/templates"}
+export LOG_DIR=${LOG_DIR:-"$ROOT/run-logs"}
+export STATE_FILE=${STATE_FILE:-"$LOG_DIR/start-manager.state"}
+export MODEL_DIR=${MODEL_DIR:-/models/Qwen3.6-27B-GPTQ-Int4}
+export PROFILE=${PROFILE:-qwen27b/fast/int4/tqk8v4-256K-mtp3-text-only.env}
+export MODE=${MODE:-fast}
+export PORT=${PORT:-8000}
+export SERVICE_SCOPE=${SERVICE_SCOPE:-lan}
 
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 export CUDA_PATH="$CUDA_HOME"
@@ -25,268 +28,135 @@ export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-/tmp/torchinductor-ca
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/tmp/triton-cache}"
 export PYTHONUNBUFFERED=1
 
-read_profile_value() {
-    local file=$1
-    local key=$2
-    awk -F= -v key="$key" '
-        $1 == key {
-            value = substr($0, index($0, "=") + 1)
-            gsub(/^[ \t]+|[ \t]+$/, "", value)
-            gsub(/^'\''|'\''$/, "", value)
-            gsub(/^"|"$/, "", value)
-            print value
-            exit
-        }
-    ' "$file"
+pid_is_running() {
+    local pid=${1:-}
+    [[ -n "$pid" && -d "/proc/$pid" ]]
 }
 
-profile_key_is_global() {
-    case "$1" in
-        MODEL_DIR|PROFILE_DIR|PROFILE|MODE|PORT|SERVICE_SCOPE|GPU_DEVICES|TP_SIZE|\
-        CHAT_TEMPLATE_FILE|CHAT_TEMPLATE_PRESET|TEMPLATE_DIR|REASONING_PARSER|\
-        DEFAULT_CHAT_TEMPLATE_KWARGS|REASONING_MODE|REASONING_BUDGET|\
-        ENABLE_AUTO_TOOL_CHOICE|TOOL_CALL_PARSER|TOOL_PARSER_PLUGIN|\
-        ENABLE_PREFIX_CACHING|ENABLE_PROMPT_TOKENS_DETAILS|DISABLE_PREFIX_CACHING|\
-        VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH|VLLM_ENFORCE_STRICT_TOOL_CALLING)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
+load_manager_state() {
+    [[ -f "$STATE_FILE" ]] || return 1
+    # shellcheck disable=SC1090
+    source "$STATE_FILE"
 }
 
-resolve_profile_file() {
-    if [[ -n "${PROFILE_FILE:-}" ]]; then
-        [[ -f "$PROFILE_FILE" ]] || return 1
-        printf '%s\n' "$PROFILE_FILE"
-        return 0
+stop_server() {
+    local pid=${1:-}
+    local pgid
+
+    pid_is_running "$pid" || return 0
+    pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)
+    if [[ -n "$pgid" && "$pgid" == "$pid" ]]; then
+        kill -TERM -- "-$pgid" 2>/dev/null || true
+    else
+        kill -TERM "$pid" 2>/dev/null || true
     fi
-    if [[ -f "$PROFILE_DIR/$PROFILE" ]]; then
-        printf '%s\n' "$PROFILE_DIR/$PROFILE"
-        return 0
-    fi
-    if [[ -f "$PROFILE_DIR/${PROFILE%.env}.env" ]]; then
-        printf '%s\n' "$PROFILE_DIR/${PROFILE%.env}.env"
-        return 0
-    fi
+}
+
+wait_for_stop() {
+    local pid=${1:-}
+    local attempts=${2:-30}
+
+    for _ in $(seq 1 "$attempts"); do
+        pid_is_running "$pid" || return 0
+        sleep 1
+    done
     return 1
 }
 
-apply_profile_overrides() {
-    local file=$1
-    local key value
+forward_shutdown() {
+    local pid=${SERVER_PID:-}
+    local tail_pid=${TAIL_PID:-}
 
-    while IFS= read -r key; do
-        [[ -n "$key" ]] || continue
-        profile_key_is_global "$key" && continue
-        [[ -n "${!key+x}" ]] && continue
-        value=$(read_profile_value "$file" "$key")
-        printf -v "$key" '%s' "$value"
-        export "$key"
-    done < <(sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$file" | sort -u)
+    if [[ -n "$pid" ]]; then
+        stop_server "$pid"
+        wait_for_stop "$pid" || true
+    fi
+
+    if [[ -n "$tail_pid" ]]; then
+        kill "$tail_pid" 2>/dev/null || true
+        wait "$tail_pid" 2>/dev/null || true
+    fi
 }
 
-normalize_bool() {
-    case "${1,,}" in
-        1|yes|y|true|on) echo 1 ;;
-        *) echo 0 ;;
-    esac
+handle_signal() {
+    forward_shutdown
+    exit 143
 }
 
-set_mode_defaults() {
-    case "$MODE" in
-        normal)
-            export ENFORCE_EAGER=${ENFORCE_EAGER:-0}
-            export DISABLE_LOG_STATS=${DISABLE_LOG_STATS:-1}
-            export VLLM_SM75_SPEC_SYNC_MODE=${VLLM_SM75_SPEC_SYNC_MODE:-safe}
-            export VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=${VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH:-0}
-            ;;
-        fast)
-            export ENFORCE_EAGER=${ENFORCE_EAGER:-0}
-            export DISABLE_LOG_STATS=${DISABLE_LOG_STATS:-1}
-            export VLLM_SM75_SPEC_SYNC_MODE=${VLLM_SM75_SPEC_SYNC_MODE:-safe}
-            export VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=${VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH:-1}
-            ;;
-        aggressive)
-            export ENFORCE_EAGER=${ENFORCE_EAGER:-0}
-            export DISABLE_LOG_STATS=${DISABLE_LOG_STATS:-1}
-            export VLLM_SM75_SPEC_SYNC_MODE=${VLLM_SM75_SPEC_SYNC_MODE:-nosync}
-            export VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=${VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH:-1}
-            ;;
-        safe)
-            export ENFORCE_EAGER=${ENFORCE_EAGER:-1}
-            export VLLM_SM75_SPEC_SYNC_MODE=${VLLM_SM75_SPEC_SYNC_MODE:-safe}
-            export VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=${VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH:-0}
-            ;;
-        *)
-            echo "ERROR: MODE must be safe, normal, fast, or aggressive; got $MODE" >&2
-            exit 1
-            ;;
-    esac
-}
+launcher_reads_only() {
+    local arg
 
-set_route_defaults() {
-    local model_dir_l=${MODEL_DIR,,}
-
-    MODEL_FAMILY=${MODEL_FAMILY:-qwen}
-    SERVED_NAME=${SERVED_NAME:-${MODEL_DIR##*/}}
-    if [[ -z "${QUANTIZATION:-}" ]]; then
-        case "$model_dir_l" in
-            *gptq*|*int4*|*4bit*) QUANTIZATION=gptq_marlin ;;
-            *awq*) QUANTIZATION=awq_marlin ;;
-            *fp8*) QUANTIZATION=fp8 ;;
-            *quark*) QUANTIZATION=quark ;;
+    [[ "${DRY_RUN:-0}" == "1" || "${PRINT_CONFIG:-0}" == "1" ]] && return 0
+    for arg in "$@"; do
+        case "$arg" in
+            --print-config|--help|-h)
+                return 0
+                ;;
         esac
-    fi
-    MAX_MODEL_LEN=${MAX_MODEL_LEN:-131072}
-    GPU_UTIL=${GPU_UTIL:-0.90}
-    MAX_BATCHED_TOKENS=${MAX_BATCHED_TOKENS:-2048}
-    MAX_NUM_SEQS=${MAX_NUM_SEQS:-1}
-    MTP_K=${MTP_K:-0}
-    TP_SIZE=${TP_SIZE:-2}
-    ENABLE_PREFIX_CACHING=$(normalize_bool "${ENABLE_PREFIX_CACHING:-1}")
-    ENABLE_PROMPT_TOKENS_DETAILS=$(normalize_bool "${ENABLE_PROMPT_TOKENS_DETAILS:-1}")
-    DISABLE_PREFIX_CACHING=$(normalize_bool "${DISABLE_PREFIX_CACHING:-0}")
-
-    if [[ "$DISABLE_PREFIX_CACHING" == "1" ]]; then
-        ENABLE_PREFIX_CACHING=0
-    elif [[ "$ENABLE_PREFIX_CACHING" == "1" && "$MODEL_FAMILY" == qwen* && -z "${MAMBA_CACHE_MODE:-}" ]]; then
-        MAMBA_CACHE_MODE=align
-    fi
-
-    if [[ "$MODEL_FAMILY" == qwen* && -z "${REASONING_PARSER:-}" ]]; then
-        REASONING_PARSER=qwen3
-    fi
-
-    if [[ -z "${MM_LIMIT_JSON:-}" ]]; then
-        LANGUAGE_MODEL_ONLY=${LANGUAGE_MODEL_ONLY:-1}
-        SKIP_MM_PROFILING=${SKIP_MM_PROFILING:-1}
-    fi
+    done
+    return 1
 }
 
-set_turboquant_defaults() {
-    [[ "${KV_CACHE_DTYPE:-}" == turboquant_* ]] || return 0
+start_with_launcher() {
+    mkdir -p "$LOG_DIR" "$TORCH_EXTENSIONS_DIR" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
+    cd "$ROOT"
 
-    local reserve=${VLLM_TURBOQUANT_CONTINUATION_WORKSPACE_RESERVE_TOKENS:-}
-    if [[ -z "$reserve" ]]; then
-        reserve=65536
-        if [[ "$ENABLE_PREFIX_CACHING" == "1" && "$MAX_MODEL_LEN" =~ ^[0-9]+$ && "$MAX_NUM_SEQS" =~ ^[0-9]+$ ]] \
-            && (( MAX_MODEL_LEN >= 240000 )) && (( MAX_NUM_SEQS <= 1 )); then
-            reserve=262144
-        fi
+    "$ROOT/launcher.sh" --non-interactive "$@"
+    if launcher_reads_only "$@"; then
+        return 0
     fi
 
-    export VLLM_TURBOQUANT_USE_FLASHINFER_PREFILL=${VLLM_TURBOQUANT_USE_FLASHINFER_PREFILL:-1}
-    export VLLM_TURBOQUANT_FLASHINFER_BACKEND=${VLLM_TURBOQUANT_FLASHINFER_BACKEND:-fa2}
-    export VLLM_TURBOQUANT_CONTINUATION_WORKSPACE_RESERVE_TOKENS=$reserve
-    export VLLM_TURBOQUANT_CUDAGRAPH_SPEC_DECODE_SAFE=${VLLM_TURBOQUANT_CUDAGRAPH_SPEC_DECODE_SAFE:-1}
-    export VLLM_TURBOQUANT_CONTINUATION_SDPA_Q_CHUNK=${VLLM_TURBOQUANT_CONTINUATION_SDPA_Q_CHUNK:-512}
-    export VLLM_TURBOQUANT_CONTINUATION_SDPA_MAX_QK_CELLS=${VLLM_TURBOQUANT_CONTINUATION_SDPA_MAX_QK_CELLS:-16777216}
-    export VLLM_TURBOQUANT_SPEC_CONTINUATION_DECODE_FASTPATH=${VLLM_TURBOQUANT_SPEC_CONTINUATION_DECODE_FASTPATH:-1}
+    load_manager_state || {
+        echo "ERROR: launcher did not write state file: $STATE_FILE" >&2
+        exit 1
+    }
+
+    if [[ -z "${LAST_PID_FILE:-}" || ! -f "${LAST_PID_FILE:-}" ]]; then
+        echo "ERROR: launcher did not record a pid file in $STATE_FILE" >&2
+        exit 1
+    fi
+    if [[ -z "${LAST_LOG_FILE:-}" || ! -f "${LAST_LOG_FILE:-}" ]]; then
+        echo "ERROR: launcher did not record a log file in $STATE_FILE" >&2
+        exit 1
+    fi
+
+    SERVER_PID=$(cat "$LAST_PID_FILE")
+    if ! pid_is_running "$SERVER_PID"; then
+        echo "ERROR: launched server is not running: $SERVER_PID" >&2
+        exit 1
+    fi
+
+    trap handle_signal TERM INT
+
+    tail --pid="$SERVER_PID" -n +1 -F "$LAST_LOG_FILE" &
+    TAIL_PID=$!
+
+    while pid_is_running "$SERVER_PID"; do
+        sleep 1
+    done
+    wait "$TAIL_PID" 2>/dev/null || true
 }
 
 if [[ $# -gt 0 ]]; then
-    exec python -m vllm.entrypoints.openai.api_server "$@"
+    case "$1" in
+        launcher|launcher.sh)
+            shift
+            cd "$ROOT"
+            exec "$ROOT/launcher.sh" "$@"
+            ;;
+        api-server)
+            shift
+            cd "$ROOT"
+            exec "$ROOT/.venv/bin/python" -m vllm.entrypoints.openai.api_server "$@"
+            ;;
+        --*)
+            start_with_launcher "$@"
+            exit 0
+            ;;
+        *)
+            exec "$@"
+            ;;
+    esac
 fi
 
-if [[ ! -d "$MODEL_DIR" ]]; then
-    echo "ERROR: Model directory not found: $MODEL_DIR" >&2
-    exit 1
-fi
-
-profile_file=$(resolve_profile_file) || {
-    echo "ERROR: Profile not found: ${PROFILE_FILE:-$PROFILE} under $PROFILE_DIR" >&2
-    exit 1
-}
-
-apply_profile_overrides "$profile_file"
-set_mode_defaults
-set_route_defaults
-set_turboquant_defaults
-
-args=(
-    --host "$HOST"
-    --port "$PORT"
-    --model "$MODEL_DIR"
-    --served-model-name "$SERVED_NAME"
-    --dtype half
-    --tensor-parallel-size "$TP_SIZE"
-    --generation-config vllm
-    --gpu-memory-utilization "$GPU_UTIL"
-    --max-model-len "$MAX_MODEL_LEN"
-    --enable-chunked-prefill
-    --max-num-seqs "$MAX_NUM_SEQS"
-    --max-num-batched-tokens "$MAX_BATCHED_TOKENS"
-)
-
-[[ -n "${QUANTIZATION:-}" ]] && args+=(--quantization "$QUANTIZATION")
-[[ -n "${KV_CACHE_DTYPE:-}" ]] && args+=(--kv-cache-dtype "$KV_CACHE_DTYPE")
-[[ -n "${MAMBA_CACHE_MODE:-}" ]] && args+=(--mamba-cache-mode "$MAMBA_CACHE_MODE")
-[[ "${ENFORCE_EAGER:-0}" == "1" ]] && args+=(--enforce-eager)
-if [[ "$ENABLE_PREFIX_CACHING" == "1" ]]; then
-    args+=(--enable-prefix-caching)
-else
-    args+=(--no-enable-prefix-caching)
-fi
-[[ "$ENABLE_PROMPT_TOKENS_DETAILS" == "1" ]] && args+=(--enable-prompt-tokens-details)
-[[ "${LANGUAGE_MODEL_ONLY:-0}" == "1" ]] && args+=(--language-model-only)
-[[ "${SKIP_MM_PROFILING:-0}" == "1" ]] && args+=(--skip-mm-profiling)
-[[ "${DISABLE_CUSTOM_ALL_REDUCE:-0}" == "1" ]] && args+=(--disable-custom-all-reduce)
-[[ "${DISABLE_LOG_STATS:-0}" == "1" ]] && args+=(--disable-log-stats)
-[[ -n "${REASONING_PARSER:-}" && "${REASONING_PARSER:-}" != "off" ]] && args+=(--reasoning-parser "$REASONING_PARSER")
-[[ -n "${DEFAULT_CHAT_TEMPLATE_KWARGS:-}" ]] && args+=(--default-chat-template-kwargs "$DEFAULT_CHAT_TEMPLATE_KWARGS")
-[[ -n "${TOOL_PARSER_PLUGIN:-}" ]] && args+=(--tool-parser-plugin "$TOOL_PARSER_PLUGIN")
-[[ -n "${TOOL_CALL_PARSER:-}" ]] && args+=(--tool-call-parser "$TOOL_CALL_PARSER")
-[[ "${ENABLE_AUTO_TOOL_CHOICE:-0}" == "1" ]] && args+=(--enable-auto-tool-choice)
-[[ -n "${HF_OVERRIDES_JSON:-}" ]] && args+=(--hf-overrides "$HF_OVERRIDES_JSON")
-[[ -n "${MM_LIMIT_JSON:-}" ]] && args+=(--limit-mm-per-prompt "$MM_LIMIT_JSON")
-
-if [[ -n "${ADDITIONAL_CONFIG_JSON:-}" ]]; then
-    args+=(--additional-config "$ADDITIONAL_CONFIG_JSON")
-elif [[ "$MODEL_FAMILY" == qwen* ]]; then
-    args+=(--additional-config '{"gdn_prefill_backend":"flashqla_legacy"}')
-fi
-
-if [[ -n "${CHAT_TEMPLATE_PRESET:-}" && -f "$TEMPLATE_DIR/$CHAT_TEMPLATE_PRESET" ]]; then
-    CHAT_TEMPLATE_FILE="$TEMPLATE_DIR/$CHAT_TEMPLATE_PRESET"
-fi
-[[ -n "${CHAT_TEMPLATE_FILE:-}" ]] && args+=(--chat-template "$CHAT_TEMPLATE_FILE")
-
-capture=$((MTP_K + 1))
-if [[ -n "${SPECULATIVE_CONFIG:-}" ]]; then
-    args+=(--speculative-config "$SPECULATIVE_CONFIG")
-elif (( MTP_K > 0 )); then
-    args+=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${MTP_K}}")
-fi
-
-if [[ -n "${COMPILATION_CONFIG_JSON:-}" ]]; then
-    args+=(--compilation-config "$COMPILATION_CONFIG_JSON")
-elif (( MTP_K > 0 )); then
-    args+=(--compilation-config "{\"cudagraph_mode\":\"FULL_AND_PIECEWISE\",\"cudagraph_capture_sizes\":[${capture}],\"max_cudagraph_capture_size\":${capture}}")
-else
-    args+=(--compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","cudagraph_capture_sizes":[1],"max_cudagraph_capture_size":1}')
-fi
-
-echo "=========================================="
-echo " vLLM 2080Ti Definitive Docker"
-echo "=========================================="
-nvidia-smi --query-gpu=index,name,memory.used,memory.total,temperature.gpu --format=csv,noheader || true
-echo "Model Dir: $MODEL_DIR"
-echo "Profile: $profile_file"
-echo "Mode: $MODE"
-echo "Served Name: $SERVED_NAME"
-echo "KV: ${KV_CACHE_DTYPE:-fp16}"
-echo "Context: $MAX_MODEL_LEN"
-echo "MTP: $MTP_K"
-echo "Port: $PORT"
-printf 'Command: python -m vllm.entrypoints.openai.api_server'
-printf ' %q' "${args[@]}"
-echo
-echo "=========================================="
-
-if [[ "${DRY_RUN:-0}" == "1" ]]; then
-    exit 0
-fi
-
-exec python -m vllm.entrypoints.openai.api_server "${args[@]}"
+start_with_launcher

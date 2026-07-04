@@ -5,9 +5,12 @@
         {{- content }}
     {%- elif content is iterable and content is not mapping %}
         {%- for item in content %}
-            {%- if item is not mapping %}
-                {{- raise_exception('Unexpected non-object item in content.') }}
-            {%- elif 'image' in item or 'image_url' in item or (item.type is defined and item.type == 'image') %}
+            {%- set is_mapping = item is mapping %}
+            {%- set item_type = item.type if item.type is defined else none %}
+            {%- set has_image = is_mapping and ('image' in item or 'image_url' in item) %}
+            {%- set has_video = is_mapping and 'video' in item %}
+            {%- set has_text = is_mapping and 'text' in item %}
+            {%- if item_type == 'image' or has_image %}
                 {%- if is_system_content %}
                     {{- raise_exception('System message cannot contain images.') }}
                 {%- endif %}
@@ -18,7 +21,7 @@
                     {{- 'Picture ' ~ image_count.value ~ ': ' }}
                 {%- endif %}
                 {{- '<|vision_start|><|image_pad|><|vision_end|>' }}
-            {%- elif 'video' in item or (item.type is defined and item.type == 'video') %}
+            {%- elif item_type == 'video' or has_video %}
                 {%- if is_system_content %}
                     {{- raise_exception('System message cannot contain videos.') }}
                 {%- endif %}
@@ -29,10 +32,14 @@
                     {{- 'Video ' ~ video_count.value ~ ': ' }}
                 {%- endif %}
                 {{- '<|vision_start|><|video_pad|><|vision_end|>' }}
-            {%- elif 'text' in item %}
+            {%- elif has_text %}
                 {{- item.text }}
-            {%- else %}
+            {%- elif item_type == 'text' and item.text is defined %}
+                {{- item.text }}
+            {%- elif is_mapping or item_type is not none %}
                 {{- raise_exception('Unexpected item type in content.') }}
+            {%- else %}
+                {{- item | string }}
             {%- endif %}
         {%- endfor %}
     {%- elif content is none or content is undefined %}
