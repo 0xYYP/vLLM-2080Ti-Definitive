@@ -3,6 +3,22 @@
 This changelog tracks the fork release version for vLLM 2080 Ti Definitive
 Edition. It is separate from the upstream vLLM package version.
 
+## v0.1.13 - 2026-07-04
+
+- Merges [PR #71](https://github.com/weicj/vLLM-2080Ti-Definitive/pull/71)
+  from @0xYYP, fixing the SM75 TurboQuant TQK8V4 FP8 key-format path and the
+  launcher submenu numeric-selection regression.
+- Merges [PR #72](https://github.com/weicj/vLLM-2080Ti-Definitive/pull/72)
+  from @hotwa, adding the first validated Docker runtime packaging path for
+  the SM75 fork, including the runtime Dockerfile, compose example, entrypoint
+  flow, and packaged helper assets needed to launch the shipped profiles
+  inside a container.
+- Extends the merged Docker path with the validated host-side `docker/build.sh`
+  wrapper so Docker builds follow the repository `build.sh` behavior for
+  automatic `MAX_JOBS` selection, download-route preflight, and consistent
+  PyPI/Git mirror propagation through Docker and compose builds.
+- Release credit: @0xYYP and @hotwa.
+
 ## v0.1.12 - 2026-07-02
 
 - Integrates the SM75 custom all-reduce graph-input auto policy so the official
