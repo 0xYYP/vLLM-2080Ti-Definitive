@@ -27,6 +27,15 @@ INT8 候选仍然保留，作为偏质量的 compact-KV 路线：
 profiles/qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env
 ```
 
+另有一个 65K all-INT8 诊断 control：
+
+```text
+profiles/qwen27b/experimental/fp8/int8kv-65K-mtp3-text-only.env
+```
+
+它用于在同样的请求级上下文上限下对照 hybrid 候选。内置 252K all-INT8 路线是容量
+路线，长 decode 可能触发不同路径，因此不应该作为 65K 平衡门槛的唯一速度 control。
+
 早期 hybrid skip-layer profiles 在 Qwen hybrid 模型上可能启动失败，因为 compact KV
 page、fp16 skip page 和 Mamba align padding 使用了不同的 page-size 口径。现在 Mamba
 align 会把 fp16 skip page 纳入兼容 page-size 计算；但 FP8 和 INT8 hybrid profiles
