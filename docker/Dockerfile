@@ -46,9 +46,10 @@ ENV PYTHONPATH=/build/FlashQLA-SM70-SM75
 ENV VLLM_CUTLASS_SRC_DIR=/build/.deps/cutlass-src
 ENV TRITON_SRC_DIR=/build/.deps/triton-src
 ENV TRITON_KERNELS_SRC_DIR=/build/.deps/triton-src/python/triton_kernels/triton_kernels
-# Use all available CPU cores for parallel compilation (max 16 to avoid OOM)
-# GitHub Actions has 2-4 cores, local machines may have more
-ARG MAX_JOBS=16
+# Keep Docker's default build fan-out conservative. The repository's compose
+# example already defaults to 4 jobs, and the editable vLLM build can exceed
+# memory budgets on typical dual-2080 Ti hosts when parallelism is left too high.
+ARG MAX_JOBS=4
 ENV MAX_JOBS=${MAX_JOBS}
 ENV CMAKE_BUILD_TYPE=Release
 ENV TORCH_EXTENSIONS_DIR=/opt/torch_extensions_cache
