@@ -42,6 +42,20 @@ tightened to `66048`. The shipped 252K all-INT8 route is a capacity route and
 can exercise different long-decode behavior, so it should not be used as the
 only speed control for the 65K balance gate.
 
+If the normal all-INT8 control shows a long-decode collapse, use the diagnostic
+matrix below before changing kernels:
+
+```text
+profiles/qwen27b/experimental/fp8/int8kv-65K-mtp3-text-only.env
+profiles/qwen27b/experimental/fp8/int8kv-65K-fastgraph-mtp3-text-only.env
+profiles/qwen27b/experimental/fp8/int8kv-65K-fast2560-mtp3-text-only.env
+profiles/qwen27b/experimental/fp8/int8kv-65K-fastaligned-mtp3-text-only.env
+```
+
+These profiles isolate the normal path, fast graph policy, larger
+`MAX_BATCHED_TOKENS`, and aligned int8 head stride. They are diagnostics, not
+promoted deployment presets.
+
 Earlier hybrid skip-layer profiles could fail startup on Qwen hybrid models
 because compact KV pages, fp16 skip pages, and Mamba align padding were computed
 from different page sizes. The Mamba align path now includes the fp16 skip page

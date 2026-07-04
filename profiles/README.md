@@ -89,7 +89,10 @@ Experimental candidate, not yet promoted:
 | Profile | Compatible modes | Context | KV | MTP | Messages | Seqs | Target |
 |---|---|---:|---|---:|---|---:|---|
 | `qwen27b/experimental/fp8/hybrid-fp8kv-65K-mtp3-text-only.env` | fast | 65K | Hybrid FP8 | 3 | text-only | 1 | [Hybrid KV gate](../docs/hybrid-kv-balanced-route.md) |
-| `qwen27b/experimental/fp8/int8kv-65K-mtp3-text-only.env` | fast | 65K | INT8 | 3 | text-only | 1 | diagnostic all-int8 control |
+| `qwen27b/experimental/fp8/int8kv-65K-mtp3-text-only.env` | normal | 65K | INT8 | 3 | text-only | 1 | normal all-int8 diagnostic |
+| `qwen27b/experimental/fp8/int8kv-65K-fastgraph-mtp3-text-only.env` | fast | 65K | INT8 | 3 | text-only | 1 | graph-policy diagnostic |
+| `qwen27b/experimental/fp8/int8kv-65K-fast2560-mtp3-text-only.env` | fast | 65K | INT8 | 3 | text-only | 1 | batched-token diagnostic |
+| `qwen27b/experimental/fp8/int8kv-65K-fastaligned-mtp3-text-only.env` | fast | 65K | INT8 | 3 | text-only | 1 | aligned-stride diagnostic |
 | `qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env` | fast | 65K | Hybrid INT8 | 3 | text-only | 1 | conservative prefill; needs validation |
 
 ### Qwen3.6 35B FP8

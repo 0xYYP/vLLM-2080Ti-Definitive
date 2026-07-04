@@ -37,6 +37,20 @@ profiles/qwen27b/experimental/fp8/int8kv-65K-mtp3-text-only.env
 路线只把 `MAX_MODEL_LEN` 收紧到 `66048`。内置 252K all-INT8 路线是容量路线，长
 decode 可能触发不同路径，因此不应该作为 65K 平衡门槛的唯一速度 control。
 
+如果 normal all-INT8 control 出现长 decode 崩塌，先用下面的诊断矩阵拆变量，再考虑
+改 kernel：
+
+```text
+profiles/qwen27b/experimental/fp8/int8kv-65K-mtp3-text-only.env
+profiles/qwen27b/experimental/fp8/int8kv-65K-fastgraph-mtp3-text-only.env
+profiles/qwen27b/experimental/fp8/int8kv-65K-fast2560-mtp3-text-only.env
+profiles/qwen27b/experimental/fp8/int8kv-65K-fastaligned-mtp3-text-only.env
+```
+
+这些 profile 分别隔离 normal 路径、fast graph policy、更大的
+`MAX_BATCHED_TOKENS`、以及 aligned int8 head stride。它们只是诊断 profile，不是
+已晋升的部署预设。
+
 早期 hybrid skip-layer profiles 在 Qwen hybrid 模型上可能启动失败，因为 compact KV
 page、fp16 skip page 和 Mamba align padding 使用了不同的 page-size 口径。现在 Mamba
 align 会把 fp16 skip page 纳入兼容 page-size 计算；但 FP8 和 INT8 hybrid profiles
