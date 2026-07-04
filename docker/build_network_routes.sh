@@ -12,6 +12,7 @@ BUILD_GIT_FOREIGN_PROBE=${BUILD_GIT_FOREIGN_PROBE:-${BUILD_GIT_FOREIGN_REPO_PREF
 BUILD_GIT_DOMESTIC_PROBE=${BUILD_GIT_DOMESTIC_PROBE:-${BUILD_GIT_DOMESTIC_REPO_PREFIX}${BUILD_GIT_OFFICIAL_PROBE}}
 BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS=${BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS:-5}
 BUILD_ROUTE_CACHE_FILE=${BUILD_ROUTE_CACHE_FILE:-/tmp/docker-build-network-routes.env}
+BUILD_DOWNLOAD_SELECTED_MODE=${BUILD_DOWNLOAD_SELECTED_MODE:-}
 
 is_positive_integer() {
   [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
@@ -85,6 +86,20 @@ load_selected_route() {
   echo "Preflight: reusing cached ${BUILD_DOWNLOAD_SELECTED_MODE} download route." >&2
 }
 
+infer_selected_route() {
+  if [[ "${BUILD_PYPI_ACTIVE_INDEX:-}" == "$BUILD_PYPI_FOREIGN_INDEX" || \
+        "${BUILD_GIT_ACTIVE_PREFIX:-}" == "$BUILD_GIT_FOREIGN_REPO_PREFIX" ]]; then
+    printf '%s\n' "foreign"
+  elif [[ "${BUILD_PYPI_ACTIVE_INDEX:-}" == "$BUILD_PYPI_DOMESTIC_INDEX" || \
+          "${BUILD_GIT_ACTIVE_PREFIX:-}" == "$BUILD_GIT_DOMESTIC_REPO_PREFIX" ]]; then
+    printf '%s\n' "domestic"
+  elif [[ -n "${BUILD_PYPI_ACTIVE_INDEX:-}" || -n "${BUILD_GIT_ACTIVE_PREFIX:-}" ]]; then
+    printf '%s\n' "custom"
+  else
+    printf '%s\n' "official"
+  fi
+}
+
 choose_download_route() {
   local measurements=()
   local line
@@ -97,6 +112,9 @@ choose_download_route() {
     return 0
   fi
   if [[ -n "${BUILD_PYPI_ACTIVE_INDEX:-}" || -n "${BUILD_GIT_ACTIVE_PREFIX:-}" ]]; then
+    BUILD_DOWNLOAD_SELECTED_MODE=${BUILD_DOWNLOAD_SELECTED_MODE:-$(infer_selected_route)}
+    echo "Preflight: using preselected ${BUILD_DOWNLOAD_SELECTED_MODE} download route." >&2
+    export BUILD_DOWNLOAD_SELECTED_MODE BUILD_PYPI_ACTIVE_INDEX BUILD_GIT_ACTIVE_PREFIX
     return 0
   fi
   if load_selected_route; then

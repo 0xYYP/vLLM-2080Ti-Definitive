@@ -46,9 +46,8 @@ ENV PYTHONPATH=/build/FlashQLA-SM70-SM75
 ENV VLLM_CUTLASS_SRC_DIR=/build/.deps/cutlass-src
 ENV TRITON_SRC_DIR=/build/.deps/triton-src
 ENV TRITON_KERNELS_SRC_DIR=/build/.deps/triton-src/python/triton_kernels/triton_kernels
-# Keep Docker's default build fan-out conservative. The repository's compose
-# example already defaults to 4 jobs, and the editable vLLM build can exceed
-# memory budgets on typical dual-2080 Ti hosts when parallelism is left too high.
+# docker/build.sh computes MAX_JOBS with the same host-memory rule as build.sh.
+# Keep the in-Docker fallback conservative for manual docker build invocations.
 ARG MAX_JOBS=4
 ENV MAX_JOBS=${MAX_JOBS}
 ENV CMAKE_BUILD_TYPE=Release
@@ -66,6 +65,8 @@ ARG BUILD_PYPI_FALLBACK_TIMEOUT_SECONDS=
 ARG BUILD_PYPI_MIRROR_INDEX=
 ARG BUILD_PYPI_MIRROR_FALLBACK=1
 ARG BUILD_WHEELHOUSE_DIR=
+ARG BUILD_PYPI_ACTIVE_INDEX=
+ARG BUILD_DOWNLOAD_SELECTED_MODE=
 ARG BUILD_GIT_ACTIVE_PREFIX=
 ARG BUILD_GIT_FOREIGN_REPO_PREFIX=https://gh-proxy.com/
 ARG BUILD_GIT_DOMESTIC_REPO_PREFIX=https://ghfast.top/
