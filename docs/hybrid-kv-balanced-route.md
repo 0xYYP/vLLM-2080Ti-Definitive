@@ -37,9 +37,10 @@ profiles/qwen27b/experimental/fp8/int8kv-65K-mtp3-text-only.env
 ```
 
 Use it to compare against hybrid candidates at the same request-sized context
-limit. The shipped 252K all-INT8 route is a capacity route and can exercise
-different long-decode behavior, so it should not be used as the only speed
-control for the 65K balance gate.
+limit. It mirrors the normal all-INT8 capacity route with `MAX_MODEL_LEN`
+tightened to `66048`. The shipped 252K all-INT8 route is a capacity route and
+can exercise different long-decode behavior, so it should not be used as the
+only speed control for the 65K balance gate.
 
 Earlier hybrid skip-layer profiles could fail startup on Qwen hybrid models
 because compact KV pages, fp16 skip pages, and Mamba align padding were computed
