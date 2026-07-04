@@ -6,6 +6,7 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 source "$ROOT_DIR/docker/build_network_routes.sh"
 
 BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS=${BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS:-60}
+BUILD_PYPI_FALLBACK_TIMEOUT_SECONDS=${BUILD_PYPI_FALLBACK_TIMEOUT_SECONDS:-$BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS}
 BUILD_PYPI_MIRROR_INDEX=${BUILD_PYPI_MIRROR_INDEX:-${BUILD_PYPI_DOMESTIC_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}}
 BUILD_WHEELHOUSE_DIR=${BUILD_WHEELHOUSE_DIR:-}
 
@@ -39,6 +40,10 @@ if ! is_positive_integer "$BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS"; then
   echo "BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS must be a positive integer." >&2
   exit 2
 fi
+if ! is_positive_integer "$BUILD_PYPI_FALLBACK_TIMEOUT_SECONDS"; then
+  echo "BUILD_PYPI_FALLBACK_TIMEOUT_SECONDS must be a positive integer." >&2
+  exit 2
+fi
 
 if [[ -n "${BUILD_PYPI_ACTIVE_INDEX:-}" ]]; then
   if "${UV_ENV[@]}" UV_DEFAULT_INDEX="$BUILD_PYPI_ACTIVE_INDEX" \
@@ -52,4 +57,5 @@ else
 fi
 
 echo "Selected-route Python package install failed; retrying with mirror index." >&2
-exec "${UV_ENV[@]}" UV_DEFAULT_INDEX="$BUILD_PYPI_MIRROR_INDEX" UV_INDEX_STRATEGY=unsafe-best-match uv pip "$@"
+exec "${UV_ENV[@]}" UV_DEFAULT_INDEX="$BUILD_PYPI_MIRROR_INDEX" \
+  timeout --preserve-status "$BUILD_PYPI_FALLBACK_TIMEOUT_SECONDS" uv pip "$@"

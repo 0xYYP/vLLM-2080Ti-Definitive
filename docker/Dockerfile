@@ -61,6 +61,7 @@ ARG BUILD_PYPI_OFFICIAL_INDEX=https://pypi.org/simple
 ARG BUILD_PYPI_FOREIGN_INDEX=https://pypi.python.org/simple
 ARG BUILD_PYPI_DOMESTIC_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS=60
+ARG BUILD_PYPI_FALLBACK_TIMEOUT_SECONDS=
 ARG BUILD_PYPI_MIRROR_INDEX=
 ARG BUILD_PYPI_MIRROR_FALLBACK=1
 ARG BUILD_WHEELHOUSE_DIR=
@@ -73,9 +74,11 @@ ARG BUILD_GIT_DOMESTIC_PROBE=
 ARG BUILD_GIT_PRIMARY_TIMEOUT_SECONDS=120
 ARG BUILD_GIT_MIRROR_PREFIXES=
 ARG CUTLASS_REPO=https://github.com/nvidia/cutlass.git
-ARG CUTLASS_REVISION=v4.4.2
+# Pin the exact source tree currently used for the v4.4.2 Docker build.
+ARG CUTLASS_REVISION=da5e086dab31d63815acafdac9a9c5893b1c69e2
 ARG TRITON_REPO=https://github.com/triton-lang/triton.git
-ARG TRITON_TAG=v3.6.0
+# Pin the exact source tree currently used for the v3.6.0 Docker build.
+ARG TRITON_TAG=7c56a5e40f7fd928dfd5c72902d5def0097db73a
 
 # Create venv and install deps
 RUN uv venv --python 3.11 /build/.venv
@@ -106,12 +109,12 @@ RUN python -c 'import importlib; import flash_qla; legacy = importlib.import_mod
 RUN bash docker/fetch_git_with_mirrors.sh \
     --repo "$CUTLASS_REPO" \
     --target "$VLLM_CUTLASS_SRC_DIR" \
-    --mode ref \
+    --mode commit \
     --ref "$CUTLASS_REVISION"
 RUN bash docker/fetch_git_with_mirrors.sh \
     --repo "$TRITON_REPO" \
     --target "$TRITON_SRC_DIR" \
-    --mode ref \
+    --mode commit \
     --ref "$TRITON_TAG"
 
 # Build vLLM (editable install so __file__ resolves correctly)

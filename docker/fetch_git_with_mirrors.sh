@@ -51,6 +51,26 @@ is_positive_integer() {
   [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
 }
 
+validate_target_path() {
+  local target=$1
+  local parent
+  local base
+
+  case "$target" in
+    ""|"/"|"."|"..")
+      echo "Refusing unsafe git target path: $target" >&2
+      exit 2
+      ;;
+  esac
+
+  parent=$(dirname -- "$target")
+  base=$(basename -- "$target")
+  if [[ "$parent" == "/" || "$parent" == "." || "$base" == "." || "$base" == ".." ]]; then
+    echo "Refusing unsafe git target path: $target" >&2
+    exit 2
+  fi
+}
+
 git_url_with_prefix() {
   local prefix=$1
   local repo=$2
@@ -97,21 +117,11 @@ fetch_once() {
   esac
 }
 
-append_candidate_prefix() {
-  local prefix=$1
-  local existing
-  if ((${#CANDIDATE_PREFIXES[@]} > 0)); then
-    for existing in "${CANDIDATE_PREFIXES[@]}"; do
-      [[ "$existing" == "$prefix" ]] && return 0
-    done
-  fi
-  CANDIDATE_PREFIXES+=("$prefix")
-}
-
 if ! is_positive_integer "$BUILD_GIT_PRIMARY_TIMEOUT_SECONDS"; then
   echo "BUILD_GIT_PRIMARY_TIMEOUT_SECONDS must be a positive integer." >&2
   exit 2
 fi
+validate_target_path "$TARGET"
 
 if [[ -n "$BUILD_GIT_ACTIVE_PREFIX" ]]; then
   FETCH_REPO=$(git_url_with_prefix "$BUILD_GIT_ACTIVE_PREFIX" "$REPO")
@@ -123,11 +133,28 @@ if fetch_once "$FETCH_REPO" "$BUILD_GIT_PRIMARY_TIMEOUT_SECONDS"; then
   exit 0
 fi
 
+declare -a MIRROR_PREFIXES=()
+if [[ -n "$BUILD_GIT_ACTIVE_PREFIX" ]]; then
+  MIRROR_PREFIXES+=("$BUILD_GIT_ACTIVE_PREFIX")
+fi
 for MIRROR_PREFIX in $BUILD_GIT_MIRROR_PREFIXES; do
+  local_seen=0
   [[ -n "$MIRROR_PREFIX" ]] || continue
+  for EXISTING_PREFIX in "${MIRROR_PREFIXES[@]}"; do
+    if [[ "$EXISTING_PREFIX" == "$MIRROR_PREFIX" ]]; then
+      local_seen=1
+      break
+    fi
+  done
+  (( local_seen == 0 )) && MIRROR_PREFIXES+=("$MIRROR_PREFIX")
+done
+
+for MIRROR_PREFIX in "${MIRROR_PREFIXES[@]}"; do
+  [[ -n "$MIRROR_PREFIX" ]] || continue
+  [[ -n "$BUILD_GIT_ACTIVE_PREFIX" && "$MIRROR_PREFIX" == "$BUILD_GIT_ACTIVE_PREFIX" ]] && continue
   FETCH_REPO=$(git_url_with_prefix "$MIRROR_PREFIX" "$REPO")
   echo "Git fetch attempt: $FETCH_REPO"
-  if fetch_once "$FETCH_REPO"; then
+  if fetch_once "$FETCH_REPO" "$BUILD_GIT_PRIMARY_TIMEOUT_SECONDS"; then
     exit 0
   fi
 done

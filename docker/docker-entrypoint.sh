@@ -35,8 +35,36 @@ pid_is_running() {
 
 load_manager_state() {
     [[ -f "$STATE_FILE" ]] || return 1
-    # shellcheck disable=SC1090
-    source "$STATE_FILE"
+    LAST_PID_FILE=$(read_manager_state_value LAST_PID_FILE) || return 1
+    LAST_LOG_FILE=$(read_manager_state_value LAST_LOG_FILE) || return 1
+}
+
+read_manager_state_value() {
+    local key=$1
+    local raw_value
+
+    raw_value=$(awk -F= -v key="$key" '
+        $1 == key {
+            print substr($0, index($0, "=") + 1)
+            exit
+        }
+    ' "$STATE_FILE")
+    [[ -n "$raw_value" ]] || return 1
+
+    "$ROOT/.venv/bin/python" - "$raw_value" <<'PY'
+import shlex
+import sys
+
+try:
+    parts = shlex.split(sys.argv[1], posix=True)
+except ValueError:
+    raise SystemExit(1)
+
+if len(parts) != 1:
+    raise SystemExit(1)
+
+sys.stdout.write(parts[0])
+PY
 }
 
 stop_server() {

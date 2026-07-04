@@ -40,12 +40,7 @@ measure_network_url_ms() {
 
 pypi_probe_url() {
   local index_url=$1
-  index_url=${index_url%/}
-  if [[ "$index_url" == */simple ]]; then
-    printf '%s/pip/\n' "$index_url"
-  else
-    printf '%s\n' "$index_url"
-  fi
+  printf '%s/\n' "${index_url%/}"
 }
 
 probe_download_route() {
