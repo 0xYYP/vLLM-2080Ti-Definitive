@@ -680,6 +680,8 @@ apply_family_reasoning_defaults() {
   fi
   if default_qwen_reasoning_parser_applies; then
     REASONING_PARSER=${REASONING_PARSER:-qwen3}
+  elif [[ "${REASONING_PARSER:-}" == "qwen3" ]]; then
+    REASONING_PARSER=""
   fi
 }
 
@@ -693,8 +695,36 @@ apply_prefix_cache_defaults() {
     return 0
   fi
 
-  if [[ "$ENABLE_PREFIX_CACHING" == "1" && "$MODEL_FAMILY" == qwen* && -z "${MAMBA_CACHE_MODE:-}" ]]; then
-    MAMBA_CACHE_MODE=align
+  if [[ "$ENABLE_PREFIX_CACHING" == "1" && "$MODEL_FAMILY" == qwen* ]]; then
+    MAMBA_CACHE_MODE=${MAMBA_CACHE_MODE:-align}
+  elif [[ "${MAMBA_CACHE_MODE:-}" == "align" ]]; then
+    # align is only injected as the Qwen prefix-cache default. Clear it when
+    # the current route no longer uses that default to avoid stale state bleed.
+    MAMBA_CACHE_MODE=""
+  fi
+}
+
+normalize_message_type_defaults() {
+  local stale_text_only_flags=0
+  if [[ "${MESSAGE_TYPE:-}" == "text+image" || -n "${MM_LIMIT_JSON:-}" ]]; then
+    MESSAGE_TYPE=text+image
+  else
+    MESSAGE_TYPE=text-only
+  fi
+
+  if [[ "$MESSAGE_TYPE" == "text+image" ]]; then
+    [[ "${LANGUAGE_MODEL_ONLY:-0}" == "1" ]] && stale_text_only_flags=1
+    MM_LIMIT_JSON=${MM_LIMIT_JSON:-'{"image":1,"video":0,"audio":0}'}
+    LANGUAGE_MODEL_ONLY=0
+    if (( stale_text_only_flags )); then
+      SKIP_MM_PROFILING=0
+    else
+      SKIP_MM_PROFILING=$(normalize_bool "${SKIP_MM_PROFILING:-0}")
+    fi
+  else
+    MM_LIMIT_JSON=""
+    LANGUAGE_MODEL_ONLY=1
+    SKIP_MM_PROFILING=1
   fi
 }
 
@@ -1890,7 +1920,7 @@ edit_advanced_parameters() {
   if [[ -n "${MM_LIMIT_JSON:-}" && "${MESSAGE_TYPE:-text-only}" == "text-only" ]]; then
     MESSAGE_TYPE=text+image
     LANGUAGE_MODEL_ONLY=0
-    SKIP_MM_PROFILING=${SKIP_MM_PROFILING:-0}
+    SKIP_MM_PROFILING=0
   fi
   LANGUAGE_MODEL_ONLY=$(prompt_toggle01 "Language-model only" "${LANGUAGE_MODEL_ONLY:-1}") || return 0
   SKIP_MM_PROFILING=$(prompt_toggle01 "Skip multimodal profiling" "${SKIP_MM_PROFILING:-1}") || return 0
@@ -1900,6 +1930,7 @@ edit_advanced_parameters() {
   DISABLE_PREFIX_CACHING=$(prompt_toggle01 "Disable prefix caching" "${DISABLE_PREFIX_CACHING:-0}") || return 0
   DISABLE_CUSTOM_ALL_REDUCE=$(prompt_toggle01 "Disable custom all-reduce" "${DISABLE_CUSTOM_ALL_REDUCE:-0}") || return 0
   DISABLE_LOG_STATS=$(prompt_toggle01 "Disable log stats" "${DISABLE_LOG_STATS:-0}") || return 0
+  normalize_message_type_defaults
 }
 
 edit_runtime_parameters() {
@@ -1940,13 +1971,14 @@ edit_runtime_parameters() {
   if [[ "$MESSAGE_TYPE" == "text+image" ]]; then
     MM_LIMIT_JSON=${MM_LIMIT_JSON:-'{"image":1,"video":0,"audio":0}'}
     LANGUAGE_MODEL_ONLY=0
-    SKIP_MM_PROFILING=${SKIP_MM_PROFILING:-0}
+    SKIP_MM_PROFILING=0
   else
     MM_LIMIT_JSON=""
     LANGUAGE_MODEL_ONLY=1
     SKIP_MM_PROFILING=1
   fi
   edit_advanced_parameters
+  normalize_message_type_defaults
 
   save_manager_state
 }
@@ -1971,12 +2003,13 @@ edit_message_type_menu() {
   if [[ "$MESSAGE_TYPE" == "text+image" ]]; then
     MM_LIMIT_JSON=${MM_LIMIT_JSON:-'{"image":1,"video":0,"audio":0}'}
     LANGUAGE_MODEL_ONLY=0
-    SKIP_MM_PROFILING=${SKIP_MM_PROFILING:-0}
+    SKIP_MM_PROFILING=0
   else
     MM_LIMIT_JSON=""
     LANGUAGE_MODEL_ONLY=1
     SKIP_MM_PROFILING=1
   fi
+  normalize_message_type_defaults
   save_manager_state
 }
 
@@ -3570,20 +3603,7 @@ prepare_runtime_defaults() {
   MODE=${MODE:-normal}
   normalize_mode
   SERVICE_SCOPE=${SERVICE_SCOPE:-local}
-  if [[ -z "${MESSAGE_TYPE:-}" && -n "${MM_LIMIT_JSON:-}" ]]; then
-    MESSAGE_TYPE=text+image
-  else
-    MESSAGE_TYPE=${MESSAGE_TYPE:-text-only}
-  fi
-  if [[ "$MESSAGE_TYPE" == "text+image" ]]; then
-    MM_LIMIT_JSON=${MM_LIMIT_JSON:-'{"image":1,"video":0,"audio":0}'}
-    LANGUAGE_MODEL_ONLY=${LANGUAGE_MODEL_ONLY:-0}
-    SKIP_MM_PROFILING=${SKIP_MM_PROFILING:-0}
-  else
-    MM_LIMIT_JSON=""
-    LANGUAGE_MODEL_ONLY=1
-    SKIP_MM_PROFILING=1
-  fi
+  normalize_message_type_defaults
   apply_prefix_cache_defaults
   ENABLE_AUTO_TOOL_CHOICE=$(normalize_bool "${ENABLE_AUTO_TOOL_CHOICE:-0}")
   apply_family_reasoning_defaults
