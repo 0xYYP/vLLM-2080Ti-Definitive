@@ -18,6 +18,7 @@ PROFILES=(
   qwen27b/experimental/fp8/int8kv-65K-fastgraph-mtp3-text-only.env
   qwen27b/experimental/fp8/int8kv-65K-fast2560-mtp3-text-only.env
   qwen27b/experimental/fp8/int8kv-65K-fastaligned-mtp3-text-only.env
+  qwen27b/experimental/fp8/int8kv-65K-fastaligned3d-mtp3-text-only.env
 )
 
 die() {

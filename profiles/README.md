@@ -93,6 +93,7 @@ Experimental candidate, not yet promoted:
 | `qwen27b/experimental/fp8/int8kv-65K-fastgraph-mtp3-text-only.env` | fast | 65K | INT8 | 3 | text-only | 1 | graph-policy diagnostic |
 | `qwen27b/experimental/fp8/int8kv-65K-fast2560-mtp3-text-only.env` | fast | 65K | INT8 | 3 | text-only | 1 | batched-token diagnostic |
 | `qwen27b/experimental/fp8/int8kv-65K-fastaligned-mtp3-text-only.env` | fast | 65K | INT8 | 3 | text-only | 1 | aligned-stride diagnostic |
+| `qwen27b/experimental/fp8/int8kv-65K-fastaligned3d-mtp3-text-only.env` | fast | 65K | INT8 | 3 | text-only | 1 | gated 3D decode diagnostic |
 | `qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env` | fast | 65K | Hybrid INT8 | 3 | text-only | 1 | conservative prefill; needs validation |
 
 ### Qwen3.6 35B FP8

@@ -318,6 +318,8 @@ ROUTE_PROFILE_KEYS=(
   VLLM_INT8KV_FA_FIRST_CHUNK_DEQUANT
   VLLM_INT8KV_FA_PREFILL
   VLLM_INT8KV_ALIGNED_HEAD_STRIDE
+  VLLM_INT8KV_ENABLE_3D_DECODE
+  VLLM_INT8KV_DECODE_PATH_DEBUG
 )
 
 reset_route_profile_fields() {
@@ -750,6 +752,17 @@ current_tq_diagnostics_label() {
     "${VLLM_TURBOQUANT_FORCE_CONTINUATION_SDPA:-0}" \
     "${VLLM_TURBOQUANT_MAX_KV_SPLITS:-auto}" \
     "${VLLM_TURBOQUANT_K8V4_FP8_FORMAT:-auto}"
+}
+
+current_int8kv_diagnostics_label() {
+  if [[ "${KV_CACHE_DTYPE:-}" != int8_per_token_head ]]; then
+    printf 'n/a'
+    return 0
+  fi
+  printf '3D_DECODE=%s, PATH_DEBUG=%s, ALIGNED_HEAD_STRIDE=%s' \
+    "${VLLM_INT8KV_ENABLE_3D_DECODE:-0}" \
+    "${VLLM_INT8KV_DECODE_PATH_DEBUG:-0}" \
+    "${VLLM_INT8KV_ALIGNED_HEAD_STRIDE:-0}"
 }
 
 gpu_device_count() {
@@ -3322,6 +3335,7 @@ launch_server() {
     echo "Scope: $SERVICE_SCOPE"
     echo "MTP graph policy: VLLM_SM75_SPEC_SYNC_MODE=${VLLM_SM75_SPEC_SYNC_MODE:-auto}, VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=${VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH:-0}"
     echo "TQ diagnostics: $(current_tq_diagnostics_label)"
+    echo "INT8KV diagnostics: $(current_int8kv_diagnostics_label)"
     echo "Strict tool calling: VLLM_ENFORCE_STRICT_TOOL_CALLING=${VLLM_ENFORCE_STRICT_TOOL_CALLING:-0}"
     echo "Command: $RUNTIME_ROOT/.venv/bin/python -m vllm.entrypoints.openai.api_server $args_text"
     echo "============================================================"
@@ -3333,6 +3347,7 @@ launch_server() {
   echo "  Mode: $MODE"
   echo "  MTP graph policy: VLLM_SM75_SPEC_SYNC_MODE=${VLLM_SM75_SPEC_SYNC_MODE:-auto}, VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=${VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH:-0}"
   echo "  TQ diagnostics: $(current_tq_diagnostics_label)"
+  echo "  INT8KV diagnostics: $(current_int8kv_diagnostics_label)"
   echo "  Strict tool calling: VLLM_ENFORCE_STRICT_TOOL_CALLING=${VLLM_ENFORCE_STRICT_TOOL_CALLING:-0}"
   echo "  Served name: $SERVED_NAME"
   echo "  Model: $MODEL_DIR"
@@ -3641,6 +3656,7 @@ Launch summary:
   KV precision:         ${KV_CACHE_DTYPE:-fp16}
   KV fp16 skip layers:  ${KV_CACHE_DTYPE_SKIP_LAYERS:-none}
   TQ diagnostics:       $(current_tq_diagnostics_label)
+  INT8KV diagnostics:   $(current_int8kv_diagnostics_label)
   Prefix cache:         $(current_prefix_cache_label)
   Mamba cache mode:     ${MAMBA_CACHE_MODE:-auto}
   Context tokens:       $MAX_MODEL_LEN

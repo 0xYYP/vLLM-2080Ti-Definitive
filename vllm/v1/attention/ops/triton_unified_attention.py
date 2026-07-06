@@ -7,6 +7,7 @@
 #  - Chih-Chieh Yang <chih.chieh.yang@ibm.com>
 #  - Thomas Parnell <tpa@zurich.ibm.com>
 
+import os
 from typing import Any
 
 import torch
@@ -33,6 +34,9 @@ from vllm.v1.kv_cache_interface import KVQuantMode
 logger = init_logger(__name__)
 is_batch_invariant = envs.VLLM_BATCH_INVARIANT
 float8_info = torch.finfo(current_platform.fp8_dtype())
+_INT8KV_ENABLE_3D_DECODE = os.getenv("VLLM_INT8KV_ENABLE_3D_DECODE", "0") == "1"
+_INT8KV_DECODE_PATH_DEBUG = os.getenv("VLLM_INT8KV_DECODE_PATH_DEBUG", "0") == "1"
+_INT8KV_DECODE_PATH_DEBUG_LOGGED = False
 
 
 @triton.jit
@@ -635,12 +639,33 @@ def unified_attention(
         or is_batch_invariant
     )
 
-    # The single-token 3D decode kernel path is currently not promotable for
-    # per-token-head quantized KV cache on SM75 Qwen hybrid routes. Keep these
-    # requests on the 2D path, which matches the known-good multi-token decode
-    # flow used by the same quantization mode.
-    if use_per_token_head_scales:
+    # The single-token 3D decode path for per-token-head quantized KV is kept
+    # behind an explicit diagnostic switch until server-side SM75 quality and
+    # throughput evidence proves it is promotable.
+    if use_per_token_head_scales and not _INT8KV_ENABLE_3D_DECODE:
         use_3d = False
+
+    global _INT8KV_DECODE_PATH_DEBUG_LOGGED
+    if (
+        _INT8KV_DECODE_PATH_DEBUG
+        and use_per_token_head_scales
+        and not _INT8KV_DECODE_PATH_DEBUG_LOGGED
+        and max_seqlen_q <= 8
+    ):
+        _INT8KV_DECODE_PATH_DEBUG_LOGGED = True
+        logger.info(
+            "INT8KV unified_attention path: use_3d=%s, enable_3d=%s, "
+            "max_q=%s, max_k=%s, num_seqs=%s, seq_threshold_3d=%s, "
+            "segments=%s, batch_invariant=%s",
+            use_3d,
+            _INT8KV_ENABLE_3D_DECODE,
+            max_seqlen_q,
+            max_seqlen_k,
+            num_seqs,
+            seq_threshold_3D,
+            num_par_softmax_segments,
+            is_batch_invariant,
+        )
 
     # The kernel signature is the same for 2D and 3D — only the launch
     # grid + a handful of constexpr toggles differ.  Per-token-head scale

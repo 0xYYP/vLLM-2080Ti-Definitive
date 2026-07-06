@@ -43,18 +43,26 @@ can exercise different long-decode behavior, so it should not be used as the
 only speed control for the 65K balance gate.
 
 If the normal all-INT8 control shows a long-decode collapse, use the diagnostic
-matrix below before changing kernels:
+matrix below before lower-level kernel rewrites:
 
 ```text
 profiles/qwen27b/experimental/fp8/int8kv-65K-mtp3-text-only.env
 profiles/qwen27b/experimental/fp8/int8kv-65K-fastgraph-mtp3-text-only.env
 profiles/qwen27b/experimental/fp8/int8kv-65K-fast2560-mtp3-text-only.env
 profiles/qwen27b/experimental/fp8/int8kv-65K-fastaligned-mtp3-text-only.env
+profiles/qwen27b/experimental/fp8/int8kv-65K-fastaligned3d-mtp3-text-only.env
 ```
 
 These profiles isolate the normal path, fast graph policy, larger
-`MAX_BATCHED_TOKENS`, and aligned int8 head stride. They are diagnostics, not
-promoted deployment presets.
+`MAX_BATCHED_TOKENS`, aligned int8 head stride, and the explicitly gated
+per-token-head 3D decode path. They are diagnostics, not promoted deployment
+presets. The 3D path is enabled only by `VLLM_INT8KV_ENABLE_3D_DECODE=1`; keep
+it experimental until the server sweep shows both throughput improvement and no
+quality regression.
+
+The 3D decode diagnostic exists because the historical FP8 MTP3 INT8 KV
+PP65536/TG512 reference was `1227.9 / 42.8 tok/s`, while the later guarded
+per-token-head path can force 2D decode and collapse long-context throughput.
 
 On the server, the full matrix can be run with:
 

@@ -38,18 +38,25 @@ profiles/qwen27b/experimental/fp8/int8kv-65K-mtp3-text-only.env
 decode 可能触发不同路径，因此不应该作为 65K 平衡门槛的唯一速度 control。
 
 如果 normal all-INT8 control 出现长 decode 崩塌，先用下面的诊断矩阵拆变量，再考虑
-改 kernel：
+更底层的 kernel 重写：
 
 ```text
 profiles/qwen27b/experimental/fp8/int8kv-65K-mtp3-text-only.env
 profiles/qwen27b/experimental/fp8/int8kv-65K-fastgraph-mtp3-text-only.env
 profiles/qwen27b/experimental/fp8/int8kv-65K-fast2560-mtp3-text-only.env
 profiles/qwen27b/experimental/fp8/int8kv-65K-fastaligned-mtp3-text-only.env
+profiles/qwen27b/experimental/fp8/int8kv-65K-fastaligned3d-mtp3-text-only.env
 ```
 
 这些 profile 分别隔离 normal 路径、fast graph policy、更大的
-`MAX_BATCHED_TOKENS`、以及 aligned int8 head stride。它们只是诊断 profile，不是
-已晋升的部署预设。
+`MAX_BATCHED_TOKENS`、aligned int8 head stride，以及显式打开的 per-token-head
+3D decode 路径。它们只是诊断 profile，不是已晋升的部署预设。3D 路径只通过
+`VLLM_INT8KV_ENABLE_3D_DECODE=1` 打开；只有服务器 sweep 同时证明吞吐提升且质量
+无回归后，才考虑晋升。
+
+新增 3D decode 诊断档的原因是：历史 FP8 MTP3 INT8 KV 在 PP65536/TG512 下的参考值
+是 `1227.9 / 42.8 tok/s`，而后续加上的 per-token-head guard 会把它强制压到 2D
+decode，可能导致长上下文吞吐崩塌。
 
 服务器上可以用下面命令一次跑完整矩阵：
 

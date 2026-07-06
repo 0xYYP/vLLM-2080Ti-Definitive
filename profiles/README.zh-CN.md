@@ -87,6 +87,7 @@ block 对齐后的 prefix-cache 路径已验证设置。
 | `qwen27b/experimental/fp8/int8kv-65K-fastgraph-mtp3-text-only.env` | fast | 65K | INT8 | 3 | text-only | 1 | graph-policy 诊断 |
 | `qwen27b/experimental/fp8/int8kv-65K-fast2560-mtp3-text-only.env` | fast | 65K | INT8 | 3 | text-only | 1 | batched-token 诊断 |
 | `qwen27b/experimental/fp8/int8kv-65K-fastaligned-mtp3-text-only.env` | fast | 65K | INT8 | 3 | text-only | 1 | aligned-stride 诊断 |
+| `qwen27b/experimental/fp8/int8kv-65K-fastaligned3d-mtp3-text-only.env` | fast | 65K | INT8 | 3 | text-only | 1 | gated 3D decode 诊断 |
 | `qwen27b/experimental/fp8/hybrid-int8kv-65K-mtp3-text-only.env` | fast | 65K | Hybrid INT8 | 3 | text-only | 1 | 保守 prefill，待验证 |
 
 ### Qwen3.6 35B FP8
