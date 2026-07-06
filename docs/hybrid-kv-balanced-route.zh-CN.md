@@ -68,6 +68,43 @@ tools/int8kv_65k_diag_sweep.sh
 
 脚本会把 JSONL 记录和中位数摘要写到 `/tmp/int8kv-65k-diag-*`。
 
+也可以用 `PROFILE_LIST` 跑聚焦子集，避免一个中间诊断档失败时挡住关键对照：
+
+```bash
+MODEL_DIR=/data/models/Qwen3.6-27B-FP8 \
+RUNS=1 \
+ALLOW_STOP_EXISTING=1 \
+PROFILE_LIST="qwen27b/experimental/fp8/int8kv-65K-mtp3-text-only.env qwen27b/experimental/fp8/int8kv-65K-fastaligned3d-mtp3-text-only.env" \
+tools/int8kv_65k_diag_sweep.sh
+```
+
+### 2026-07-06 聚焦 sweep 阶段证据
+
+服务器：dual RTX 2080 Ti，`/data/models/Qwen3.6-27B-FP8`，分支提交
+`4785621`，`RUNS=1`，`--endpoint completions --ignore-eos --pure-filler`。
+结果文件：
+
+- `/tmp/int8kv-65k-diag-20260706-232611/profile.jsonl`
+- `/tmp/int8kv-65k-diag-20260706-232611/summary.tsv`
+- `/tmp/int8kv-65k-diag-20260706-234240/profile.jsonl`
+- `/tmp/int8kv-65k-diag-20260706-234240/summary.tsv`
+
+| Profile | 关键变量 | PP4096/TG128 prefill / decode | PP65536/TG512 prefill / decode | `decode_long` 路径 |
+| --- | --- | ---: | ---: | --- |
+| `int8kv-65K` | normal, MBT2048, aligned=0, 3D=0 | `6133.74 / 43.57` | `24548.46 / 5.25` | `use_3d=False`, `seq_threshold_3d=64` |
+| `int8kv-65K-fastgraph` | fast, MBT2048, aligned=0, 3D=0 | `1565.75 / 74.36` | `24281.64 / 24.31` | `use_3d=False`, `seq_threshold_3d=4` |
+| `int8kv-65K-fast2560` | fast, MBT2560, aligned=0, 3D=0 | `1582.42 / 73.61` | `25773.52 / 24.43` | `use_3d=False`, `seq_threshold_3d=4` |
+| `int8kv-65K-fastaligned3d` | fast, MBT2560, aligned=1, 3D=1 | `1536.90 / 81.19` | `24355.03 / 45.05` | `use_3d=True`, `seq_threshold_3d=4` |
+
+解读：
+
+- normal all-INT8 的 PP65536/TG512 decode 复现为 `5.25 tok/s`，`decode_long`
+  明确走 2D。
+- fast graph / FlashInfer prefill 相关策略把 65K decode 拉到约 `24.3 tok/s`；
+  `MAX_BATCHED_TOKENS=2048 -> 2560` 对 decode 几乎没有增益。
+- `fastaligned3d` 把 65K decode 恢复到 `45.05 tok/s`，已经回到历史 INT8
+  参考 `42.8 tok/s` 区间；但它仍是诊断 profile，晋升前必须补质量验证。
+
 早期 hybrid skip-layer profiles 在 Qwen hybrid 模型上可能启动失败，因为 compact KV
 page、fp16 skip page 和 Mamba align padding 使用了不同的 page-size 口径。现在 Mamba
 align 会把 fp16 skip page 纳入兼容 page-size 计算；但 FP8 和 INT8 hybrid profiles

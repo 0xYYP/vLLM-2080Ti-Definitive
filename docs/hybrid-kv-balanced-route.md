@@ -75,6 +75,45 @@ tools/int8kv_65k_diag_sweep.sh
 The script writes JSONL records and a median summary under
 `/tmp/int8kv-65k-diag-*`.
 
+Use `PROFILE_LIST` for focused subsets when a middle diagnostic profile should
+not block the key controls:
+
+```bash
+MODEL_DIR=/data/models/Qwen3.6-27B-FP8 \
+RUNS=1 \
+ALLOW_STOP_EXISTING=1 \
+PROFILE_LIST="qwen27b/experimental/fp8/int8kv-65K-mtp3-text-only.env qwen27b/experimental/fp8/int8kv-65K-fastaligned3d-mtp3-text-only.env" \
+tools/int8kv_65k_diag_sweep.sh
+```
+
+### 2026-07-06 Focused Sweep Evidence
+
+Server: dual RTX 2080 Ti, `/data/models/Qwen3.6-27B-FP8`, branch commit
+`4785621`, `RUNS=1`, `--endpoint completions --ignore-eos --pure-filler`.
+Result files:
+
+- `/tmp/int8kv-65k-diag-20260706-232611/profile.jsonl`
+- `/tmp/int8kv-65k-diag-20260706-232611/summary.tsv`
+- `/tmp/int8kv-65k-diag-20260706-234240/profile.jsonl`
+- `/tmp/int8kv-65k-diag-20260706-234240/summary.tsv`
+
+| Profile | Key variables | PP4096/TG128 prefill / decode | PP65536/TG512 prefill / decode | `decode_long` path |
+| --- | --- | ---: | ---: | --- |
+| `int8kv-65K` | normal, MBT2048, aligned=0, 3D=0 | `6133.74 / 43.57` | `24548.46 / 5.25` | `use_3d=False`, `seq_threshold_3d=64` |
+| `int8kv-65K-fastgraph` | fast, MBT2048, aligned=0, 3D=0 | `1565.75 / 74.36` | `24281.64 / 24.31` | `use_3d=False`, `seq_threshold_3d=4` |
+| `int8kv-65K-fast2560` | fast, MBT2560, aligned=0, 3D=0 | `1582.42 / 73.61` | `25773.52 / 24.43` | `use_3d=False`, `seq_threshold_3d=4` |
+| `int8kv-65K-fastaligned3d` | fast, MBT2560, aligned=1, 3D=1 | `1536.90 / 81.19` | `24355.03 / 45.05` | `use_3d=True`, `seq_threshold_3d=4` |
+
+Interpretation:
+
+- The normal all-INT8 PP65536/TG512 decode collapse reproduces at `5.25 tok/s`,
+  and `decode_long` is explicitly on the 2D path.
+- Fast graph / FlashInfer prefill policy lifts 65K decode to about
+  `24.3 tok/s`; `MAX_BATCHED_TOKENS=2048 -> 2560` is not the decode limiter.
+- `fastaligned3d` restores 65K decode to `45.05 tok/s`, back in the historical
+  INT8 `42.8 tok/s` range; it remains a diagnostic profile until quality is
+  validated.
+
 Earlier hybrid skip-layer profiles could fail startup on Qwen hybrid models
 because compact KV pages, fp16 skip pages, and Mamba align padding were computed
 from different page sizes. The Mamba align path now includes the fp16 skip page
