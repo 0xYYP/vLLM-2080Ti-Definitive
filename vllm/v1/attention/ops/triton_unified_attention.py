@@ -7,7 +7,6 @@
 #  - Chih-Chieh Yang <chih.chieh.yang@ibm.com>
 #  - Thomas Parnell <tpa@zurich.ibm.com>
 
-import os
 from typing import Any
 
 import torch
@@ -34,9 +33,9 @@ from vllm.v1.kv_cache_interface import KVQuantMode
 logger = init_logger(__name__)
 is_batch_invariant = envs.VLLM_BATCH_INVARIANT
 float8_info = torch.finfo(current_platform.fp8_dtype())
-_INT8KV_ENABLE_3D_DECODE = os.getenv("VLLM_INT8KV_ENABLE_3D_DECODE", "0") == "1"
-_INT8KV_DECODE_PATH_DEBUG = os.getenv("VLLM_INT8KV_DECODE_PATH_DEBUG", "0") == "1"
-_INT8KV_DECODE_PATH_DEBUG_LOGGED = False
+_INT8KV_ENABLE_3D_DECODE = envs.VLLM_INT8KV_ENABLE_3D_DECODE
+_INT8KV_DECODE_PATH_DEBUG = envs.VLLM_INT8KV_DECODE_PATH_DEBUG
+_INT8KV_DECODE_PATH_DEBUG_LOGGED: set[str] = set()
 
 
 @triton.jit
@@ -645,18 +644,28 @@ def unified_attention(
     if use_per_token_head_scales and not _INT8KV_ENABLE_3D_DECODE:
         use_3d = False
 
-    global _INT8KV_DECODE_PATH_DEBUG_LOGGED
+    debug_bucket = None
+    if max_seqlen_q > 1:
+        debug_bucket = "multi_query" if max_seqlen_q <= 8 else None
+    elif max_seqlen_k >= 32768:
+        debug_bucket = "decode_long"
+    elif max_seqlen_k >= 8192:
+        debug_bucket = "decode_mid"
+    else:
+        debug_bucket = "decode_short"
+
     if (
         _INT8KV_DECODE_PATH_DEBUG
         and use_per_token_head_scales
-        and not _INT8KV_DECODE_PATH_DEBUG_LOGGED
-        and max_seqlen_q <= 8
+        and debug_bucket is not None
+        and debug_bucket not in _INT8KV_DECODE_PATH_DEBUG_LOGGED
     ):
-        _INT8KV_DECODE_PATH_DEBUG_LOGGED = True
+        _INT8KV_DECODE_PATH_DEBUG_LOGGED.add(debug_bucket)
         logger.info(
-            "INT8KV unified_attention path: use_3d=%s, enable_3d=%s, "
+            "INT8KV unified_attention path[%s]: use_3d=%s, enable_3d=%s, "
             "max_q=%s, max_k=%s, num_seqs=%s, seq_threshold_3d=%s, "
             "segments=%s, batch_invariant=%s",
+            debug_bucket,
             use_3d,
             _INT8KV_ENABLE_3D_DECODE,
             max_seqlen_q,

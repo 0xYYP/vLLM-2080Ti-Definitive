@@ -58,6 +58,8 @@ if TYPE_CHECKING:
     VLLM_INT8KV_FA_CASCADE_TILE_TOKENS: int = 65536
     VLLM_INT8KV_FA_DIRECT_PAGED: bool = False
     VLLM_INT8KV_ALIGNED_HEAD_STRIDE: bool = False
+    VLLM_INT8KV_ENABLE_3D_DECODE: bool = False
+    VLLM_INT8KV_DECODE_PATH_DEBUG: bool = False
     VLLM_INT8KV_DEBUG_VERIFY: bool = False
     VLLM_INT8KV_DEBUG_COMPARE: bool = False
     VLLM_TURBOQUANT_SPEC_CONTINUATION_DECODE_FASTPATH: bool = False
@@ -802,6 +804,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     "VLLM_INT8KV_ALIGNED_HEAD_STRIDE": lambda: bool(
         int(os.getenv("VLLM_INT8KV_ALIGNED_HEAD_STRIDE", "0"))
+    ),
+    "VLLM_INT8KV_ENABLE_3D_DECODE": lambda: bool(
+        int(os.getenv("VLLM_INT8KV_ENABLE_3D_DECODE", "0"))
+    ),
+    "VLLM_INT8KV_DECODE_PATH_DEBUG": lambda: bool(
+        int(os.getenv("VLLM_INT8KV_DECODE_PATH_DEBUG", "0"))
     ),
     "VLLM_INT8KV_DEBUG_VERIFY": lambda: bool(
         int(os.getenv("VLLM_INT8KV_DEBUG_VERIFY", "0"))

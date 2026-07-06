@@ -9,9 +9,14 @@ START_TIMEOUT=${START_TIMEOUT:-900}
 RUNS=${RUNS:-3}
 ALLOW_STOP_EXISTING=${ALLOW_STOP_EXISTING:-0}
 KEEP_LAST_SERVICE=${KEEP_LAST_SERVICE:-0}
+SWEEP_CLEANUP_RESIDUALS=${SWEEP_CLEANUP_RESIDUALS:-1}
+SWEEP_KILL_ALL_GPU_COMPUTE=${SWEEP_KILL_ALL_GPU_COMPUTE:-0}
+GPU_IDLE_MEMORY_MB=${GPU_IDLE_MEMORY_MB:-512}
+GPU_IDLE_WAIT_SECONDS=${GPU_IDLE_WAIT_SECONDS:-60}
 STAMP=${STAMP:-$(date +%Y%m%d-%H%M%S)}
 OUT_DIR=${OUT_DIR:-/tmp/int8kv-65k-diag-$STAMP}
 OUT=${OUT:-$OUT_DIR/profile.jsonl}
+SWEEP_SERVICE_STARTED=0
 
 PROFILES=(
   qwen27b/experimental/fp8/int8kv-65K-mtp3-text-only.env
@@ -90,6 +95,100 @@ stop_managed_services() {
     rm -f "$pid_file"
   done < <(managed_pid_files)
 }
+
+residual_vllm_pids() {
+  local uid pid args
+  uid=$(id -u)
+  {
+    ps -u "$uid" -o pid= -o args= 2>/dev/null | awk -v root="$ROOT" '
+      /vllm\.entrypoints\.openai\.api_server/ ||
+      /VLLM::Worker_TP/ ||
+      (index($0, root) && /vllm/) {
+        print $1
+      }
+    '
+    if command -v nvidia-smi >/dev/null 2>&1; then
+      while IFS= read -r pid; do
+        [[ -n "$pid" ]] || continue
+        args=$(ps -p "$pid" -o args= 2>/dev/null || true)
+        if [[ "$SWEEP_KILL_ALL_GPU_COMPUTE" == "1" ]] ||
+          [[ "$args" == *"vllm.entrypoints.openai.api_server"* ]] ||
+          [[ "$args" == *"VLLM::Worker_TP"* ]] ||
+          [[ "$args" == *"$ROOT"* ]]; then
+          echo "$pid"
+        fi
+      done < <(nvidia-smi --query-compute-apps=pid \
+        --format=csv,noheader,nounits 2>/dev/null || true)
+    fi
+  } | awk -v self="$$" -v parent="$PPID" '
+    $1 != "" && $1 != self && $1 != parent { print $1 }
+  ' | sort -u
+}
+
+stop_residual_vllm_processes() {
+  local pids pid alive=()
+  [[ "$SWEEP_CLEANUP_RESIDUALS" == "1" ]] || return 0
+  mapfile -t pids < <(residual_vllm_pids)
+  ((${#pids[@]} > 0)) || return 0
+
+  echo "Stopping residual vLLM/GPU worker pids: ${pids[*]}"
+  for pid in "${pids[@]}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+  sleep 5
+
+  for pid in "${pids[@]}"; do
+    if pid_is_running "$pid"; then
+      alive+=("$pid")
+    fi
+  done
+  if ((${#alive[@]} > 0)); then
+    echo "Force-stopping residual pids: ${alive[*]}"
+    for pid in "${alive[@]}"; do
+      kill -KILL "$pid" 2>/dev/null || true
+    done
+  fi
+}
+
+wait_for_gpu_idle_memory() {
+  local deadline now max_used used
+  command -v nvidia-smi >/dev/null 2>&1 || return 0
+  deadline=$((SECONDS + GPU_IDLE_WAIT_SECONDS))
+  while true; do
+    max_used=0
+    while IFS= read -r used; do
+      [[ -n "$used" ]] || continue
+      ((used > max_used)) && max_used=$used
+    done < <(nvidia-smi --query-gpu=memory.used \
+      --format=csv,noheader,nounits 2>/dev/null || true)
+
+    ((max_used <= GPU_IDLE_MEMORY_MB)) && return 0
+    now=$SECONDS
+    ((now >= deadline)) && break
+    echo "Waiting for GPU memory to settle: max_used=${max_used}MiB"
+    sleep 5
+  done
+
+  nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu \
+    --format=csv,noheader 2>/dev/null || true
+  echo "ERROR: GPU memory did not fall below ${GPU_IDLE_MEMORY_MB}MiB after cleanup" >&2
+  return 1
+}
+
+cleanup_services() {
+  stop_managed_services
+  stop_residual_vllm_processes
+  wait_for_gpu_idle_memory
+}
+
+on_exit() {
+  local status=$?
+  if [[ "$SWEEP_SERVICE_STARTED" == "1" ]] &&
+    { [[ "$KEEP_LAST_SERVICE" != "1" ]] || ((status != 0)); }; then
+    cleanup_services || true
+  fi
+}
+trap on_exit EXIT
 
 profile_case_name() {
   local profile=$1
@@ -172,7 +271,8 @@ for profile in "${PROFILES[@]}"; do
   mode=${mode%%,*}
   case_name=$(profile_case_name "$profile")
 
-  stop_managed_services
+  cleanup_services
+  SWEEP_SERVICE_STARTED=0
   echo
   echo "=== Launching $case_name mode=$mode served=$served ==="
   MODEL_DIR="$MODEL_DIR" \
@@ -183,6 +283,7 @@ for profile in "${PROFILES[@]}"; do
     SKIP_STARTUP_SMOKE=1 \
     START_TIMEOUT="$START_TIMEOUT" \
     "$ROOT/launcher.sh" --non-interactive
+  SWEEP_SERVICE_STARTED=1
 
   echo "=== Warmup $case_name ==="
   run_profile_request "$served" "${case_name}_4k_warmup" 4096 128
@@ -196,7 +297,8 @@ for profile in "${PROFILES[@]}"; do
 done
 
 if [[ "$KEEP_LAST_SERVICE" != "1" ]]; then
-  stop_managed_services
+  cleanup_services
+  SWEEP_SERVICE_STARTED=0
 fi
 
 echo
