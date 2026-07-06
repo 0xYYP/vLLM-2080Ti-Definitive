@@ -56,6 +56,17 @@ These profiles isolate the normal path, fast graph policy, larger
 `MAX_BATCHED_TOKENS`, and aligned int8 head stride. They are diagnostics, not
 promoted deployment presets.
 
+On the server, the full matrix can be run with:
+
+```bash
+MODEL_DIR=/data/models/Qwen3.6-27B-FP8 \
+ALLOW_STOP_EXISTING=1 \
+tools/int8kv_65k_diag_sweep.sh
+```
+
+The script writes JSONL records and a median summary under
+`/tmp/int8kv-65k-diag-*`.
+
 Earlier hybrid skip-layer profiles could fail startup on Qwen hybrid models
 because compact KV pages, fp16 skip pages, and Mamba align padding were computed
 from different page sizes. The Mamba align path now includes the fp16 skip page

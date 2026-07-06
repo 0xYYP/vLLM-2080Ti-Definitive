@@ -51,6 +51,16 @@ profiles/qwen27b/experimental/fp8/int8kv-65K-fastaligned-mtp3-text-only.env
 `MAX_BATCHED_TOKENS`、以及 aligned int8 head stride。它们只是诊断 profile，不是
 已晋升的部署预设。
 
+服务器上可以用下面命令一次跑完整矩阵：
+
+```bash
+MODEL_DIR=/data/models/Qwen3.6-27B-FP8 \
+ALLOW_STOP_EXISTING=1 \
+tools/int8kv_65k_diag_sweep.sh
+```
+
+脚本会把 JSONL 记录和中位数摘要写到 `/tmp/int8kv-65k-diag-*`。
+
 早期 hybrid skip-layer profiles 在 Qwen hybrid 模型上可能启动失败，因为 compact KV
 page、fp16 skip page 和 Mamba align padding 使用了不同的 page-size 口径。现在 Mamba
 align 会把 fp16 skip page 纳入兼容 page-size 计算；但 FP8 和 INT8 hybrid profiles
