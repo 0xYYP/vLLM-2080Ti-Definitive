@@ -114,6 +114,56 @@ Interpretation:
   INT8 `42.8 tok/s` range; it remains a diagnostic profile until quality is
   validated.
 
+### 2026-07-07 65K Stability Fix Evidence
+
+Server: dual RTX 2080 Ti, `/data/models/Qwen3.6-27B-FP8`, branch
+`research/hybrid-kv-balanced-route`, `RUNS=1`,
+`--endpoint completions --ignore-eos --pure-filler`.
+
+Before this fix, the fastaligned3d profile could start and pass PP4096/TG128,
+but PP65536/TG512 failed during request execution:
+
+- With automatic `GPU_UTIL=0.94` KV sizing, INT8 FlashInfer continuation
+  prefill failed at `k_data.to(torch.float32)` while trying to allocate
+  `68 MiB`.
+- After removing the explicit int8-to-fp32 temporary tensor, the next peak moved
+  to a later `marlin_gemm` allocation of `50 MiB`; automatic sizing still left
+  only about `2 MiB` free.
+- Lowering `GPU_UTIL` alone was not the right control. At `GPU_UTIL=0.93`,
+  vLLM still allocated about `5.0 GiB` KV and reported `216,055` GPU KV tokens,
+  far more than a max-seq-1 65K profile needs.
+
+The stable profile uses explicit KV sizing:
+
+```text
+KV_CACHE_MEMORY_BYTES=2147483648
+```
+
+The launch log confirms `kv_cache_memory_bytes=2147483648`, reserves `2.0 GiB`
+per GPU for KV cache, reports `86,198` GPU KV tokens, and gives `1.31x`
+maximum concurrency for `66,048` tokens per request.
+
+Result files:
+
+- `/tmp/int8kv-65k-diag-kvbytes2g-20260707-005921/profile.jsonl`
+- `/tmp/int8kv-65k-diag-kvbytes2g-20260707-005921/summary.tsv`
+- `run-logs/vllm-qwen27b-fp8-int8kv-65K-fastaligned3d-mtp3-text-only-cu128-20260707-005926.log`
+
+| Profile | Key variables | PP4096/TG128 prefill / decode | PP65536/TG512 prefill / decode | Result |
+| --- | --- | ---: | ---: | --- |
+| `int8kv-65K-fastaligned3d` | fast, MBT2560, aligned=1, 3D=1, KV bytes=2GiB | `1546.77 / 81.66` | `1190.62 / 44.98` | stable |
+
+Interpretation:
+
+- Explicit `KV_CACHE_MEMORY_BYTES` is the correct control for this diagnostic
+  route. It keeps enough 65K capacity while returning several GiB to runtime
+  kernels and CUDA graph pools.
+- Removing explicit fp32 dequant temporaries lowers prefill peak memory, but it
+  is not sufficient by itself when the automatic KV pool over-allocates.
+- Speed is back in the desired long-context INT8 range: PP65536/TG512 decode is
+  `44.98 tok/s`, essentially the same as the prior `45.05 tok/s` successful
+  fastaligned3d run, but now without request-time OOM.
+
 Earlier hybrid skip-layer profiles could fail startup on Qwen hybrid models
 because compact KV pages, fp16 skip pages, and Mamba align padding were computed
 from different page sizes. The Mamba align path now includes the fp16 skip page

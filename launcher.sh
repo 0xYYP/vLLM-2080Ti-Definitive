@@ -294,6 +294,7 @@ ROUTE_PROFILE_KEYS=(
   QUANTIZATION
   KV_CACHE_DTYPE
   KV_CACHE_DTYPE_SKIP_LAYERS
+  KV_CACHE_MEMORY_BYTES
   MAX_MODEL_LEN
   GPU_UTIL
   MAX_BATCHED_TOKENS
@@ -418,6 +419,7 @@ save_manager_state() {
     printf 'QUANTIZATION=%q\n' "${QUANTIZATION:-}"
     printf 'KV_CACHE_DTYPE=%q\n' "${KV_CACHE_DTYPE:-}"
     printf 'KV_CACHE_DTYPE_SKIP_LAYERS=%q\n' "${KV_CACHE_DTYPE_SKIP_LAYERS:-}"
+    printf 'KV_CACHE_MEMORY_BYTES=%q\n' "${KV_CACHE_MEMORY_BYTES:-}"
     printf 'MAMBA_CACHE_MODE=%q\n' "${MAMBA_CACHE_MODE:-}"
     printf 'ENABLE_PREFIX_CACHING=%q\n' "${ENABLE_PREFIX_CACHING:-1}"
     printf 'ENABLE_PROMPT_TOKENS_DETAILS=%q\n' "${ENABLE_PROMPT_TOKENS_DETAILS:-1}"
@@ -843,6 +845,7 @@ profile_summary() {
     QUANTIZATION
     KV_CACHE_DTYPE
     KV_CACHE_DTYPE_SKIP_LAYERS
+    KV_CACHE_MEMORY_BYTES
     MAX_MODEL_LEN
     GPU_UTIL
     MAX_BATCHED_TOKENS
@@ -2869,6 +2872,8 @@ build_args() {
 
   [[ -n "${QUANTIZATION:-}" ]] && VLLM_ARGS+=(--quantization "$QUANTIZATION")
   [[ -n "${KV_CACHE_DTYPE:-}" ]] && VLLM_ARGS+=(--kv-cache-dtype "$KV_CACHE_DTYPE")
+  [[ -n "${KV_CACHE_MEMORY_BYTES:-}" ]] &&
+    VLLM_ARGS+=(--kv-cache-memory-bytes "$KV_CACHE_MEMORY_BYTES")
   if [[ -n "${KV_CACHE_DTYPE_SKIP_LAYERS:-}" ]]; then
     local skip_layers_text=${KV_CACHE_DTYPE_SKIP_LAYERS//,/ }
     local skip_layers=()
@@ -3661,6 +3666,7 @@ Launch summary:
   Mamba cache mode:     ${MAMBA_CACHE_MODE:-auto}
   Context tokens:       $MAX_MODEL_LEN
   GPU util:             $GPU_UTIL
+  KV cache bytes:       ${KV_CACHE_MEMORY_BYTES:-auto}
   Max batched tokens:   $MAX_BATCHED_TOKENS
   Max sequences:        $MAX_NUM_SEQS
   MTP tokens:           $MTP_K

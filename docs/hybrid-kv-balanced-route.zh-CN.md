@@ -105,6 +105,52 @@ tools/int8kv_65k_diag_sweep.sh
 - `fastaligned3d` 把 65K decode 恢复到 `45.05 tok/s`，已经回到历史 INT8
   参考 `42.8 tok/s` 区间；但它仍是诊断 profile，晋升前必须补质量验证。
 
+### 2026-07-07 65K 稳定性修复证据
+
+服务器：dual RTX 2080 Ti，`/data/models/Qwen3.6-27B-FP8`，分支
+`research/hybrid-kv-balanced-route`，`RUNS=1`，
+`--endpoint completions --ignore-eos --pure-filler`。
+
+修复前，fastaligned3d profile 可以启动，也能跑过 PP4096/TG128，但
+PP65536/TG512 会在请求执行期失败：
+
+- 自动 `GPU_UTIL=0.94` KV sizing 下，INT8 FlashInfer continuation prefill
+  在 `k_data.to(torch.float32)` 处申请 `68 MiB` 失败。
+- 移除显式 int8-to-fp32 临时张量后，下一个峰值转移到后续 `marlin_gemm`
+  的 `50 MiB` 申请；自动 sizing 仍然只剩约 `2 MiB` free。
+- 单纯降低 `GPU_UTIL` 不是正确控制。`GPU_UTIL=0.93` 时，vLLM 仍然分配约
+  `5.0 GiB` KV，并报告 `216,055` GPU KV tokens，远超过 max-seq-1 的
+  65K profile 需求。
+
+稳定 profile 改用精确 KV sizing：
+
+```text
+KV_CACHE_MEMORY_BYTES=2147483648
+```
+
+启动日志确认 `kv_cache_memory_bytes=2147483648`，每张 GPU 为 KV cache 保留
+`2.0 GiB`，GPU KV cache size 为 `86,198` tokens，对 `66,048` token/request 的
+最大并发为 `1.31x`。
+
+结果文件：
+
+- `/tmp/int8kv-65k-diag-kvbytes2g-20260707-005921/profile.jsonl`
+- `/tmp/int8kv-65k-diag-kvbytes2g-20260707-005921/summary.tsv`
+- `run-logs/vllm-qwen27b-fp8-int8kv-65K-fastaligned3d-mtp3-text-only-cu128-20260707-005926.log`
+
+| Profile | 关键变量 | PP4096/TG128 prefill / decode | PP65536/TG512 prefill / decode | 结果 |
+| --- | --- | ---: | ---: | --- |
+| `int8kv-65K-fastaligned3d` | fast, MBT2560, aligned=1, 3D=1, KV bytes=2GiB | `1546.77 / 81.66` | `1190.62 / 44.98` | stable |
+
+解读：
+
+- `KV_CACHE_MEMORY_BYTES` 是这条诊断路线更正确的控制项：它保留足够 65K 容量，
+  同时把数 GiB 显存还给运行时 kernel 和 CUDA graph pool。
+- 移除显式 fp32 dequant 临时张量能降低 prefill 峰值，但当自动 KV pool 过大时，
+  单独这一步还不够。
+- 速度回到目标长上下文 INT8 区间：PP65536/TG512 decode 为 `44.98 tok/s`，
+  基本等同于之前成功的 fastaligned3d `45.05 tok/s`，但这次没有请求期 OOM。
+
 早期 hybrid skip-layer profiles 在 Qwen hybrid 模型上可能启动失败，因为 compact KV
 page、fp16 skip page 和 Mamba align padding 使用了不同的 page-size 口径。现在 Mamba
 align 会把 fp16 skip page 纳入兼容 page-size 计算；但 FP8 和 INT8 hybrid profiles

@@ -1126,8 +1126,10 @@ class TritonAttentionImpl(AttentionImpl):
         v_scale = self._v_scale_cache[blocks].reshape(
             -1, self.num_kv_heads
         )[offset : offset + num_tokens]
-        torch.mul(k_data.to(torch.float32), k_scale.unsqueeze(-1), out=k_target)
-        torch.mul(v_data.to(torch.float32), v_scale.unsqueeze(-1), out=v_target)
+        # Let TensorIterator cast elementwise into the fp16 workspace; an
+        # explicit int8->fp32 tensor adds a large transient allocation at 65K+.
+        torch.mul(k_data, k_scale.unsqueeze(-1), out=k_target)
+        torch.mul(v_data, v_scale.unsqueeze(-1), out=v_target)
         return k_target, v_target
 
     def _run_int8kv_cascade_flashinfer_prefill(
@@ -1469,8 +1471,9 @@ class TritonAttentionImpl(AttentionImpl):
             v_scale = self._v_scale_cache[blocks].reshape(
                 -1, self.num_kv_heads
             )[:seq_len]
-            torch.mul(k_data.to(torch.float32), k_scale.unsqueeze(-1), out=k_target)
-            torch.mul(v_data.to(torch.float32), v_scale.unsqueeze(-1), out=v_target)
+            # Avoid materializing a full fp32 copy of the paged int8 KV cache.
+            torch.mul(k_data, k_scale.unsqueeze(-1), out=k_target)
+            torch.mul(v_data, v_scale.unsqueeze(-1), out=v_target)
             k_prefill = k_target
             v_prefill = v_target
         else:
