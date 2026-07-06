@@ -25,6 +25,9 @@ PROFILES=(
   qwen27b/experimental/fp8/int8kv-65K-fastaligned-mtp3-text-only.env
   qwen27b/experimental/fp8/int8kv-65K-fastaligned3d-mtp3-text-only.env
 )
+if [[ -n "${PROFILE_LIST:-}" ]]; then
+  read -r -a PROFILES <<< "$PROFILE_LIST"
+fi
 
 die() {
   echo "ERROR: $*" >&2
