@@ -115,7 +115,7 @@ def _normalize_tq_prefix_combine_mode(value: str) -> str:
 
 
 _TQ_CONTINUATION_PREFIX_COMBINE_MODE = _normalize_tq_prefix_combine_mode(
-    os.getenv("VLLM_TURBOQUANT_CONTINUATION_PREFIX_COMBINE", "off")
+    os.getenv("VLLM_TURBOQUANT_CONTINUATION_PREFIX_COMBINE", "auto")
 )
 _TQ_CONTINUATION_PREFIX_COMBINE_MIN_TOKENS = max(
     0,
