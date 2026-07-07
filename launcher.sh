@@ -413,7 +413,9 @@ config_key_has_override() {
 
 config_key_has_explicit_value() {
   local key=$1
-  [[ -n "${CONFIG_OVERRIDE_SOURCE[$key]+x}" && -z "${CONFIG_OVERRIDE_UNSET[$key]+x}" ]]
+  [[ -n "${CONFIG_OVERRIDE_SOURCE[$key]+x}" \
+    && "${CONFIG_OVERRIDE_SOURCE[$key]}" != mode \
+    && -z "${CONFIG_OVERRIDE_UNSET[$key]+x}" ]]
 }
 
 config_key_is_boolean() {
@@ -465,6 +467,13 @@ parse_set_assignment() {
 
 register_env_config_overrides() {
   init_config_registry
+
+  if ! config_key_has_override GPU_DEVICES && env_var_is_exported CUDA_VISIBLE_DEVICES; then
+    set_config_override GPU_DEVICES "${CUDA_VISIBLE_DEVICES:-}" env
+    if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+      CONFIG_OVERRIDE_UNSET["GPU_DEVICES"]=1
+    fi
+  fi
 
   local key
   for key in "${!CONFIG_KNOWN_KEYS[@]}"; do
@@ -2188,11 +2197,15 @@ edit_advanced_parameters() {
   LANGUAGE_MODEL_ONLY=$(prompt_toggle01 "Language-model only" "${LANGUAGE_MODEL_ONLY:-1}") || return 0
   SKIP_MM_PROFILING=$(prompt_toggle01 "Skip multimodal profiling" "${SKIP_MM_PROFILING:-1}") || return 0
   ENFORCE_EAGER=$(prompt_toggle01 "Enforce eager" "${ENFORCE_EAGER:-0}") || return 0
+  CONFIG_OVERRIDE_SOURCE["ENFORCE_EAGER"]=menu
+  unset 'CONFIG_OVERRIDE_UNSET[ENFORCE_EAGER]'
   NO_ASYNC_SCHEDULING=$(prompt_toggle01 "No async scheduling" "${NO_ASYNC_SCHEDULING:-0}") || return 0
   DISABLE_HYBRID_KV_CACHE_MANAGER=$(prompt_toggle01 "Disable hybrid KV cache manager" "${DISABLE_HYBRID_KV_CACHE_MANAGER:-0}") || return 0
   DISABLE_PREFIX_CACHING=$(prompt_toggle01 "Disable prefix caching" "${DISABLE_PREFIX_CACHING:-0}") || return 0
   DISABLE_CUSTOM_ALL_REDUCE=$(prompt_toggle01 "Disable custom all-reduce" "${DISABLE_CUSTOM_ALL_REDUCE:-0}") || return 0
   DISABLE_LOG_STATS=$(prompt_toggle01 "Disable log stats" "${DISABLE_LOG_STATS:-0}") || return 0
+  CONFIG_OVERRIDE_SOURCE["DISABLE_LOG_STATS"]=menu
+  unset 'CONFIG_OVERRIDE_UNSET[DISABLE_LOG_STATS]'
   normalize_message_type_defaults
 }
 
@@ -2969,31 +2982,42 @@ set_derived_default() {
   export "$key"
 }
 
+set_mode_default() {
+  local key=$1
+  local value=$2
+  config_key_has_explicit_value "$key" && return 0
+  printf -v "$key" '%s' "$value"
+  export "$key"
+  CONFIG_OVERRIDE_SOURCE["$key"]=mode
+  unset "CONFIG_OVERRIDE_UNSET[$key]"
+}
+
 apply_mode() {
   normalize_mode
   case "$MODE" in
     normal)
-      set_derived_default ENFORCE_EAGER 0
-      set_derived_default DISABLE_LOG_STATS 1
-      set_derived_default VLLM_SM75_SPEC_SYNC_MODE safe
-      set_derived_default VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH 0
+      set_mode_default ENFORCE_EAGER 0
+      set_mode_default DISABLE_LOG_STATS 1
+      set_mode_default VLLM_SM75_SPEC_SYNC_MODE safe
+      set_mode_default VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH 0
       ;;
     fast)
-      set_derived_default ENFORCE_EAGER 0
-      set_derived_default DISABLE_LOG_STATS 1
-      set_derived_default VLLM_SM75_SPEC_SYNC_MODE safe
-      set_derived_default VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH 1
+      set_mode_default ENFORCE_EAGER 0
+      set_mode_default DISABLE_LOG_STATS 1
+      set_mode_default VLLM_SM75_SPEC_SYNC_MODE safe
+      set_mode_default VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH 1
       ;;
     aggressive)
-      set_derived_default ENFORCE_EAGER 0
-      set_derived_default DISABLE_LOG_STATS 1
-      set_derived_default VLLM_SM75_SPEC_SYNC_MODE nosync
-      set_derived_default VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH 1
+      set_mode_default ENFORCE_EAGER 0
+      set_mode_default DISABLE_LOG_STATS 1
+      set_mode_default VLLM_SM75_SPEC_SYNC_MODE nosync
+      set_mode_default VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH 1
       ;;
     safe)
-      set_derived_default ENFORCE_EAGER 1
-      set_derived_default VLLM_SM75_SPEC_SYNC_MODE safe
-      set_derived_default VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH 0
+      set_mode_default ENFORCE_EAGER 1
+      set_mode_default DISABLE_LOG_STATS 0
+      set_mode_default VLLM_SM75_SPEC_SYNC_MODE safe
+      set_mode_default VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH 0
       ;;
     *)
       die "MODE must be safe, normal, fast, or aggressive."
