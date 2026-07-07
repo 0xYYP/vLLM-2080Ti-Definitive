@@ -3,6 +3,20 @@
 This changelog tracks the fork release version for vLLM 2080 Ti Definitive
 Edition. It is separate from the upstream vLLM package version.
 
+## v0.1.14 - 2026-07-07
+
+- Merges [PR #78](https://github.com/weicj/vLLM-2080Ti-Definitive/pull/78)
+  from @0xYYP, improving the validated SM75 TurboQuant long-context route with
+  the tested continuation prefix-combine path, tuned decode `BLOCK_KV=2`
+  defaults, reproducible long-context benchmark controls, and launcher/runtime
+  plumbing for the shipped TurboQuant throughput lane.
+- Merges [PR #81](https://github.com/weicj/vLLM-2080Ti-Definitive/pull/81)
+  from @weicj, finalizing the non-interactive launcher override path with
+  explicit `CLI > ENV > PROFILE > default` precedence, `CUDA_VISIBLE_DEVICES`
+  mapping, mode-derived override hygiene, and matching English / Simplified
+  Chinese launcher documentation.
+- Release credit: @0xYYP and @weicj.
+
 ## v0.1.13 - 2026-07-04
 
 - Merges [PR #71](https://github.com/weicj/vLLM-2080Ti-Definitive/pull/71)
