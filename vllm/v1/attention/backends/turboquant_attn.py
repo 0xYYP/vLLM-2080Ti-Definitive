@@ -2102,20 +2102,13 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
             # Reuse cached buffers to avoid per-call allocation (~16MB at 8K).
             alloc_len = math.ceil(cached_len / block_size) * block_size
             buf_shape = (1, Hk, alloc_len, D)
-            if prefix_combine_enabled:
-                # This experiment only needs the dequantized prefix during the
-                # prefix attention call. Use transient buffers so later layer
-                # work can reuse the memory once those references are dropped.
-                k_buf = torch.empty(buf_shape, dtype=torch.float16, device=device)
-                v_buf = torch.empty(buf_shape, dtype=torch.float16, device=device)
-            else:
-                # Use WorkspaceManager for dequant buffers.
-                # Shared across all layers — saves 60× memory at long context.
-                # Required for CUDA Graph capture (per-layer growth incompatible with CG).
-                k_buf, v_buf = current_workspace_manager().get_simultaneous(
-                    (buf_shape, torch.float16),
-                    (buf_shape, torch.float16),
-                )
+            # Keep continuation dequant buffers on WorkspaceManager even for
+            # prefix-combine so long-prefix runs avoid allocator churn and stay
+            # compatible with the shared graph/workspace policy.
+            k_buf, v_buf = current_workspace_manager().get_simultaneous(
+                (buf_shape, torch.float16),
+                (buf_shape, torch.float16),
+            )
             # Skip .zero_() — kernel writes all positions up to cached_len,
             # and we only read [:cached_len] afterwards.
             k_cached = k_buf[:, :, :alloc_len, :]
