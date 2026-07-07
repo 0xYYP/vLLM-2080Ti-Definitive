@@ -317,9 +317,262 @@ ROUTE_PROFILE_KEYS=(
   VLLM_TURBOQUANT_DECODE_BLOCK_KV
 )
 
+NON_INTERACTIVE_CONFIG_KEYS=(
+  MODEL_DIR
+  PROFILE_DIR
+  PROFILE
+  PROFILE_FILE
+  MODE
+  PORT
+  SERVICE_SCOPE
+  GPU_DEVICES
+  TP_SIZE
+  CHAT_TEMPLATE_FILE
+  CHAT_TEMPLATE_PRESET
+  TEMPLATE_DIR
+  REASONING_PARSER
+  DEFAULT_CHAT_TEMPLATE_KWARGS
+  REASONING_MODE
+  REASONING_BUDGET
+  ENABLE_AUTO_TOOL_CHOICE
+  TOOL_CALL_PARSER
+  TOOL_PARSER_PLUGIN
+  ENABLE_PREFIX_CACHING
+  ENABLE_PROMPT_TOKENS_DETAILS
+  DISABLE_PREFIX_CACHING
+  VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH
+  VLLM_ENFORCE_STRICT_TOOL_CALLING
+  MAMBA_CACHE_MODE
+  ENFORCE_EAGER
+  NO_ASYNC_SCHEDULING
+  DISABLE_LOG_STATS
+  VLLM_SM75_SPEC_SYNC_MODE
+  RUNTIME_ROOT
+  LOG_DIR
+  STATE_FILE
+  FLASHQLA_ROOT
+  START_TIMEOUT
+)
+
+NON_INTERACTIVE_BOOLEAN_KEYS=(
+  LANGUAGE_MODEL_ONLY
+  SKIP_MM_PROFILING
+  ENABLE_AUTO_TOOL_CHOICE
+  ENABLE_PREFIX_CACHING
+  ENABLE_PROMPT_TOKENS_DETAILS
+  DISABLE_PREFIX_CACHING
+  VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH
+  VLLM_ENFORCE_STRICT_TOOL_CALLING
+  ENFORCE_EAGER
+  NO_ASYNC_SCHEDULING
+  DISABLE_HYBRID_KV_CACHE_MANAGER
+  DISABLE_CUSTOM_ALL_REDUCE
+  DISABLE_LOG_STATS
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN
+  VLLM_INT8KV_FA_CASCADE_DEQUANT
+  VLLM_INT8KV_FA_CONTINUATION_DEQUANT
+  VLLM_INT8KV_FA_PREFILL
+)
+
+declare -A CONFIG_FLAG_TO_KEY=()
+declare -A CONFIG_KNOWN_KEYS=()
+declare -A CONFIG_BOOLEAN_KEYS=()
+declare -A CONFIG_OVERRIDE_SOURCE=()
+declare -A CONFIG_OVERRIDE_UNSET=()
+CONFIG_REGISTRY_INITIALIZED=0
+
+config_key_to_flag() {
+  local key=${1,,}
+  key=${key//_/-}
+  printf -- '--%s\n' "$key"
+}
+
+normalize_config_key() {
+  local raw=${1#--}
+  local key=${raw//-/_}
+  key=${key^^}
+  [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || die "Invalid config key: $1"
+  printf '%s\n' "$key"
+}
+
+init_config_registry() {
+  [[ "$CONFIG_REGISTRY_INITIALIZED" == "1" ]] && return 0
+
+  local key
+  for key in "${ROUTE_PROFILE_KEYS[@]}" "${NON_INTERACTIVE_CONFIG_KEYS[@]}"; do
+    [[ -n "$key" ]] || continue
+    CONFIG_KNOWN_KEYS["$key"]=1
+    CONFIG_FLAG_TO_KEY["$(config_key_to_flag "$key")"]="$key"
+  done
+  for key in "${NON_INTERACTIVE_BOOLEAN_KEYS[@]}"; do
+    [[ -n "$key" ]] || continue
+    CONFIG_BOOLEAN_KEYS["$key"]=1
+  done
+  CONFIG_REGISTRY_INITIALIZED=1
+}
+
+config_key_has_override() {
+  local key=$1
+  [[ -n "${CONFIG_OVERRIDE_SOURCE[$key]+x}" ]]
+}
+
+config_key_has_explicit_value() {
+  local key=$1
+  [[ -n "${CONFIG_OVERRIDE_SOURCE[$key]+x}" \
+    && "${CONFIG_OVERRIDE_SOURCE[$key]}" != mode \
+    && -z "${CONFIG_OVERRIDE_UNSET[$key]+x}" ]]
+}
+
+config_key_is_boolean() {
+  local key=$1
+  [[ -n "${CONFIG_BOOLEAN_KEYS[$key]+x}" ]]
+}
+
+env_var_is_exported() {
+  printenv "$1" >/dev/null 2>&1
+}
+
+set_config_override() {
+  local key=$1
+  local value=$2
+  local source=${3:-cli}
+
+  printf -v "$key" '%s' "$value"
+  export "$key"
+  CONFIG_OVERRIDE_SOURCE["$key"]="$source"
+  unset "CONFIG_OVERRIDE_UNSET[$key]"
+}
+
+unset_config_override() {
+  local key=$1
+  local source=${2:-cli}
+
+  unset "$key"
+  CONFIG_OVERRIDE_SOURCE["$key"]="$source"
+  CONFIG_OVERRIDE_UNSET["$key"]=1
+}
+
+config_key_from_flag() {
+  local flag=$1
+  local key=${CONFIG_FLAG_TO_KEY[$flag]:-}
+  [[ -n "$key" ]] || return 1
+  printf '%s\n' "$key"
+}
+
+parse_set_assignment() {
+  local assignment=$1
+  local source=${2:-cli}
+  local key value
+
+  [[ "$assignment" == *=* ]] || die "--set expects KEY=VALUE."
+  key=$(normalize_config_key "${assignment%%=*}")
+  value=${assignment#*=}
+  set_config_override "$key" "$value" "$source"
+}
+
+register_env_config_overrides() {
+  init_config_registry
+
+  if ! config_key_has_override GPU_DEVICES && env_var_is_exported CUDA_VISIBLE_DEVICES; then
+    set_config_override GPU_DEVICES "${CUDA_VISIBLE_DEVICES:-}" env
+    if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+      CONFIG_OVERRIDE_UNSET["GPU_DEVICES"]=1
+    fi
+  fi
+
+  local key
+  for key in "${!CONFIG_KNOWN_KEYS[@]}"; do
+    env_var_is_exported "$key" || continue
+    config_key_has_override "$key" && continue
+    CONFIG_OVERRIDE_SOURCE["$key"]=env
+    if [[ -z "${!key:-}" ]]; then
+      CONFIG_OVERRIDE_UNSET["$key"]=1
+    fi
+  done
+}
+
+apply_launcher_path_defaults() {
+  RUNTIME_ROOT=${RUNTIME_ROOT:-"$MANAGER_ROOT"}
+  PROFILE_DIR=${PROFILE_DIR:-"$MANAGER_ROOT/profiles"}
+  LOG_DIR=${LOG_DIR:-"$MANAGER_ROOT/run-logs"}
+
+  if config_key_has_override PROFILE_DIR && ! config_key_has_explicit_value TEMPLATE_DIR; then
+    TEMPLATE_DIR="$PROFILE_DIR/templates"
+  fi
+  TEMPLATE_DIR=${TEMPLATE_DIR:-"$PROFILE_DIR/templates"}
+
+  if config_key_has_override LOG_DIR && ! config_key_has_explicit_value STATE_FILE; then
+    STATE_FILE="$LOG_DIR/start-manager.state"
+  fi
+  STATE_FILE=${STATE_FILE:-"$LOG_DIR/start-manager.state"}
+}
+
+parse_launcher_args() {
+  init_config_registry
+
+  local arg key value
+  while (($#)); do
+    arg=$1
+    shift
+    case "$arg" in
+      --non-interactive)
+        NON_INTERACTIVE=1
+        ;;
+      --print-config)
+        PRINT_CONFIG=1
+        NON_INTERACTIVE=1
+        ;;
+      --set)
+        (($#)) || die "--set expects KEY=VALUE."
+        parse_set_assignment "$1" cli
+        shift
+        NON_INTERACTIVE=1
+        ;;
+      --set=*)
+        parse_set_assignment "${arg#--set=}" cli
+        NON_INTERACTIVE=1
+        ;;
+      --unset)
+        (($#)) || die "--unset expects KEY."
+        key=$(normalize_config_key "$1")
+        unset_config_override "$key" cli
+        shift
+        NON_INTERACTIVE=1
+        ;;
+      --unset=*)
+        key=$(normalize_config_key "${arg#--unset=}")
+        unset_config_override "$key" cli
+        NON_INTERACTIVE=1
+        ;;
+      --*=*)
+        key=$(config_key_from_flag "${arg%%=*}") || die "Unknown option: ${arg%%=*}"
+        value=${arg#*=}
+        set_config_override "$key" "$value" cli
+        NON_INTERACTIVE=1
+        ;;
+      --*)
+        key=$(config_key_from_flag "$arg") || die "Unknown option: $arg"
+        if config_key_is_boolean "$key" && { (($# == 0)) || [[ "${1:-}" == --* ]]; }; then
+          value=1
+        else
+          (($#)) || die "Option $arg expects a value."
+          value=$1
+          shift
+        fi
+        set_config_override "$key" "$value" cli
+        NON_INTERACTIVE=1
+        ;;
+      *)
+        die "Unknown positional argument: $arg"
+        ;;
+    esac
+  done
+}
+
 reset_route_profile_fields() {
   local key
   for key in "${ROUTE_PROFILE_KEYS[@]}"; do
+    config_key_has_override "$key" && continue
     unset "$key"
   done
 }
@@ -349,7 +602,7 @@ source_profile_defaults() {
   while IFS= read -r key; do
     [[ -n "$key" ]] || continue
     profile_key_is_global "$key" && continue
-    if [[ ${!key+x} ]]; then
+    if config_key_has_override "$key" || [[ ${!key+x} ]]; then
       continue
     fi
     value=$(read_profile_value "$file" "$key")
@@ -389,6 +642,7 @@ apply_profile_overrides() {
   while IFS= read -r key; do
     [[ -n "$key" ]] || continue
     profile_key_is_global "$key" && continue
+    config_key_has_override "$key" && continue
     value=$(read_profile_value "$file" "$key")
     printf -v "$key" '%s' "$value"
     export "$key"
@@ -707,6 +961,9 @@ apply_family_reasoning_defaults() {
   # Qwen3/Qwen3.5 tokenizer configs do not always advertise the parser.
   # Keep request thinking defaults template-driven, but make response parsing
   # explicit so thinking text is not returned as normal content.
+  if config_key_has_explicit_value REASONING_PARSER; then
+    return 0
+  fi
   if reasoning_parser_is_disabled; then
     return 0
   fi
@@ -727,6 +984,10 @@ apply_prefix_cache_defaults() {
     return 0
   fi
 
+  if config_key_has_explicit_value MAMBA_CACHE_MODE; then
+    return 0
+  fi
+
   if [[ "$ENABLE_PREFIX_CACHING" == "1" && "$MODEL_FAMILY" == qwen* ]]; then
     MAMBA_CACHE_MODE=${MAMBA_CACHE_MODE:-align}
   elif [[ "${MAMBA_CACHE_MODE:-}" == "align" ]]; then
@@ -737,26 +998,34 @@ apply_prefix_cache_defaults() {
 }
 
 normalize_message_type_defaults() {
-  local stale_text_only_flags=0
-  if [[ "${MESSAGE_TYPE:-}" == "text+image" || -n "${MM_LIMIT_JSON:-}" ]]; then
+  if config_key_has_explicit_value MESSAGE_TYPE; then
+    MESSAGE_TYPE=${MESSAGE_TYPE:-text-only}
+  elif [[ "${MESSAGE_TYPE:-}" == "text+image" || -n "${MM_LIMIT_JSON:-}" || "${LANGUAGE_MODEL_ONLY:-1}" == "0" ]]; then
     MESSAGE_TYPE=text+image
   else
     MESSAGE_TYPE=text-only
   fi
 
   if [[ "$MESSAGE_TYPE" == "text+image" ]]; then
-    [[ "${LANGUAGE_MODEL_ONLY:-0}" == "1" ]] && stale_text_only_flags=1
-    MM_LIMIT_JSON=${MM_LIMIT_JSON:-'{"image":1,"video":0,"audio":0}'}
-    LANGUAGE_MODEL_ONLY=0
-    if (( stale_text_only_flags )); then
-      SKIP_MM_PROFILING=0
-    else
+    if ! config_key_has_explicit_value MM_LIMIT_JSON; then
+      MM_LIMIT_JSON=${MM_LIMIT_JSON:-'{"image":1,"video":0,"audio":0}'}
+    fi
+    if ! config_key_has_explicit_value LANGUAGE_MODEL_ONLY; then
+      LANGUAGE_MODEL_ONLY=0
+    fi
+    if ! config_key_has_explicit_value SKIP_MM_PROFILING; then
       SKIP_MM_PROFILING=$(normalize_bool "${SKIP_MM_PROFILING:-0}")
     fi
   else
-    MM_LIMIT_JSON=""
-    LANGUAGE_MODEL_ONLY=1
-    SKIP_MM_PROFILING=1
+    if ! config_key_has_explicit_value MM_LIMIT_JSON; then
+      MM_LIMIT_JSON=""
+    fi
+    if ! config_key_has_explicit_value LANGUAGE_MODEL_ONLY; then
+      LANGUAGE_MODEL_ONLY=1
+    fi
+    if ! config_key_has_explicit_value SKIP_MM_PROFILING; then
+      SKIP_MM_PROFILING=1
+    fi
   fi
 }
 
@@ -1392,6 +1661,9 @@ Notes:
     enables strict tool-output constraints for automatic tool choice.
   - thinking_token_budget is a per-request chat parameter in this vLLM runtime.
   - text+image requires a checkpoint that actually supports vision inputs.
+  - Use --set KEY=VALUE for advanced envs such as VLLM_* or compiler paths.
+  - Use --unset KEY to clear inherited profile/env values and fall back to
+    launcher defaults; use --set KEY= to force an empty value when allowed.
   - --print-config prints the final launch summary and exits without starting.
 EOF
   echo
@@ -1967,11 +2239,15 @@ edit_advanced_parameters() {
   LANGUAGE_MODEL_ONLY=$(prompt_toggle01 "Language-model only" "${LANGUAGE_MODEL_ONLY:-1}") || return 0
   SKIP_MM_PROFILING=$(prompt_toggle01 "Skip multimodal profiling" "${SKIP_MM_PROFILING:-1}") || return 0
   ENFORCE_EAGER=$(prompt_toggle01 "Enforce eager" "${ENFORCE_EAGER:-0}") || return 0
+  CONFIG_OVERRIDE_SOURCE["ENFORCE_EAGER"]=menu
+  unset 'CONFIG_OVERRIDE_UNSET[ENFORCE_EAGER]'
   NO_ASYNC_SCHEDULING=$(prompt_toggle01 "No async scheduling" "${NO_ASYNC_SCHEDULING:-0}") || return 0
   DISABLE_HYBRID_KV_CACHE_MANAGER=$(prompt_toggle01 "Disable hybrid KV cache manager" "${DISABLE_HYBRID_KV_CACHE_MANAGER:-0}") || return 0
   DISABLE_PREFIX_CACHING=$(prompt_toggle01 "Disable prefix caching" "${DISABLE_PREFIX_CACHING:-0}") || return 0
   DISABLE_CUSTOM_ALL_REDUCE=$(prompt_toggle01 "Disable custom all-reduce" "${DISABLE_CUSTOM_ALL_REDUCE:-0}") || return 0
   DISABLE_LOG_STATS=$(prompt_toggle01 "Disable log stats" "${DISABLE_LOG_STATS:-0}") || return 0
+  CONFIG_OVERRIDE_SOURCE["DISABLE_LOG_STATS"]=menu
+  unset 'CONFIG_OVERRIDE_UNSET[DISABLE_LOG_STATS]'
   normalize_message_type_defaults
 }
 
@@ -2747,31 +3023,53 @@ default_gpu_util() {
   fi
 }
 
+set_derived_default() {
+  local key=$1
+  local value=$2
+  config_key_has_explicit_value "$key" && return 0
+  if [[ -n "${!key+x}" && -n "${!key}" ]]; then
+    return 0
+  fi
+  printf -v "$key" '%s' "$value"
+  export "$key"
+}
+
+set_mode_default() {
+  local key=$1
+  local value=$2
+  config_key_has_explicit_value "$key" && return 0
+  printf -v "$key" '%s' "$value"
+  export "$key"
+  CONFIG_OVERRIDE_SOURCE["$key"]=mode
+  unset "CONFIG_OVERRIDE_UNSET[$key]"
+}
+
 apply_mode() {
   normalize_mode
   case "$MODE" in
     normal)
-      export ENFORCE_EAGER=0
-      export DISABLE_LOG_STATS=1
-      export VLLM_SM75_SPEC_SYNC_MODE=safe
-      export VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=0
+      set_mode_default ENFORCE_EAGER 0
+      set_mode_default DISABLE_LOG_STATS 1
+      set_mode_default VLLM_SM75_SPEC_SYNC_MODE safe
+      set_mode_default VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH 0
       ;;
     fast)
-      export ENFORCE_EAGER=0
-      export DISABLE_LOG_STATS=1
-      export VLLM_SM75_SPEC_SYNC_MODE=safe
-      export VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=1
+      set_mode_default ENFORCE_EAGER 0
+      set_mode_default DISABLE_LOG_STATS 1
+      set_mode_default VLLM_SM75_SPEC_SYNC_MODE safe
+      set_mode_default VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH 1
       ;;
     aggressive)
-      export ENFORCE_EAGER=0
-      export DISABLE_LOG_STATS=1
-      export VLLM_SM75_SPEC_SYNC_MODE=nosync
-      export VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=1
+      set_mode_default ENFORCE_EAGER 0
+      set_mode_default DISABLE_LOG_STATS 1
+      set_mode_default VLLM_SM75_SPEC_SYNC_MODE nosync
+      set_mode_default VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH 1
       ;;
     safe)
-      export ENFORCE_EAGER=1
-      export VLLM_SM75_SPEC_SYNC_MODE=safe
-      export VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH=0
+      set_mode_default ENFORCE_EAGER 1
+      set_mode_default DISABLE_LOG_STATS 0
+      set_mode_default VLLM_SM75_SPEC_SYNC_MODE safe
+      set_mode_default VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH 0
       ;;
     *)
       die "MODE must be safe, normal, fast, or aggressive."
@@ -2909,7 +3207,7 @@ set_sm75_runtime_env() {
   export TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-"$MANAGER_ROOT/torchinductor-cache"}
   export TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-"$MANAGER_ROOT/triton-cache"}
   export PYTHONUNBUFFERED=1
-  if [[ "${ENABLE_AUTO_TOOL_CHOICE:-0}" == "1" ]]; then
+  if [[ "${ENABLE_AUTO_TOOL_CHOICE:-0}" == "1" ]] && ! config_key_has_explicit_value VLLM_ENFORCE_STRICT_TOOL_CALLING; then
     export VLLM_ENFORCE_STRICT_TOOL_CALLING=${VLLM_ENFORCE_STRICT_TOOL_CALLING:-1}
   fi
   if [[ -n "${REASONING_BUDGET:-}" ]]; then
@@ -3672,8 +3970,12 @@ prepare_runtime_defaults() {
   ENABLE_AUTO_TOOL_CHOICE=$(normalize_bool "${ENABLE_AUTO_TOOL_CHOICE:-0}")
   apply_family_reasoning_defaults
   if [[ "$ENABLE_AUTO_TOOL_CHOICE" == "1" ]]; then
-    TOOL_CALL_PARSER=${TOOL_CALL_PARSER:-qwen3_xml}
-    VLLM_ENFORCE_STRICT_TOOL_CALLING=${VLLM_ENFORCE_STRICT_TOOL_CALLING:-1}
+    if ! config_key_has_explicit_value TOOL_CALL_PARSER; then
+      TOOL_CALL_PARSER=${TOOL_CALL_PARSER:-qwen3_xml}
+    fi
+    if ! config_key_has_explicit_value VLLM_ENFORCE_STRICT_TOOL_CALLING; then
+      VLLM_ENFORCE_STRICT_TOOL_CALLING=${VLLM_ENFORCE_STRICT_TOOL_CALLING:-1}
+    fi
   fi
   validate_mode_kv_policy
 }
@@ -3979,10 +4281,6 @@ has_arg() {
 }
 
 run_start_flow() {
-  local profile_file
-  if profile_file=$(resolve_profile_file); then
-    apply_profile_overrides "$profile_file"
-  fi
   collect_config_env
   apply_mode
   set_sm75_runtime_env
@@ -3997,10 +4295,16 @@ run_start_flow() {
 main() {
   cd "$MANAGER_ROOT"
 
-  if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  if has_arg "--help" "$@" || has_arg "-h" "$@"; then
     show_help
     exit 0
   fi
+
+  parse_launcher_args "$@"
+  register_env_config_overrides
+  apply_launcher_path_defaults
+  NON_INTERACTIVE=$(normalize_bool "${NON_INTERACTIVE:-0}")
+  PRINT_CONFIG=$(normalize_bool "${PRINT_CONFIG:-0}")
 
   if [[ ! -x "$RUNTIME_ROOT/.venv/bin/python" ]]; then
     banner
@@ -4009,7 +4313,7 @@ main() {
 
   mkdir -p "$LOG_DIR"
 
-  if [[ "${1:-}" == "--non-interactive" || "${1:-}" == "--print-config" || "${NON_INTERACTIVE:-0}" == "1" || ! -t 0 ]]; then
+  if [[ "${NON_INTERACTIVE:-0}" == "1" || "${PRINT_CONFIG:-0}" == "1" || ! -t 0 ]]; then
     run_start_flow "$@"
   else
     service_manager
