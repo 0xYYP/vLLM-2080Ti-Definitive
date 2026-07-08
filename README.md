@@ -151,6 +151,8 @@ For a source checkout, use two steps.
 
 `build.sh` creates the local `.venv`, installs dependencies, builds the CUDA
 extensions, and prints a clear success or failure result with a build log path.
+Before the install starts, it benchmarks the available PyPI, Git, and PyTorch
+wheel routes and switches to a faster mirror path automatically when needed.
 
 2. Start and manage the service:
 
