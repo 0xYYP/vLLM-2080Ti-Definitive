@@ -94,12 +94,16 @@ detect_memory_gb() {
 select_max_jobs() {
   local threads=$1
   local mem_gb=$2
+  local cap=${3:-}
   local reserve_gb=3
   local per_job_gb=3
   local mem_limited_jobs
 
   mem_limited_jobs=$(( (mem_gb - reserve_gb) / per_job_gb ))
   (( mem_limited_jobs >= 1 )) || mem_limited_jobs=1
+  if [[ -n "$cap" ]]; then
+    (( mem_limited_jobs <= cap )) || mem_limited_jobs=$cap
+  fi
   (( mem_limited_jobs <= threads )) || mem_limited_jobs=$threads
 
   echo "$mem_limited_jobs"
@@ -117,7 +121,7 @@ validate_max_jobs_range() {
 configure_build_parallelism() {
   local answer
 
-  if [[ "$MAX_JOBS_SOURCE" != "auto" ]]; then
+  if [[ "$MAX_JOBS_SOURCE" != auto* ]]; then
     return 0
   fi
   if [[ "${ASSUME_YES:-0}" == "1" || "${YES:-0}" == "1" || ! -t 0 ]]; then
@@ -227,6 +231,7 @@ Expected time:
 Build parallelism:
   CPU threads: $CPU_THREADS
   System memory: ${MEMORY_GB}GB
+  Auto MAX_JOBS cap: $AUTO_MAX_JOBS_CAP
   MAX_JOBS: $MAX_JOBS ($MAX_JOBS_SOURCE)
 
 It will download Python/CUDA dependencies, compile CUDA extensions, and keep
@@ -542,8 +547,8 @@ check_memory_headroom() {
   else
     echo "Preflight: system memory is OK (${mem_gb}GB)."
   fi
-  recommended_jobs=$(select_max_jobs "$CPU_THREADS" "$mem_gb")
-  echo "Preflight: auto build threads would use $recommended_jobs job(s) on this host."
+  recommended_jobs=$(select_max_jobs "$CPU_THREADS" "$mem_gb" "$AUTO_MAX_JOBS_CAP")
+  echo "Preflight: auto build threads would use $recommended_jobs job(s) on this host (auto cap: ${AUTO_MAX_JOBS_CAP})."
 }
 
 check_disk_headroom() {
@@ -1205,6 +1210,10 @@ MEMORY_GB=${MEMORY_GB:-$(detect_memory_gb)}
 if ! is_positive_integer "$MEMORY_GB"; then
   fail "MEMORY_GB must be a positive integer when set explicitly."
 fi
+AUTO_MAX_JOBS_CAP=${BUILD_AUTO_MAX_JOBS_CAP:-8}
+if ! is_positive_integer "$AUTO_MAX_JOBS_CAP"; then
+  fail "BUILD_AUTO_MAX_JOBS_CAP must be a positive integer when set explicitly."
+fi
 if [[ -n "${BUILD_MAX_JOBS:-}" && -n "${MAX_JOBS:-}" && "${BUILD_MAX_JOBS}" != "${MAX_JOBS}" ]]; then
   fail "BUILD_MAX_JOBS and MAX_JOBS must match when both are set."
 fi
@@ -1214,8 +1223,11 @@ if [[ -n "${BUILD_MAX_JOBS:-}" ]]; then
 elif [[ -n "${MAX_JOBS:-}" ]]; then
   MAX_JOBS_SOURCE=env:MAX_JOBS
 else
-  MAX_JOBS=$(select_max_jobs "$CPU_THREADS" "$MEMORY_GB")
-  if (( MAX_JOBS < CPU_THREADS )); then
+  auto_jobs_without_cap=$(select_max_jobs "$CPU_THREADS" "$MEMORY_GB" "$CPU_THREADS")
+  MAX_JOBS=$(select_max_jobs "$CPU_THREADS" "$MEMORY_GB" "$AUTO_MAX_JOBS_CAP")
+  if (( MAX_JOBS < auto_jobs_without_cap )); then
+    MAX_JOBS_SOURCE=auto-cap
+  elif (( MAX_JOBS < CPU_THREADS )); then
     MAX_JOBS_SOURCE=auto-memory
   else
     MAX_JOBS_SOURCE=auto
@@ -1224,6 +1236,7 @@ fi
 validate_max_jobs_range "$MAX_JOBS" "$CPU_THREADS"
 export CPU_THREADS
 export MEMORY_GB
+export AUTO_MAX_JOBS_CAP
 export MAX_JOBS
 export BUILD_MAX_JOBS=${BUILD_MAX_JOBS:-$MAX_JOBS}
 
@@ -1298,6 +1311,7 @@ Build settings:
   UV_TORCH_BACKEND=$UV_TORCH_BACKEND
   CPU_THREADS=$CPU_THREADS
   MEMORY_GB=$MEMORY_GB
+  AUTO_MAX_JOBS_CAP=$AUTO_MAX_JOBS_CAP
   MAX_JOBS=$MAX_JOBS ($MAX_JOBS_SOURCE)
   BUILD_MAX_JOBS=$BUILD_MAX_JOBS
   CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL
