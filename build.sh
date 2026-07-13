@@ -69,6 +69,22 @@ is_positive_integer() {
   [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
 }
 
+validate_torch_release_metadata() {
+  local name version
+
+  [[ "${VALIDATED_TORCH_BACKEND:-}" =~ ^cu[0-9]+$ ]] || \
+    fail "VALIDATED_TORCH_BACKEND must use a CUDA wheel tag such as cu128."
+
+  for name in \
+    VALIDATED_TORCH_VERSION \
+    VALIDATED_TORCHAUDIO_VERSION \
+    VALIDATED_TORCHVISION_VERSION; do
+    version=${!name:-}
+    [[ "$version" == *+"$VALIDATED_TORCH_BACKEND" ]] || \
+      fail "$name must end in +$VALIDATED_TORCH_BACKEND."
+  done
+}
+
 detect_cpu_threads() {
   local threads
   threads=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
@@ -464,8 +480,8 @@ choose_torch_download_index() {
   local selected_mode="official"
   local selected_ms="unknown"
   local probe_tmp
-  local -a probe_jobs=()
-  local item pid mode
+  local -a probe_jobs=() probed_indices=()
+  local item pid mode index seen skip
 
   echo "Preflight: benchmarking PyTorch wheel routes..."
   echo "Preflight: sample timeout is ${BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS}s per Torch probe."
@@ -474,15 +490,28 @@ choose_torch_download_index() {
   fi
 
   probe_tmp=$(mktemp -d)
-  probe_torch_route official "$BUILD_TORCH_OFFICIAL_INDEX" \
-    >"$probe_tmp/official.out" 2>"$probe_tmp/official.err" &
-  probe_jobs+=("$!:official")
-  probe_torch_route foreign "$BUILD_TORCH_FOREIGN_INDEX" \
-    >"$probe_tmp/foreign.out" 2>"$probe_tmp/foreign.err" &
-  probe_jobs+=("$!:foreign")
-  probe_torch_route domestic "$BUILD_TORCH_DOMESTIC_INDEX" \
-    >"$probe_tmp/domestic.out" 2>"$probe_tmp/domestic.err" &
-  probe_jobs+=("$!:domestic")
+  for mode in official foreign domestic; do
+    case "$mode" in
+      official) index=$BUILD_TORCH_OFFICIAL_INDEX ;;
+      foreign) index=$BUILD_TORCH_FOREIGN_INDEX ;;
+      domestic) index=$BUILD_TORCH_DOMESTIC_INDEX ;;
+    esac
+    index=${index%/}
+    skip=0
+    for seen in "${probed_indices[@]}"; do
+      if [[ "$index" == "$seen" ]]; then
+        echo "Preflight: skipping duplicate PyTorch wheel route ($mode): $index"
+        skip=1
+        break
+      fi
+    done
+    (( skip )) && continue
+
+    probe_torch_route "$mode" "$index" \
+      >"$probe_tmp/$mode.out" 2>"$probe_tmp/$mode.err" &
+    probe_jobs+=("$!:$mode")
+    probed_indices+=("$index")
+  done
 
   for item in "${probe_jobs[@]}"; do
     pid=${item%%:*}
@@ -1031,6 +1060,7 @@ install_torch_stack() {
   local primary_torch_index
   local fallback_torch_index
   local pypi_index
+  local REUSE_STEP_HEADER=0
   local timeout_seconds=${BUILD_TORCH_PRIMARY_TIMEOUT_SECONDS:-90}
   local -a package_args=(
     "torch==${VALIDATED_TORCH_VERSION}"
@@ -1044,10 +1074,17 @@ install_torch_stack() {
 
   wheelhouse_dir=$(resolve_torch_wheelhouse_dir)
   if [[ -n "$wheelhouse_dir" ]]; then
-    run_with_progress "Install validated torch CUDA wheels" \
+    print_step_header "Install validated torch CUDA wheels"
+    REUSE_STEP_HEADER=1
+    if run_with_progress_status "Local wheelhouse attempt" \
       env PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_CACHE_DIR="${PIP_CACHE_DIR:-$ROOT/.cache/pip}" \
-      .venv/bin/python -m pip install --no-index --find-links "$wheelhouse_dir" "${package_args[@]}"
-    return 0
+      .venv/bin/python -m pip install --no-deps --no-index --find-links "$wheelhouse_dir" \
+        "${package_args[@]}"; then
+      return 0
+    fi
+
+    echo "Local wheelhouse could not supply the complete validated Torch stack; falling back to network routes."
+    echo "Local wheelhouse could not supply the complete validated Torch stack; falling back to network routes." >> "$LOG"
   fi
 
   primary_torch_index=${BUILD_TORCH_ACTIVE_INDEX:-$BUILD_TORCH_OFFICIAL_INDEX}
@@ -1069,9 +1106,10 @@ install_torch_stack() {
     echo "Fallback wheel index: $fallback_torch_index"
   } >> "$LOG"
 
-  print_step_header "Install validated torch CUDA wheels"
-
-  local REUSE_STEP_HEADER=1
+  if [[ "$REUSE_STEP_HEADER" != "1" ]]; then
+    print_step_header "Install validated torch CUDA wheels"
+    REUSE_STEP_HEADER=1
+  fi
   if run_with_progress_status "Selected torch wheel route attempt" \
     env PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_CACHE_DIR="${PIP_CACHE_DIR:-$ROOT/.cache/pip}" \
     timeout --preserve-status "$timeout_seconds" \
@@ -1234,11 +1272,16 @@ else
   fi
 fi
 validate_max_jobs_range "$MAX_JOBS" "$CPU_THREADS"
+validate_torch_release_metadata
+if [[ -n "${UV_TORCH_BACKEND:-}" && "$UV_TORCH_BACKEND" != "$VALIDATED_TORCH_BACKEND" ]]; then
+  fail "UV_TORCH_BACKEND must match VALIDATED_TORCH_BACKEND ($VALIDATED_TORCH_BACKEND)."
+fi
 export CPU_THREADS
 export MEMORY_GB
 export AUTO_MAX_JOBS_CAP
 export MAX_JOBS
 export BUILD_MAX_JOBS=${BUILD_MAX_JOBS:-$MAX_JOBS}
+export UV_TORCH_BACKEND="$VALIDATED_TORCH_BACKEND"
 
 cd "$ROOT"
 
@@ -1284,7 +1327,6 @@ export CUDA_PATH="$CUDA_HOME"
 export CUDACXX="$CUDA_HOME/bin/nvcc"
 export PATH="$ROOT/.venv/bin:$CUDA_HOME/bin:$PATH"
 export TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-7.5}
-export UV_TORCH_BACKEND=${UV_TORCH_BACKEND:-cu128}
 export CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:-Release}
 export FLASHINFER_ENABLE_AOT=${FLASHINFER_ENABLE_AOT:-1}
 export VLLM_CUTLASS_SRC_DIR=${VLLM_CUTLASS_SRC_DIR:-$CUTLASS_DIR}
@@ -1300,6 +1342,7 @@ Build settings:
   Base vLLM=$BASE_VLLM_VERSION
   Runtime identity=$RUNTIME_IDENTITY
   Validated CUDA=$VALIDATED_CUDA_VERSION
+  Validated torch backend=$VALIDATED_TORCH_BACKEND
   Validated torch=$VALIDATED_TORCH_VERSION
   Validated torchaudio=$VALIDATED_TORCHAUDIO_VERSION
   Validated torchvision=$VALIDATED_TORCHVISION_VERSION
