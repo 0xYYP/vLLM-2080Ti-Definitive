@@ -147,7 +147,8 @@ FP16/default KV 空间。
 ```
 
 `build.sh` 会创建本地 `.venv`、安装依赖、编译 CUDA 扩展，并在结束时明确提示
-成功或失败，同时给出 build log 路径。
+成功或失败，同时给出 build log 路径。真正开始安装前，它还会先对 PyPI、Git、
+PyTorch wheel 下载链路做测速，需要时自动切到更快的镜像路径。
 
 2. 启动并管理服务：
 

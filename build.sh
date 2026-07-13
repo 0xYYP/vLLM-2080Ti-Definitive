@@ -20,6 +20,9 @@ TRITON_KERNELS_DIR=${TRITON_KERNELS_DIR:-"$ROOT/.deps/triton-src"}
 BUILD_PYPI_OFFICIAL_INDEX=${BUILD_PYPI_OFFICIAL_INDEX:-https://pypi.org/simple}
 BUILD_PYPI_FOREIGN_INDEX=${BUILD_PYPI_FOREIGN_INDEX:-https://pypi.python.org/simple}
 BUILD_PYPI_DOMESTIC_INDEX=${BUILD_PYPI_DOMESTIC_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
+BUILD_TORCH_OFFICIAL_INDEX=${BUILD_TORCH_OFFICIAL_INDEX:-https://download.pytorch.org/whl/${VALIDATED_TORCH_BACKEND}}
+BUILD_TORCH_FOREIGN_INDEX=${BUILD_TORCH_FOREIGN_INDEX:-$BUILD_TORCH_OFFICIAL_INDEX}
+BUILD_TORCH_DOMESTIC_INDEX=${BUILD_TORCH_DOMESTIC_INDEX:-https://mirror.sjtu.edu.cn/pytorch-wheels/${VALIDATED_TORCH_BACKEND}}
 BUILD_GIT_FOREIGN_REPO_PREFIX=${BUILD_GIT_FOREIGN_REPO_PREFIX:-https://gh-proxy.com/}
 BUILD_GIT_DOMESTIC_REPO_PREFIX=${BUILD_GIT_DOMESTIC_REPO_PREFIX:-https://ghfast.top/}
 BUILD_GIT_OFFICIAL_PROBE=${BUILD_GIT_OFFICIAL_PROBE:-${FLASHQLA_REPO}/info/refs?service=git-upload-pack}
@@ -30,8 +33,10 @@ BUILD_GIT_DOMESTIC_PROBE=${BUILD_GIT_DOMESTIC_PROBE:-${BUILD_GIT_DOMESTIC_REPO_P
 BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS=${BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS:-${BUILD_PREFLIGHT_TIMEOUT_SECONDS:-5}}
 BUILD_PREFLIGHT_TIMEOUT_SECONDS=${BUILD_PREFLIGHT_TIMEOUT_SECONDS:-$BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS}
 BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS=${BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS:-60}
+BUILD_TORCH_PRIMARY_TIMEOUT_SECONDS=${BUILD_TORCH_PRIMARY_TIMEOUT_SECONDS:-90}
 BUILD_GIT_PRIMARY_TIMEOUT_SECONDS=${BUILD_GIT_PRIMARY_TIMEOUT_SECONDS:-120}
 BUILD_GIT_MIRROR_PREFIXES=${BUILD_GIT_MIRROR_PREFIXES:-https://gh-proxy.com/ https://ghfast.top/}
+DOWNLOAD_MIRROR_CONFIRMATION_DONE=${DOWNLOAD_MIRROR_CONFIRMATION_DONE:-0}
 STEP_INDEX=0
 BUILD_STARTED_AT=$(date +%s)
 VERSION=${VERSION:-$FORK_RELEASE}
@@ -64,6 +69,22 @@ is_positive_integer() {
   [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
 }
 
+validate_torch_release_metadata() {
+  local name version
+
+  [[ "${VALIDATED_TORCH_BACKEND:-}" =~ ^cu[0-9]+$ ]] || \
+    fail "VALIDATED_TORCH_BACKEND must use a CUDA wheel tag such as cu128."
+
+  for name in \
+    VALIDATED_TORCH_VERSION \
+    VALIDATED_TORCHAUDIO_VERSION \
+    VALIDATED_TORCHVISION_VERSION; do
+    version=${!name:-}
+    [[ "$version" == *+"$VALIDATED_TORCH_BACKEND" ]] || \
+      fail "$name must end in +$VALIDATED_TORCH_BACKEND."
+  done
+}
+
 detect_cpu_threads() {
   local threads
   threads=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
@@ -89,12 +110,16 @@ detect_memory_gb() {
 select_max_jobs() {
   local threads=$1
   local mem_gb=$2
+  local cap=${3:-}
   local reserve_gb=3
   local per_job_gb=3
   local mem_limited_jobs
 
   mem_limited_jobs=$(( (mem_gb - reserve_gb) / per_job_gb ))
   (( mem_limited_jobs >= 1 )) || mem_limited_jobs=1
+  if [[ -n "$cap" ]]; then
+    (( mem_limited_jobs <= cap )) || mem_limited_jobs=$cap
+  fi
   (( mem_limited_jobs <= threads )) || mem_limited_jobs=$threads
 
   echo "$mem_limited_jobs"
@@ -112,7 +137,7 @@ validate_max_jobs_range() {
 configure_build_parallelism() {
   local answer
 
-  if [[ "$MAX_JOBS_SOURCE" != "auto" ]]; then
+  if [[ "$MAX_JOBS_SOURCE" != auto* ]]; then
     return 0
   fi
   if [[ "${ASSUME_YES:-0}" == "1" || "${YES:-0}" == "1" || ! -t 0 ]]; then
@@ -222,6 +247,7 @@ Expected time:
 Build parallelism:
   CPU threads: $CPU_THREADS
   System memory: ${MEMORY_GB}GB
+  Auto MAX_JOBS cap: $AUTO_MAX_JOBS_CAP
   MAX_JOBS: $MAX_JOBS ($MAX_JOBS_SOURCE)
 
 It will download Python/CUDA dependencies, compile CUDA extensions, and keep
@@ -277,6 +303,19 @@ prompt_yes_no_timeout() {
   printf '%s\n' "$default_answer"
 }
 
+confirm_non_official_download_route() {
+  local description=$1
+  local answer
+
+  if [[ "${DOWNLOAD_MIRROR_CONFIRMATION_DONE:-0}" == "1" ]]; then
+    return 0
+  fi
+
+  answer=$(prompt_yes_no_timeout "$description Continue with mirror route? [Y/n]:" 10 y)
+  [[ "$answer" != "n" ]] || fail "Build cancelled by user."
+  DOWNLOAD_MIRROR_CONFIRMATION_DONE=1
+}
+
 measure_network_url_ms() {
   local url=$1
   local timeout_seconds=${2:-6}
@@ -308,6 +347,11 @@ pypi_probe_url() {
   fi
 }
 
+torch_probe_url() {
+  local index_url=$1
+  printf '%s/\n' "${index_url%/}"
+}
+
 probe_download_route() {
   local mode=$1
   local pypi_url=$2
@@ -329,6 +373,23 @@ probe_download_route() {
   printf 'Preflight: %-8s route %5sms total  PyPI=%sms  Git=%sms\n' \
     "$mode" "$total_ms" "$pypi_ms" "$git_ms" >&2
   printf '%s\t%s\t%s\t%s\n' "$total_ms" "$mode" "$pypi_ms" "$git_ms"
+}
+
+probe_torch_route() {
+  local mode=$1
+  local torch_index=$2
+  local timeout_seconds=${BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS:-8}
+  local torch_probe
+  local torch_ms
+
+  torch_probe=$(torch_probe_url "$torch_index")
+  if ! torch_ms=$(measure_network_url_ms "$torch_probe" "$timeout_seconds"); then
+    printf 'Preflight: %-8s unavailable at Torch index %s\n' "$mode" "$torch_probe" >&2
+    return 1
+  fi
+
+  printf 'Preflight: %-8s Torch %5sms  %s\n' "$mode" "$torch_ms" "$torch_probe" >&2
+  printf '%s\t%s\n' "$torch_ms" "$mode"
 }
 
 choose_download_mode() {
@@ -398,21 +459,103 @@ choose_download_mode() {
       BUILD_PYPI_ACTIVE_INDEX="$BUILD_PYPI_FOREIGN_INDEX"
       BUILD_GIT_ACTIVE_PREFIX="$BUILD_GIT_FOREIGN_REPO_PREFIX"
       echo "Preflight: selected foreign mirror route (${selected_total}ms sample total; PyPI=${selected_pypi}ms; Git=${selected_git}ms)."
-      local answer
-      answer=$(prompt_yes_no_timeout "Continue with mirror route? [Y/n]:" 10 y)
-      [[ "$answer" != "n" ]] || fail "Build cancelled by user."
+      confirm_non_official_download_route \
+        "Preflight switched PyPI/Git downloads to the foreign mirror route."
       ;;
     domestic)
       BUILD_PYPI_ACTIVE_INDEX="$BUILD_PYPI_DOMESTIC_INDEX"
       BUILD_GIT_ACTIVE_PREFIX="$BUILD_GIT_DOMESTIC_REPO_PREFIX"
       echo "Preflight: selected domestic mirror route (${selected_total}ms sample total; PyPI=${selected_pypi}ms; Git=${selected_git}ms)."
-      local answer
-      answer=$(prompt_yes_no_timeout "Continue with domestic mirror route? [Y/n]:" 10 y)
-      [[ "$answer" != "n" ]] || fail "Build cancelled by user."
+      confirm_non_official_download_route \
+        "Preflight switched PyPI/Git downloads to the domestic mirror route."
       ;;
   esac
 
   export BUILD_PYPI_ACTIVE_INDEX BUILD_GIT_ACTIVE_PREFIX
+}
+
+choose_torch_download_index() {
+  local measurements=()
+  local line selected_line
+  local selected_mode="official"
+  local selected_ms="unknown"
+  local probe_tmp
+  local -a probe_jobs=() probed_indices=()
+  local item pid mode index seen skip
+
+  echo "Preflight: benchmarking PyTorch wheel routes..."
+  echo "Preflight: sample timeout is ${BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS}s per Torch probe."
+  if ! is_positive_integer "$BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS"; then
+    fail "BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS must be a positive integer."
+  fi
+
+  probe_tmp=$(mktemp -d)
+  for mode in official foreign domestic; do
+    case "$mode" in
+      official) index=$BUILD_TORCH_OFFICIAL_INDEX ;;
+      foreign) index=$BUILD_TORCH_FOREIGN_INDEX ;;
+      domestic) index=$BUILD_TORCH_DOMESTIC_INDEX ;;
+    esac
+    index=${index%/}
+    skip=0
+    for seen in "${probed_indices[@]}"; do
+      if [[ "$index" == "$seen" ]]; then
+        echo "Preflight: skipping duplicate PyTorch wheel route ($mode): $index"
+        skip=1
+        break
+      fi
+    done
+    (( skip )) && continue
+
+    probe_torch_route "$mode" "$index" \
+      >"$probe_tmp/$mode.out" 2>"$probe_tmp/$mode.err" &
+    probe_jobs+=("$!:$mode")
+    probed_indices+=("$index")
+  done
+
+  for item in "${probe_jobs[@]}"; do
+    pid=${item%%:*}
+    wait "$pid" || true
+  done
+
+  for mode in official foreign domestic; do
+    [[ ! -s "$probe_tmp/$mode.err" ]] || cat "$probe_tmp/$mode.err" >&2
+    if [[ -s "$probe_tmp/$mode.out" ]]; then
+      line=$(head -n 1 "$probe_tmp/$mode.out")
+      measurements+=("$line")
+    fi
+  done
+
+  rm -rf "$probe_tmp"
+
+  if ((${#measurements[@]} == 0)); then
+    echo "Preflight: PyTorch wheel probes did not return a reachable route; using the official index."
+  else
+    selected_line=$(printf '%s\n' "${measurements[@]}" | sort -n -k1,1 | head -n 1)
+    selected_mode=$(printf '%s\n' "$selected_line" | awk -F '\t' '{print $2}')
+    selected_ms=$(printf '%s\n' "$selected_line" | awk -F '\t' '{print $1}')
+  fi
+
+  case "$selected_mode" in
+    official)
+      BUILD_TORCH_ACTIVE_INDEX="$BUILD_TORCH_OFFICIAL_INDEX"
+      echo "Preflight: selected official PyTorch wheel route (${selected_ms}ms sample)."
+      ;;
+    foreign)
+      BUILD_TORCH_ACTIVE_INDEX="$BUILD_TORCH_FOREIGN_INDEX"
+      echo "Preflight: selected foreign PyTorch wheel route (${selected_ms}ms sample)."
+      confirm_non_official_download_route \
+        "Preflight switched PyTorch wheel downloads to the foreign route."
+      ;;
+    domestic)
+      BUILD_TORCH_ACTIVE_INDEX="$BUILD_TORCH_DOMESTIC_INDEX"
+      echo "Preflight: selected domestic PyTorch wheel route (${selected_ms}ms sample)."
+      confirm_non_official_download_route \
+        "Preflight switched PyTorch wheel downloads to the domestic route."
+      ;;
+  esac
+
+  export BUILD_TORCH_ACTIVE_INDEX BUILD_TORCH_SELECTED_MODE="$selected_mode"
 }
 
 check_cpu_cores() {
@@ -433,8 +576,8 @@ check_memory_headroom() {
   else
     echo "Preflight: system memory is OK (${mem_gb}GB)."
   fi
-  recommended_jobs=$(select_max_jobs "$CPU_THREADS" "$mem_gb")
-  echo "Preflight: auto build threads would use $recommended_jobs job(s) on this host."
+  recommended_jobs=$(select_max_jobs "$CPU_THREADS" "$mem_gb" "$AUTO_MAX_JOBS_CAP")
+  echo "Preflight: auto build threads would use $recommended_jobs job(s) on this host (auto cap: ${AUTO_MAX_JOBS_CAP})."
 }
 
 check_disk_headroom() {
@@ -912,15 +1055,85 @@ fetch_triton_with_fallback() {
   fail "Step failed: Fetch Triton kernels source"
 }
 
-install_torch_from_wheelhouse() {
+install_torch_stack() {
   local wheelhouse_dir
-  wheelhouse_dir=$(resolve_torch_wheelhouse_dir)
-  [[ -n "$wheelhouse_dir" ]] || return 0
+  local primary_torch_index
+  local fallback_torch_index
+  local pypi_index
+  local REUSE_STEP_HEADER=0
+  local timeout_seconds=${BUILD_TORCH_PRIMARY_TIMEOUT_SECONDS:-90}
+  local -a package_args=(
+    "torch==${VALIDATED_TORCH_VERSION}"
+    "torchaudio==${VALIDATED_TORCHAUDIO_VERSION}"
+    "torchvision==${VALIDATED_TORCHVISION_VERSION}"
+  )
 
-  run_with_progress "Install torch from local wheelhouse" \
-    env UV_NO_INDEX=1 UV_FIND_LINKS="$wheelhouse_dir" UV_LINK_MODE=copy \
-    uv pip install --python .venv/bin/python --no-deps --no-index --find-links "$wheelhouse_dir" \
-      "torch==${VALIDATED_TORCH_VERSION}"
+  if ! is_positive_integer "$timeout_seconds"; then
+    fail "BUILD_TORCH_PRIMARY_TIMEOUT_SECONDS must be a positive integer."
+  fi
+
+  wheelhouse_dir=$(resolve_torch_wheelhouse_dir)
+  if [[ -n "$wheelhouse_dir" ]]; then
+    print_step_header "Install validated torch CUDA wheels"
+    REUSE_STEP_HEADER=1
+    if run_with_progress_status "Local wheelhouse attempt" \
+      env PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_CACHE_DIR="${PIP_CACHE_DIR:-$ROOT/.cache/pip}" \
+      .venv/bin/python -m pip install --no-deps --no-index --find-links "$wheelhouse_dir" \
+        "${package_args[@]}"; then
+      return 0
+    fi
+
+    echo "Local wheelhouse could not supply the complete validated Torch stack; falling back to network routes."
+    echo "Local wheelhouse could not supply the complete validated Torch stack; falling back to network routes." >> "$LOG"
+  fi
+
+  primary_torch_index=${BUILD_TORCH_ACTIVE_INDEX:-$BUILD_TORCH_OFFICIAL_INDEX}
+  if [[ "$primary_torch_index" == "$BUILD_TORCH_DOMESTIC_INDEX" ]]; then
+    fallback_torch_index=$BUILD_TORCH_OFFICIAL_INDEX
+  else
+    fallback_torch_index=$BUILD_TORCH_DOMESTIC_INDEX
+  fi
+  pypi_index=${BUILD_PYPI_ACTIVE_INDEX:-$BUILD_PYPI_OFFICIAL_INDEX}
+
+  echo "PyTorch wheel route fallback: enabled"
+  echo "  Selected-route attempt timeout: ${timeout_seconds}s"
+  echo "  Selected wheel index: $primary_torch_index"
+  echo "  Fallback wheel index: $fallback_torch_index"
+  {
+    echo "PyTorch wheel route fallback: enabled"
+    echo "Selected-route attempt timeout: ${timeout_seconds}s"
+    echo "Selected wheel index: $primary_torch_index"
+    echo "Fallback wheel index: $fallback_torch_index"
+  } >> "$LOG"
+
+  if [[ "$REUSE_STEP_HEADER" != "1" ]]; then
+    print_step_header "Install validated torch CUDA wheels"
+    REUSE_STEP_HEADER=1
+  fi
+  if run_with_progress_status "Selected torch wheel route attempt" \
+    env PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_CACHE_DIR="${PIP_CACHE_DIR:-$ROOT/.cache/pip}" \
+    timeout --preserve-status "$timeout_seconds" \
+    .venv/bin/python -m pip install --index-url "$pypi_index" --extra-index-url "$primary_torch_index" \
+      "${package_args[@]}"; then
+    return 0
+  fi
+
+  if [[ "$fallback_torch_index" != "$primary_torch_index" ]]; then
+    echo
+    echo "Selected torch wheel route was too slow or failed; retrying with fallback: $fallback_torch_index"
+    echo "Selected torch wheel route was too slow or failed; retrying with fallback: $fallback_torch_index" >> "$LOG"
+    if run_with_progress_status "Fallback torch wheel route attempt" \
+      env PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_CACHE_DIR="${PIP_CACHE_DIR:-$ROOT/.cache/pip}" \
+      .venv/bin/python -m pip install --index-url "$pypi_index" --extra-index-url "$fallback_torch_index" \
+        "${package_args[@]}"; then
+      return 0
+    fi
+  fi
+
+  echo
+  echo "Last log lines:"
+  tail -n 80 "$LOG" || true
+  fail "Step failed: Install validated torch CUDA wheels"
 }
 
 install_build_frontend_requirements() {
@@ -1014,13 +1227,8 @@ compute_total_steps() {
     total=$((total + 1))
   fi
 
-  if [[ -n "$(resolve_torch_wheelhouse_dir)" ]]; then
-    total=$((total + 1))
-  fi
-
-  total=$((total + 5))  # build frontend + requirement install/revalidation
-  total=$((total + 6))  # FlashQLA/CUTLASS/Triton fetch+install steps
-  total=$((total + 2))  # runtime install + runtime validation
+  total=$((total + 7))  # build frontend + torch stack + requirement install/revalidation
+  total=$((total + 8))  # FlashQLA/CUTLASS/Triton fetch+install + runtime build/validation
 
   printf '%s\n' "$total"
 }
@@ -1040,6 +1248,10 @@ MEMORY_GB=${MEMORY_GB:-$(detect_memory_gb)}
 if ! is_positive_integer "$MEMORY_GB"; then
   fail "MEMORY_GB must be a positive integer when set explicitly."
 fi
+AUTO_MAX_JOBS_CAP=${BUILD_AUTO_MAX_JOBS_CAP:-8}
+if ! is_positive_integer "$AUTO_MAX_JOBS_CAP"; then
+  fail "BUILD_AUTO_MAX_JOBS_CAP must be a positive integer when set explicitly."
+fi
 if [[ -n "${BUILD_MAX_JOBS:-}" && -n "${MAX_JOBS:-}" && "${BUILD_MAX_JOBS}" != "${MAX_JOBS}" ]]; then
   fail "BUILD_MAX_JOBS and MAX_JOBS must match when both are set."
 fi
@@ -1049,18 +1261,27 @@ if [[ -n "${BUILD_MAX_JOBS:-}" ]]; then
 elif [[ -n "${MAX_JOBS:-}" ]]; then
   MAX_JOBS_SOURCE=env:MAX_JOBS
 else
-  MAX_JOBS=$(select_max_jobs "$CPU_THREADS" "$MEMORY_GB")
-  if (( MAX_JOBS < CPU_THREADS )); then
+  auto_jobs_without_cap=$(select_max_jobs "$CPU_THREADS" "$MEMORY_GB" "$CPU_THREADS")
+  MAX_JOBS=$(select_max_jobs "$CPU_THREADS" "$MEMORY_GB" "$AUTO_MAX_JOBS_CAP")
+  if (( MAX_JOBS < auto_jobs_without_cap )); then
+    MAX_JOBS_SOURCE=auto-cap
+  elif (( MAX_JOBS < CPU_THREADS )); then
     MAX_JOBS_SOURCE=auto-memory
   else
     MAX_JOBS_SOURCE=auto
   fi
 fi
 validate_max_jobs_range "$MAX_JOBS" "$CPU_THREADS"
+validate_torch_release_metadata
+if [[ -n "${UV_TORCH_BACKEND:-}" && "$UV_TORCH_BACKEND" != "$VALIDATED_TORCH_BACKEND" ]]; then
+  fail "UV_TORCH_BACKEND must match VALIDATED_TORCH_BACKEND ($VALIDATED_TORCH_BACKEND)."
+fi
 export CPU_THREADS
 export MEMORY_GB
+export AUTO_MAX_JOBS_CAP
 export MAX_JOBS
 export BUILD_MAX_JOBS=${BUILD_MAX_JOBS:-$MAX_JOBS}
+export UV_TORCH_BACKEND="$VALIDATED_TORCH_BACKEND"
 
 cd "$ROOT"
 
@@ -1091,6 +1312,7 @@ fi
 validate_cuda_dev_files
 reset_stale_fetchcontent_subbuilds
 choose_download_mode
+choose_torch_download_index
 confirm_install
 
 if ! command -v uv >/dev/null 2>&1; then
@@ -1105,7 +1327,6 @@ export CUDA_PATH="$CUDA_HOME"
 export CUDACXX="$CUDA_HOME/bin/nvcc"
 export PATH="$ROOT/.venv/bin:$CUDA_HOME/bin:$PATH"
 export TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-7.5}
-export UV_TORCH_BACKEND=${UV_TORCH_BACKEND:-cu128}
 export CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:-Release}
 export FLASHINFER_ENABLE_AOT=${FLASHINFER_ENABLE_AOT:-1}
 export VLLM_CUTLASS_SRC_DIR=${VLLM_CUTLASS_SRC_DIR:-$CUTLASS_DIR}
@@ -1121,7 +1342,10 @@ Build settings:
   Base vLLM=$BASE_VLLM_VERSION
   Runtime identity=$RUNTIME_IDENTITY
   Validated CUDA=$VALIDATED_CUDA_VERSION
+  Validated torch backend=$VALIDATED_TORCH_BACKEND
   Validated torch=$VALIDATED_TORCH_VERSION
+  Validated torchaudio=$VALIDATED_TORCHAUDIO_VERSION
+  Validated torchvision=$VALIDATED_TORCHVISION_VERSION
   Reference NVIDIA driver=$VALIDATED_NVIDIA_DRIVER_VERSION
   FlashQLA repo=$FLASHQLA_REPO
   FlashQLA dir=$FLASHQLA_DIR
@@ -1130,6 +1354,7 @@ Build settings:
   UV_TORCH_BACKEND=$UV_TORCH_BACKEND
   CPU_THREADS=$CPU_THREADS
   MEMORY_GB=$MEMORY_GB
+  AUTO_MAX_JOBS_CAP=$AUTO_MAX_JOBS_CAP
   MAX_JOBS=$MAX_JOBS ($MAX_JOBS_SOURCE)
   BUILD_MAX_JOBS=$BUILD_MAX_JOBS
   CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL
@@ -1140,6 +1365,8 @@ Build settings:
   Python package mirror index=${BUILD_PYPI_MIRROR_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
   Network preflight sample timeout=${BUILD_PREFLIGHT_SAMPLE_TIMEOUT_SECONDS}s per URL probe
   Python package selected-route attempt timeout=${BUILD_PYPI_PRIMARY_TIMEOUT_SECONDS}s
+  PyTorch wheel selected-route attempt timeout=${BUILD_TORCH_PRIMARY_TIMEOUT_SECONDS}s
+  PyTorch wheel selected index=${BUILD_TORCH_ACTIVE_INDEX:-$BUILD_TORCH_OFFICIAL_INDEX}
   Python package wheelhouse=${BUILD_WHEELHOUSE_DIR:-auto:/data/wheelhouse/cu128}
   Git selected-route attempt timeout=${BUILD_GIT_PRIMARY_TIMEOUT_SECONDS}s
   Git mirror prefixes=${BUILD_GIT_MIRROR_PREFIXES:-none}
@@ -1172,10 +1399,9 @@ if [[ ! -x .venv/bin/python ]]; then
   fail ".venv/bin/python was not created."
 fi
 
-install_torch_from_wheelhouse
-
 install_build_frontend_requirements
 run_with_progress "Validate build frontend tools" ensure_build_frontend_tools
+install_torch_stack
 
 [[ -f requirements/build/cuda.txt ]] || fail "Missing requirements/build/cuda.txt. Re-sync the repository before building."
 run_uv_pip_with_mirror_fallback "Install CUDA build requirements" install --python .venv/bin/python -r requirements/build/cuda.txt
