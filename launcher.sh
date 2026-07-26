@@ -3219,12 +3219,19 @@ set_sm75_runtime_env() {
 
 build_args() {
   local host_arg=$1
+  local model_dir_alias
+  local served_model_names=("$SERVED_NAME")
+
+  model_dir_alias=$(basename -- "$MODEL_DIR")
+  if [[ -n "$model_dir_alias" && "$model_dir_alias" != "$SERVED_NAME" ]]; then
+    served_model_names+=("$model_dir_alias")
+  fi
 
   VLLM_ARGS=(
     --host "$host_arg"
     --port "$PORT"
     --model "$MODEL_DIR"
-    --served-model-name "$SERVED_NAME"
+    --served-model-name "${served_model_names[@]}"
     --dtype half
     --tensor-parallel-size "${TP_SIZE:-2}"
     --generation-config vllm
