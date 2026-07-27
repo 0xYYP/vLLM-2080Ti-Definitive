@@ -3,6 +3,7 @@
 """Inference-only Qwen3-Next/Qwen3.5 model."""
 
 import os
+
 import torch
 from einops import rearrange
 from torch import nn
