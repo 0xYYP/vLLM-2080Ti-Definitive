@@ -26,6 +26,7 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 )
 from vllm.platforms import current_platform
 from vllm.platforms.interface import DeviceCapability
+from vllm.sm75_attention_trace import sm75_attention_trace
 from vllm.utils.math_utils import next_power_of_2
 from vllm.utils.torch_utils import async_tensor_h2d, is_quantized_kv_cache
 from vllm.v1.attention.backend import (
@@ -45,6 +46,11 @@ from vllm.v1.attention.ops.triton_reshape_and_cache_flash import (
     triton_reshape_and_cache_flash_per_token_head_quant,
 )
 from vllm.v1.attention.ops.triton_unified_attention import unified_attention
+from vllm.v1.attention.sm75_attention_planner import SM75AttentionPlanner
+from vllm.v1.attention.sm75_attention_planner_types import (
+    Int8KVRoute,
+    Int8KVRouteInput,
+)
 from vllm.v1.kv_cache_interface import (
     AttentionSpec,
     get_kv_quant_mode,
@@ -1220,7 +1226,6 @@ class TritonAttentionImpl(AttentionImpl):
             return False
 
         global _INT8KV_FA_PREFILL_USED, _INT8KV_FA_PREFILL_DEBUG_LOGGED
-        skip_reason = None
         q_lens_cpu = attn_metadata.query_start_loc_cpu
         q_lens_cpu = q_lens_cpu[1:] - q_lens_cpu[:-1]
         num_computed_tokens_cpu = attn_metadata.num_computed_tokens_cpu
@@ -1246,79 +1251,92 @@ class TritonAttentionImpl(AttentionImpl):
                 )
             except Exception as e:
                 logger.info("INT8 KV FlashInfer prefill debug failed: %s", e)
-        if self.kv_cache_dtype != "int8_per_token_head":
-            skip_reason = "not_int8_per_token_head"
-        elif self.attn_type != AttentionType.DECODER:
-            skip_reason = "not_decoder_attention"
-        elif self.alibi_slopes is not None:
-            skip_reason = "alibi"
-        elif self.sinks is not None:
-            skip_reason = "attention_sinks"
-        elif self.sliding_window != (-1, -1):
-            skip_reason = "sliding_window"
-        elif self.logits_soft_cap not in (None, 0.0):
-            skip_reason = "logits_soft_cap"
-        elif query.dtype != torch.float16 or key.dtype != torch.float16 or value.dtype != torch.float16:
-            skip_reason = "non_fp16_qkv"
-        elif num_computed_tokens_cpu is None:
-            skip_reason = "missing_num_computed_tokens"
-
-        if skip_reason is not None:
-            if skip_reason not in _INT8KV_FA_PREFILL_SKIP_LOGGED:
-                _INT8KV_FA_PREFILL_SKIP_LOGGED.add(skip_reason)
-                logger.info("INT8 KV FlashInfer prefill skipped reason=%s", skip_reason)
-            return False
-
         indptr_cpu = attn_metadata.query_start_loc_cpu.to(torch.int32)
         q_seq_lens = indptr_cpu[1:] - indptr_cpu[:-1]
-        is_first_chunk = bool((num_computed_tokens_cpu == 0).all().item())
-        use_continuation_bridge = False
-        use_cascade_bridge = False
-        force_first_chunk_dequant = False
+        request_count = q_seq_lens.numel()
+        query_len = int(attn_metadata.max_query_len)
         seq_len = int(attn_metadata.max_seq_len)
-        if is_first_chunk and _INT8KV_FA_FIRST_CHUNK_DEQUANT:
-            if q_seq_lens.numel() != 1:
-                skip_reason = "first_chunk_batch_not_1"
-            elif attn_metadata.seq_lens_cpu is not None:
+        has_sequence_len = attn_metadata.seq_lens_cpu is not None
+        if request_count == 1:
+            query_len = int(q_seq_lens[0].item())
+            if has_sequence_len:
                 seq_len = int(attn_metadata.seq_lens_cpu[0].item())
-                use_continuation_bridge = True
-                force_first_chunk_dequant = True
-            else:
-                use_continuation_bridge = True
-                force_first_chunk_dequant = True
-        elif not is_first_chunk:
-            if not _INT8KV_FA_CONTINUATION_DEQUANT:
-                skip_reason = "prefix_or_cached_kv"
-            elif q_seq_lens.numel() != 1:
-                skip_reason = "continuation_batch_not_1"
-            elif int(q_seq_lens[0].item()) < _INT8KV_FA_CONTINUATION_MIN_Q:
-                skip_reason = "continuation_q_too_small"
-            elif attn_metadata.seq_lens_cpu is None:
-                skip_reason = "continuation_missing_seq_lens_cpu"
-            else:
-                seq_len = int(attn_metadata.seq_lens_cpu[0].item())
-                if seq_len > _INT8KV_FA_CONTINUATION_MAX_TOKENS:
-                    if _INT8KV_FA_CASCADE_DEQUANT:
-                        use_cascade_bridge = True
-                    else:
-                        skip_reason = "continuation_too_long"
-                else:
-                    use_continuation_bridge = True
-                if use_cascade_bridge:
-                    use_continuation_bridge = True
-
-        if skip_reason is not None:
+        first_chunk = (
+            num_computed_tokens_cpu is not None
+            and bool((num_computed_tokens_cpu == 0).all().item())
+        )
+        plan = SM75AttentionPlanner.plan_int8kv_route(
+            Int8KVRouteInput(
+                enabled=_INT8KV_FA_PREFILL,
+                per_token_head=self._is_per_token_head_quant,
+                kv_cache_dtype=self.kv_cache_dtype,
+                decoder_attention=self.attn_type == AttentionType.DECODER,
+                has_alibi=self.alibi_slopes is not None,
+                has_sinks=self.sinks is not None,
+                has_sliding_window=self.sliding_window != (-1, -1),
+                has_logits_soft_cap=self.logits_soft_cap not in (None, 0.0),
+                qkv_fp16=(
+                    query.dtype == torch.float16
+                    and key.dtype == torch.float16
+                    and value.dtype == torch.float16
+                ),
+                has_computed_tokens=num_computed_tokens_cpu is not None,
+                has_sequence_len=has_sequence_len,
+                request_count=request_count,
+                query_len=query_len,
+                sequence_len=seq_len,
+                computed_tokens=0 if first_chunk else 1,
+                first_chunk_dequant=_INT8KV_FA_FIRST_CHUNK_DEQUANT,
+                continuation_dequant=_INT8KV_FA_CONTINUATION_DEQUANT,
+                continuation_min_query=_INT8KV_FA_CONTINUATION_MIN_Q,
+                continuation_max_tokens=_INT8KV_FA_CONTINUATION_MAX_TOKENS,
+                cascade_dequant=_INT8KV_FA_CASCADE_DEQUANT,
+                direct_paged=_INT8KV_FA_DIRECT_PAGED,
+                ragged_enabled=_INT8KV_FA_RAGGED_PREFILL,
+            )
+        )
+        sm75_attention_trace(
+            "int8kv_prefill_route",
+            route=plan.route.value,
+            reason=plan.reason,
+            first_chunk=first_chunk,
+            request_count=request_count,
+            query_len=query_len,
+            sequence_len=seq_len,
+            computed_tokens=0 if first_chunk else 1,
+            first_chunk_dequant=_INT8KV_FA_FIRST_CHUNK_DEQUANT,
+            continuation_dequant=_INT8KV_FA_CONTINUATION_DEQUANT,
+            cascade_dequant=_INT8KV_FA_CASCADE_DEQUANT,
+            direct_paged=_INT8KV_FA_DIRECT_PAGED,
+            ragged_enabled=_INT8KV_FA_RAGGED_PREFILL,
+            kv_cache_dtype=self.kv_cache_dtype,
+            direct_paged_attempt=plan.direct_paged_attempt,
+            force_first_chunk_dequant=plan.force_first_chunk_dequant,
+            has_sequence_len=has_sequence_len,
+        )
+        skip_reason = plan.reason
+        if plan.route is Int8KVRoute.DISABLED and not plan.direct_paged_attempt:
+            assert skip_reason is not None
             if skip_reason not in _INT8KV_FA_PREFILL_SKIP_LOGGED:
                 _INT8KV_FA_PREFILL_SKIP_LOGGED.add(skip_reason)
                 logger.info("INT8 KV FlashInfer prefill skipped reason=%s", skip_reason)
             return False
+
+        use_continuation_bridge = plan.route in (
+            Int8KVRoute.CONTINUATION,
+            Int8KVRoute.CASCADE,
+        )
+        use_cascade_bridge = plan.route is Int8KVRoute.CASCADE
+        force_first_chunk_dequant = plan.force_first_chunk_dequant
 
         q_prefill = query[:num_actual_tokens]
         if not q_prefill.is_contiguous():
             q_prefill = q_prefill.contiguous()
 
-        if not use_continuation_bridge:
-            if self._try_int8kv_direct_paged_prefill(
+        if (
+            plan.direct_paged_attempt
+            and not use_continuation_bridge
+            and self._try_int8kv_direct_paged_prefill(
                 q_prefill,
                 kv_cache,
                 output,
@@ -1328,22 +1346,34 @@ class TritonAttentionImpl(AttentionImpl):
                 seq_len,
                 output_scale,
                 output_block_scale,
-            ):
-                return True
+            )
+        ):
+            return True
+
+        if plan.route is Int8KVRoute.DISABLED:
+            assert skip_reason is not None
+            if skip_reason not in _INT8KV_FA_PREFILL_SKIP_LOGGED:
+                _INT8KV_FA_PREFILL_SKIP_LOGGED.add(skip_reason)
+                logger.info("INT8 KV FlashInfer prefill skipped reason=%s", skip_reason)
+            return False
 
         if use_cascade_bridge:
             self._ensure_scale_caches(kv_cache)
             key_cache, value_cache = kv_cache.unbind(1)
-            if not force_first_chunk_dequant and self._try_int8kv_direct_paged_prefill(
-                q_prefill,
-                kv_cache,
-                output,
-                attn_metadata,
-                num_actual_tokens,
-                q_seq_lens,
-                seq_len,
-                output_scale,
-                output_block_scale,
+            if (
+                plan.direct_paged_attempt
+                and not force_first_chunk_dequant
+                and self._try_int8kv_direct_paged_prefill(
+                    q_prefill,
+                    kv_cache,
+                    output,
+                    attn_metadata,
+                    num_actual_tokens,
+                    q_seq_lens,
+                    seq_len,
+                    output_scale,
+                    output_block_scale,
+                )
             ):
                 return True
             out = self._run_int8kv_cascade_flashinfer_prefill(
@@ -1387,16 +1417,20 @@ class TritonAttentionImpl(AttentionImpl):
         kv_indptr_cpu = indptr_cpu
         max_sequence_kv = attn_metadata.max_seq_len
         if use_continuation_bridge:
-            if not force_first_chunk_dequant and self._try_int8kv_direct_paged_prefill(
-                q_prefill,
-                kv_cache,
-                output,
-                attn_metadata,
-                num_actual_tokens,
-                q_seq_lens,
-                seq_len,
-                output_scale,
-                output_block_scale,
+            if (
+                plan.direct_paged_attempt
+                and not force_first_chunk_dequant
+                and self._try_int8kv_direct_paged_prefill(
+                    q_prefill,
+                    kv_cache,
+                    output,
+                    attn_metadata,
+                    num_actual_tokens,
+                    q_seq_lens,
+                    seq_len,
+                    output_scale,
+                    output_block_scale,
+                )
             ):
                 return True
             kv_indptr_cpu = torch.tensor(

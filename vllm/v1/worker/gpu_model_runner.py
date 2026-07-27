@@ -107,6 +107,7 @@ from vllm.platforms import current_platform
 from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingType
 from vllm.sequence import IntermediateTensors
+from vllm.sm75_attention_trace import sm75_attention_trace
 from vllm.tasks import GenerationTask, PoolingTask, SupportedTask
 from vllm.tracing import instrument
 from vllm.utils import length_from_prompt_token_ids_or_embeds
@@ -135,6 +136,8 @@ from vllm.v1.attention.backends.utils import (
     get_dcp_local_seq_lens,
     reorder_batch_to_split_decodes_and_prefills,
 )
+from vllm.v1.attention.sm75_attention_planner import SM75AttentionPlanner
+from vllm.v1.attention.sm75_attention_planner_types import SpecSyncMode
 from vllm.v1.core.sched.output import NewRequestData
 from vllm.v1.cudagraph_dispatcher import CudagraphDispatcher
 from vllm.v1.kv_cache_interface import (
@@ -429,9 +432,12 @@ class GPUModelRunner(
         )
         sync_mode = envs.VLLM_SM75_SPEC_SYNC_MODE
         cache_dtype = str(cache_config.cache_dtype).lower()
-        self.sm75_spec_syncs_enabled = sync_mode == "safe" or (
-            sync_mode == "auto" and cache_dtype.startswith("turboquant_")
+        spec_sync_plan = SM75AttentionPlanner.plan_spec_sync(
+            SpecSyncMode(sync_mode), cache_dtype
         )
+        self.sm75_spec_syncs_enabled = spec_sync_plan.enabled
+        self.sm75_spec_sync_mode = sync_mode
+        self.sm75_spec_sync_is_turboquant = cache_dtype.startswith("turboquant_")
 
         self.is_pooling_model = model_config.runner_type == "pooling"
         self.enable_prompt_embeds = model_config.enable_prompt_embeds
@@ -2006,6 +2012,13 @@ class GPUModelRunner(
                 self.sm75_spec_syncs_enabled
                 and self.valid_sampled_token_count_copy_stream is not None
             ):
+                sm75_attention_trace(
+                    "spec_sync",
+                    mode=self.sm75_spec_sync_mode,
+                    is_turboquant=self.sm75_spec_sync_is_turboquant,
+                    enabled=self.sm75_spec_syncs_enabled,
+                    sync_point="copy_stream_wait",
+                )
                 torch.cuda.current_stream().wait_stream(
                     self.valid_sampled_token_count_copy_stream
                 )
@@ -2048,6 +2061,13 @@ class GPUModelRunner(
         if self.sm75_spec_syncs_enabled:
             # TurboQuant hybrid runs can otherwise race compute_slot_mapping
             # against non-blocking GPU copies and trip later attention kernels.
+            sm75_attention_trace(
+                "spec_sync",
+                mode=self.sm75_spec_sync_mode,
+                is_turboquant=self.sm75_spec_sync_is_turboquant,
+                enabled=self.sm75_spec_syncs_enabled,
+                sync_point="current_stream_synchronize",
+            )
             torch.cuda.current_stream().synchronize()
         self.input_batch.block_table.compute_slot_mapping(
             num_reqs,

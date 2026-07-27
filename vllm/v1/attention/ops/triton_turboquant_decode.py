@@ -15,6 +15,10 @@ from typing import Any
 import torch
 
 from vllm.platforms import current_platform
+from vllm.sm75_attention_trace import (
+    sm75_attention_trace,
+    sm75_attention_trace_enabled,
+)
 from vllm.triton_utils import tl, triton
 from vllm.v1.attention.ops.triton_decode_attention import (
     _fwd_kernel_stage2,
@@ -616,6 +620,22 @@ def triton_turboquant_decode_attention(
     fp8_format = _fp8_format_code(device.index or 0)
     BLOCK_KV = _DECODE_BLOCK_KV
     grid = (B, Hq, NUM_KV_SPLITS)
+    if sm75_attention_trace_enabled():
+        sm75_attention_trace(
+            "turboquant_decode_kernel_launch",
+            block_kv=BLOCK_KV,
+            block_size=block_size,
+            decision="kernel_launch",
+            enabled=True,
+            head_dim=D,
+            key_fp8=key_fp8,
+            key_format=_fp8_format_name(device.index or 0) if key_fp8 else "mse",
+            kv_heads=Hk,
+            kv_splits=NUM_KV_SPLITS,
+            reason="selected",
+            route="triton_split_kv",
+            sliding_window=sliding_window,
+        )
     _tq_decode_stage1[grid](
         q_rot,
         kv_cache,

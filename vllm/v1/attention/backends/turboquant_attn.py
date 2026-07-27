@@ -21,11 +21,11 @@ import math
 import os
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
-from packaging.version import Version
 from typing import Any, ClassVar
 
 import torch
 import torch.nn.functional as F
+from packaging.version import Version
 
 import vllm.envs as envs
 from vllm.config import get_current_vllm_config
@@ -35,6 +35,7 @@ from vllm.model_executor.layers.quantization.turboquant.centroids import (
     get_centroids,
 )
 from vllm.platforms import current_platform
+from vllm.sm75_attention_trace import sm75_attention_trace
 from vllm.triton_utils import tl, triton
 from vllm.v1.attention.backend import (
     AttentionBackend,
@@ -52,18 +53,30 @@ from vllm.v1.attention.backends.fa_utils import (
     is_flash_attn_varlen_func_available,
 )
 from vllm.v1.attention.backends.utils import split_decodes_and_prefills
+from vllm.v1.attention.ops.merge_attn_states import merge_attn_states
+from vllm.v1.attention.ops.triton_turboquant_decode import (
+    _fp8_format_code,
+    _fp8_format_name,
+    _tq_full_dequant_kv,
+    triton_turboquant_decode_attention,
+)
+from vllm.v1.attention.ops.triton_turboquant_store import triton_turboquant_store
+from vllm.v1.attention.sm75_attention_planner import SM75AttentionPlanner
+from vllm.v1.attention.sm75_attention_planner_types import (
+    TQContinuationInput,
+    TQCUDAGraphInput,
+    TQDecodeInput,
+    TQDecodePlan,
+    TQDecodeRoute,
+    TQFlashInferInput,
+    TQPrefillCapabilityInput,
+    TQPrefillStage,
+    TQPrefixCombineMode,
+)
 from vllm.v1.worker.workspace import (
     current_workspace_manager,
     is_workspace_manager_initialized,
 )
-from vllm.v1.attention.ops.triton_turboquant_decode import (
-    _tq_full_dequant_kv,
-    _fp8_format_code,
-    _fp8_format_name,
-    triton_turboquant_decode_attention,
-)
-from vllm.v1.attention.ops.merge_attn_states import merge_attn_states
-from vllm.v1.attention.ops.triton_turboquant_store import triton_turboquant_store
 
 _HAS_FLASH_ATTN = is_flash_attn_varlen_func_available()
 if _HAS_FLASH_ATTN:
@@ -121,14 +134,6 @@ _TQ_CONTINUATION_PREFIX_COMBINE_MIN_TOKENS = max(
     0,
     int(os.getenv("VLLM_TURBOQUANT_CONTINUATION_PREFIX_COMBINE_MIN_TOKENS", "20480")),
 )
-
-
-def _tq_continuation_prefix_combine_enabled(seq_len: int) -> bool:
-    if _TQ_CONTINUATION_PREFIX_COMBINE_MODE == "on":
-        return True
-    if _TQ_CONTINUATION_PREFIX_COMBINE_MODE == "auto":
-        return seq_len >= _TQ_CONTINUATION_PREFIX_COMBINE_MIN_TOKENS
-    return False
 
 
 def _normalize_turboquant_flashinfer_backend(value: str) -> str:
@@ -499,17 +504,33 @@ class TurboQuantMetadataBuilder(AttentionMetadataBuilder[TurboQuantMetadata]):
         self, common_attn_metadata: CommonAttentionMetadata
     ) -> TurboQuantMetadata:
         attn_metadata = self.build(0, common_attn_metadata)
-        if (
-            _TQ_CUDAGRAPH_SPEC_DECODE_SAFE
-            and 1 < attn_metadata.max_query_len <= _CONTINUATION_DECODE_THRESHOLD
-        ):
+        plan = SM75AttentionPlanner.plan_tq_cudagraph(
+            TQCUDAGraphInput(
+                spec_decode_safe=_TQ_CUDAGRAPH_SPEC_DECODE_SAFE,
+                max_query_len=attn_metadata.max_query_len,
+                continuation_threshold=_CONTINUATION_DECODE_THRESHOLD,
+            )
+        )
+        sm75_attention_trace(
+            "turboquant_cudagraph_capture",
+            decision="cudagraph_capture",
+            enabled=plan.force_spec_decode,
+            max_query_len=attn_metadata.max_query_len,
+            reason=(
+                "speculative_capture"
+                if plan.force_spec_decode
+                else "single_token_capture"
+            ),
+            route="speculative" if plan.force_spec_decode else "decode",
+        )
+        if plan.force_spec_decode:
             attn_metadata.force_spec_decode = True
-            attn_metadata.seq_lens.fill_(attn_metadata.max_query_len)
-            attn_metadata.seq_lens_cpu.fill_(attn_metadata.max_query_len)
+            attn_metadata.seq_lens.fill_(plan.capture_seq_len)
+            attn_metadata.seq_lens_cpu.fill_(plan.capture_seq_len)
             return attn_metadata
         # Set seq_lens to 1 so CUDA graph capture is fast
         # (real seq_lens are filled at replay time).
-        attn_metadata.seq_lens.fill_(1)
+        attn_metadata.seq_lens.fill_(plan.capture_seq_len)
         return attn_metadata
 
     def build(self, common_prefix_len, common_attn_metadata, fast_build=False):
@@ -614,6 +635,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         self._shared_draft_sdpa_notice_logged = False
         self._shared_fp16_decode_workspace = None
         self._shared_fp16_decode_wrappers: dict[tuple[Any, ...], Any] = {}
+        self._decode_route_plans: dict[tuple[bool, bool], TQDecodePlan] = {}
         capability = current_platform.get_device_capability()
         self._sm75_tq_prefill_guard = (
             capability is not None
@@ -625,12 +647,24 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
             and head_size < _SM75_TQ_FI_PREFILL_MIN_HEAD_DIM
         )
         self._sm75_skip_flashinfer_prefill = sm75_skip_flashinfer_prefill
-        self._use_flashinfer_prefill = (
-            _DEFAULT_TQ_FI_PREFILL
-            and
-            BatchPrefillWithRaggedKVCacheWrapper is not None
-            and current_platform.is_cuda()
-            and not sm75_skip_flashinfer_prefill
+        prefill_capability = SM75AttentionPlanner.plan_tq_prefill_capability(
+            TQPrefillCapabilityInput(
+                requested=_DEFAULT_TQ_FI_PREFILL,
+                wrapper_available=BatchPrefillWithRaggedKVCacheWrapper is not None,
+                is_cuda=current_platform.is_cuda(),
+                is_sm75=self._sm75_tq_prefill_guard,
+                head_size=head_size,
+                sm75_min_head_size=_SM75_TQ_FI_PREFILL_MIN_HEAD_DIM,
+            )
+        )
+        self._use_flashinfer_prefill = prefill_capability.enabled
+        sm75_attention_trace(
+            "turboquant_prefill_capability",
+            decision="prefill_capability",
+            enabled=prefill_capability.enabled,
+            head_size=head_size,
+            is_sm75=self._sm75_tq_prefill_guard,
+            reason=prefill_capability.reason,
         )
         # Detect flash-attn version (FA2/3/4) for prefill paths.
         self.fa_version = (
@@ -865,18 +899,46 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         return indptr
 
     def _use_flashinfer_for_first_chunk(self, query_len: int) -> bool:
-        if not self._use_flashinfer_prefill:
-            return False
-        if not self._sm75_tq_prefill_guard:
-            return True
-        return query_len >= _SM75_TQ_FI_PREFILL_MIN_QUERY_LEN
+        plan = SM75AttentionPlanner.plan_tq_flashinfer_stage(
+            TQFlashInferInput(
+                available=self._use_flashinfer_prefill,
+                is_sm75=self._sm75_tq_prefill_guard,
+                query_len=query_len,
+                first_chunk_min_query=_SM75_TQ_FI_PREFILL_MIN_QUERY_LEN,
+                continuation_min_query=_SM75_TQ_FI_CONTINUATION_MIN_QUERY_LEN,
+            ),
+            TQPrefillStage.FIRST_CHUNK,
+        )
+        sm75_attention_trace(
+            "turboquant_prefill_route",
+            decision="flashinfer_threshold",
+            enabled=plan.enabled,
+            query_len=query_len,
+            reason=plan.reason,
+            route="first_chunk",
+        )
+        return plan.enabled
 
     def _use_flashinfer_for_continuation(self, query_len: int) -> bool:
-        if not self._use_flashinfer_prefill:
-            return False
-        if not self._sm75_tq_prefill_guard:
-            return True
-        return query_len >= _SM75_TQ_FI_CONTINUATION_MIN_QUERY_LEN
+        plan = SM75AttentionPlanner.plan_tq_flashinfer_stage(
+            TQFlashInferInput(
+                available=self._use_flashinfer_prefill,
+                is_sm75=self._sm75_tq_prefill_guard,
+                query_len=query_len,
+                first_chunk_min_query=_SM75_TQ_FI_PREFILL_MIN_QUERY_LEN,
+                continuation_min_query=_SM75_TQ_FI_CONTINUATION_MIN_QUERY_LEN,
+            ),
+            TQPrefillStage.CONTINUATION,
+        )
+        sm75_attention_trace(
+            "turboquant_prefill_route",
+            decision="flashinfer_threshold",
+            enabled=plan.enabled,
+            query_len=query_len,
+            reason=plan.reason,
+            route="continuation",
+        )
+        return plan.enabled
 
     def _shared_fp16_decode_flashinfer(
         self,
@@ -1174,12 +1236,28 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         # num_decodes/num_decode_tokens from metadata give the split point.
         num_decodes = attn_metadata.num_decodes
         num_decode_tokens = attn_metadata.num_decode_tokens
-        use_decode_sdpa = self._use_decode_sdpa_fallback()
         use_shared_draft_decode_sdpa = self._use_shared_draft_decode_sdpa_fallback(
             layer
         )
+        decode_plan = self._plan_decode_route(
+            speculative=False,
+            shared_draft_fallback=use_shared_draft_decode_sdpa,
+        )
+        use_decode_sdpa = decode_plan.route is TQDecodeRoute.SDPA
         if attn_metadata.force_spec_decode:
-            if _TQ_FORCE_DECODE_SDPA:
+            spec_decode_plan = self._plan_decode_route(
+                speculative=True,
+                shared_draft_fallback=use_shared_draft_decode_sdpa,
+            )
+            sm75_attention_trace(
+                "turboquant_decode_route",
+                decision="decode_fallback",
+                enabled=spec_decode_plan.route is TQDecodeRoute.SDPA,
+                reason=spec_decode_plan.reason,
+                route=spec_decode_plan.route.value,
+                speculative=True,
+            )
+            if spec_decode_plan.route is TQDecodeRoute.SDPA:
                 k = key[:N].view(N, self.num_kv_heads, self.head_size)
                 v = value[:N].view(N, self.num_kv_heads, self.head_size)
                 attn_out = self._spec_decode_attention_sdpa_fallback(
@@ -1216,7 +1294,15 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
 
         if not attn_metadata.is_prefill:
             # Pure decode batch — fast path
-            if use_decode_sdpa or use_shared_draft_decode_sdpa:
+            sm75_attention_trace(
+                "turboquant_decode_route",
+                decision="decode_fallback",
+                enabled=decode_plan.route is TQDecodeRoute.SDPA,
+                reason=decode_plan.reason,
+                route=decode_plan.route.value,
+                speculative=False,
+            )
+            if decode_plan.route is TQDecodeRoute.SDPA:
                 k = key[:N].view(N, self.num_kv_heads, self.head_size)
                 v = value[:N].view(N, self.num_kv_heads, self.head_size)
                 attn_out = self._decode_attention_sdpa_fallback(
@@ -1246,22 +1332,57 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
             # prefill while split_decodes_and_prefills classifies every request
             # as decode. There is no prefill tail in that case.
             if _TQ_CUDAGRAPH_SPEC_DECODE_SAFE and attn_metadata.max_query_len > 1:
-                attn_out = self._spec_decode_attention(
-                    q,
-                    kv_cache,
-                    attn_metadata,
-                    Pi,
-                    centroids,
-                    PiT,
-                    layer,
+                spec_decode_plan = self._plan_decode_route(
+                    speculative=True,
+                    shared_draft_fallback=use_shared_draft_decode_sdpa,
                 )
-            elif use_decode_sdpa or use_shared_draft_decode_sdpa:
+                sm75_attention_trace(
+                    "turboquant_decode_route",
+                    decision="decode_fallback",
+                    enabled=spec_decode_plan.route is TQDecodeRoute.SDPA,
+                    reason=spec_decode_plan.reason,
+                    route=spec_decode_plan.route.value,
+                    speculative=True,
+                )
+                if spec_decode_plan.route is TQDecodeRoute.SDPA:
+                    k = key[:N].view(N, self.num_kv_heads, self.head_size)
+                    v = value[:N].view(N, self.num_kv_heads, self.head_size)
+                    attn_out = self._spec_decode_attention_sdpa_fallback(
+                        q, k, v, kv_cache, attn_metadata, Pi, centroids, layer
+                    )
+                else:
+                    attn_out = self._spec_decode_attention(
+                        q,
+                        kv_cache,
+                        attn_metadata,
+                        Pi,
+                        centroids,
+                        PiT,
+                        layer,
+                    )
+            elif decode_plan.route is TQDecodeRoute.SDPA:
+                sm75_attention_trace(
+                    "turboquant_decode_route",
+                    decision="decode_fallback",
+                    enabled=True,
+                    reason=decode_plan.reason,
+                    route=decode_plan.route.value,
+                    speculative=False,
+                )
                 k = key[:N].view(N, self.num_kv_heads, self.head_size)
                 v = value[:N].view(N, self.num_kv_heads, self.head_size)
                 attn_out = self._decode_attention_sdpa_fallback(
                     q, k, v, kv_cache, attn_metadata, Pi, centroids, layer
                 )
             else:
+                sm75_attention_trace(
+                    "turboquant_decode_route",
+                    decision="decode_fallback",
+                    enabled=False,
+                    reason=decode_plan.reason,
+                    route=decode_plan.route.value,
+                    speculative=False,
+                )
                 attn_out = self._decode_attention(
                     q, kv_cache, attn_metadata, Pi, centroids, PiT, layer
                 )
@@ -1297,6 +1418,18 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                 is_prefill=False,
             )
             if decode_meta.max_query_len > 1:
+                spec_decode_plan = self._plan_decode_route(
+                    speculative=True,
+                    shared_draft_fallback=use_shared_draft_decode_sdpa,
+                )
+                sm75_attention_trace(
+                    "turboquant_decode_route",
+                    decision="decode_fallback",
+                    enabled=spec_decode_plan.route is TQDecodeRoute.SDPA,
+                    reason=spec_decode_plan.reason,
+                    route=spec_decode_plan.route.value,
+                    speculative=True,
+                )
                 if _TQ_DEBUG_MIXED:
                     logger.warning(
                         "TurboQuant mixed decode spec-path: num_decode_tokens=%s "
@@ -1305,7 +1438,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                         num_decodes,
                         decode_meta.max_query_len,
                     )
-                if _TQ_FORCE_DECODE_SDPA:
+                if spec_decode_plan.route is TQDecodeRoute.SDPA:
                     k_dec = key[:num_decode_tokens].view(
                         num_decode_tokens, self.num_kv_heads, self.head_size
                     )
@@ -1334,7 +1467,15 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                         PiT,
                         layer,
                     )
-            elif use_decode_sdpa or use_shared_draft_decode_sdpa:
+            elif decode_plan.route is TQDecodeRoute.SDPA:
+                sm75_attention_trace(
+                    "turboquant_decode_route",
+                    decision="decode_fallback",
+                    enabled=True,
+                    reason=decode_plan.reason,
+                    route=decode_plan.route.value,
+                    speculative=False,
+                )
                 k_dec = key[:num_decode_tokens].view(
                     num_decode_tokens, self.num_kv_heads, self.head_size
                 )
@@ -1352,6 +1493,14 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                     layer,
                 )
             else:
+                sm75_attention_trace(
+                    "turboquant_decode_route",
+                    decision="decode_fallback",
+                    enabled=False,
+                    reason=decode_plan.reason,
+                    route=decode_plan.route.value,
+                    speculative=False,
+                )
                 attn_out[:num_decode_tokens] = self._decode_attention(
                     q[:num_decode_tokens],
                     kv_cache,
@@ -2018,13 +2167,31 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         q_len, Hq, D = query.shape
         Hk = key_chunk.shape[1]
         device = query.device
-        prefix_combine_enabled = (
-            _tq_continuation_prefix_combine_enabled(seq_len)
-            and not force_sdpa
-            and kv_cache.dim() != 5
-            and cached_len > 0
-            and self._prefill_sliding_window <= 0
-            and self._use_flashinfer_for_continuation(q_len)
+        continuation_plan = SM75AttentionPlanner.plan_tq_continuation(
+            TQContinuationInput(
+                prefix_combine_mode=TQPrefixCombineMode(
+                    _TQ_CONTINUATION_PREFIX_COMBINE_MODE
+                ),
+                prefix_combine_min_tokens=_TQ_CONTINUATION_PREFIX_COMBINE_MIN_TOKENS,
+                sequence_len=seq_len,
+                force_sdpa=force_sdpa,
+                kv_cache_dim=kv_cache.dim(),
+                cached_len=cached_len,
+                sliding_window=self._prefill_sliding_window,
+                flashinfer_continuation=self._use_flashinfer_for_continuation(q_len),
+            )
+        )
+        prefix_combine_enabled = continuation_plan.prefix_combine
+        sm75_attention_trace(
+            "turboquant_continuation_route",
+            cached_len=cached_len,
+            decision="prefix_combine",
+            enabled=prefix_combine_enabled,
+            kv_cache_dim=kv_cache.dim(),
+            reason="enabled" if prefix_combine_enabled else "predicate_not_met",
+            route="prefix_combine" if prefix_combine_enabled else "continuation",
+            sequence_len=seq_len,
+            workspace=continuation_plan.workspace.value,
         )
         if kv_cache.dim() == 5:
             triton_out = self._shared_fp16_decode_triton(
@@ -2553,11 +2720,34 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         return shared_target is not None
 
     def _use_decode_sdpa_fallback(self) -> bool:
-        if _TQ_FORCE_DECODE_SDPA:
-            return True
-        if _GEMMA4_TQ_DECODE_D256_SDPA_FALLBACK and self.head_size >= 256:
-            return True
-        return _GEMMA4_TQ_DECODE_D512_SDPA_FALLBACK and self.head_size >= 512
+        plan = self._plan_decode_route(
+            speculative=False,
+            shared_draft_fallback=False,
+        )
+        return plan.route is TQDecodeRoute.SDPA
+
+    def _plan_decode_route(
+        self,
+        *,
+        speculative: bool,
+        shared_draft_fallback: bool,
+    ) -> TQDecodePlan:
+        cache_key = (speculative, shared_draft_fallback)
+        plan = self._decode_route_plans.get(cache_key)
+        if plan is not None:
+            return plan
+        plan = SM75AttentionPlanner.plan_tq_decode(
+            TQDecodeInput(
+                force_sdpa=_TQ_FORCE_DECODE_SDPA,
+                speculative=speculative,
+                head_size=self.head_size,
+                d256_fallback=_GEMMA4_TQ_DECODE_D256_SDPA_FALLBACK,
+                d512_fallback=_GEMMA4_TQ_DECODE_D512_SDPA_FALLBACK,
+                shared_draft_fallback=shared_draft_fallback,
+            )
+        )
+        self._decode_route_plans[cache_key] = plan
+        return plan
 
     def _decode_attention_sdpa_fallback(
         self,
