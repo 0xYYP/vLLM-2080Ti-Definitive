@@ -379,6 +379,7 @@ declare -A CONFIG_KNOWN_KEYS=()
 declare -A CONFIG_BOOLEAN_KEYS=()
 declare -A CONFIG_OVERRIDE_SOURCE=()
 declare -A CONFIG_OVERRIDE_UNSET=()
+declare -A CONFIG_PROFILE_SOURCE=()
 CONFIG_REGISTRY_INITIALIZED=0
 
 config_key_to_flag() {
@@ -421,6 +422,19 @@ config_key_has_explicit_value() {
   [[ -n "${CONFIG_OVERRIDE_SOURCE[$key]+x}" \
     && "${CONFIG_OVERRIDE_SOURCE[$key]}" != mode \
     && -z "${CONFIG_OVERRIDE_UNSET[$key]+x}" ]]
+}
+
+resolved_config_source() {
+  local key=$1
+  local fallback=$2
+
+  if config_key_has_explicit_value "$key"; then
+    printf '%s\n' "${CONFIG_OVERRIDE_SOURCE[$key]}"
+  elif [[ -n "${CONFIG_PROFILE_SOURCE[$key]+x}" ]]; then
+    printf 'profile\n'
+  else
+    printf '%s\n' "$fallback"
+  fi
 }
 
 config_key_is_boolean() {
@@ -572,6 +586,7 @@ parse_launcher_args() {
 reset_route_profile_fields() {
   local key
   for key in "${ROUTE_PROFILE_KEYS[@]}"; do
+    unset "CONFIG_PROFILE_SOURCE[$key]"
     config_key_has_override "$key" && continue
     unset "$key"
   done
@@ -646,11 +661,13 @@ apply_profile_overrides() {
     value=$(read_profile_value "$file" "$key")
     printf -v "$key" '%s' "$value"
     export "$key"
+    CONFIG_PROFILE_SOURCE["$key"]=1
   done < <(sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$file" | sort -u)
 }
 
 resolve_profile_file() {
   if [[ -n "${PROFILE_FILE:-}" ]]; then
+    [[ -f "$PROFILE_FILE" ]] || return 1
     printf '%s\n' "$PROFILE_FILE"
     return 0
   fi
@@ -666,6 +683,41 @@ resolve_profile_file() {
     return 0
   fi
   return 1
+}
+
+profile_has_key() {
+  local file=$1
+  local key=$2
+  sed -nE "/^${key}=/p" "$file" | grep -q .
+}
+
+canonicalize_compilation_config_json() {
+  local raw=$1
+  local canonical
+
+  canonical=$("$RUNTIME_ROOT/.venv/bin/python" -c '
+import json
+import sys
+
+value = json.loads(sys.argv[1])
+if not isinstance(value, dict):
+    raise SystemExit(1)
+print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+' "$raw" 2>/dev/null) || die "COMPILATION_CONFIG_JSON must be a non-empty JSON object."
+  COMPILATION_CONFIG_JSON=$canonical
+}
+
+validate_compilation_config_json() {
+  local profile_file=${1:-}
+
+  if config_key_has_explicit_value COMPILATION_CONFIG_JSON ||
+    [[ -n "${CONFIG_PROFILE_SOURCE[COMPILATION_CONFIG_JSON]+x}" ]] || {
+      config_key_has_override COMPILATION_CONFIG_JSON &&
+        [[ "${CONFIG_OVERRIDE_SOURCE[COMPILATION_CONFIG_JSON]}" == env ]]
+    }; then
+    [[ -n "${COMPILATION_CONFIG_JSON:-}" ]] || die "COMPILATION_CONFIG_JSON must be a non-empty JSON object."
+    canonicalize_compilation_config_json "$COMPILATION_CONFIG_JSON"
+  fi
 }
 
 load_manager_state() {
@@ -1092,6 +1144,41 @@ gpu_device_count() {
     [[ -n "$part" ]] && count=$((count + 1))
   done
   echo "$count"
+}
+
+validate_gpu_devices() {
+  local raw=$1
+  local part normalized=""
+  local -A seen=()
+
+  [[ -n "$raw" ]] || die "GPU_DEVICES must be a non-empty comma-separated list of unique non-negative decimal integers."
+  [[ "$raw" != ,* && "$raw" != *, && "$raw" != *,,* ]] || die "GPU_DEVICES must be a non-empty comma-separated list of unique non-negative decimal integers."
+  IFS=',' read -r -a parts <<< "$raw"
+  for part in "${parts[@]}"; do
+    part=${part#"${part%%[![:space:]]*}"}
+    part=${part%"${part##*[![:space:]]}"}
+    [[ "$part" =~ ^[0-9]+$ ]] || die "GPU_DEVICES must be a non-empty comma-separated list of unique non-negative decimal integers."
+    while [[ "${#part}" -gt 1 && "${part:0:1}" == "0" ]]; do
+      part=${part:1}
+    done
+    [[ -z "${seen[$part]+x}" ]] || die "GPU_DEVICES must be a non-empty comma-separated list of unique non-negative decimal integers."
+    seen["$part"]=1
+    normalized+="${normalized:+,}$part"
+  done
+  GPU_DEVICES=$normalized
+}
+
+validate_resolved_gpu_devices_and_tp_size() {
+  local tp_size_is_set=$1
+  local gpu_count
+
+  validate_gpu_devices "$GPU_DEVICES"
+  gpu_count=$(gpu_device_count "$GPU_DEVICES")
+  if [[ "$tp_size_is_set" == "0" ]]; then
+    TP_SIZE=$gpu_count
+    return 0
+  fi
+  [[ "${TP_SIZE:-}" =~ ^[1-9][0-9]*$ && "$TP_SIZE" == "$gpu_count" ]] || die "TP_SIZE must be a positive decimal integer equal to GPU_DEVICES count ($gpu_count)."
 }
 
 list_nvidia_gpus() {
@@ -3949,6 +4036,8 @@ check_checkpoint_mmap_policy() {
 }
 
 prepare_runtime_defaults() {
+  local tp_size_is_set=0
+
   if [[ -z "${MODEL_DIR:-}" ]]; then
     echo "ERROR: MODEL_DIR is required. Choose item 1 first." >&2
     return 1
@@ -3960,8 +4049,11 @@ prepare_runtime_defaults() {
   MODEL_FAMILY=${MODEL_FAMILY:-$(guess_model_family "$MODEL_DIR")}
   SERVED_NAME=${SERVED_NAME:-$(basename "$MODEL_DIR")}
   TEMPLATE_DIR=${TEMPLATE_DIR:-"$PROFILE_DIR/templates"}
-  GPU_DEVICES=${GPU_DEVICES:-$(detect_default_gpu_devices)}
-  TP_SIZE=${TP_SIZE:-$(gpu_device_count "$GPU_DEVICES")}
+  [[ -n "${TP_SIZE+x}" ]] && tp_size_is_set=1
+  if [[ -z "${GPU_DEVICES+x}" ]]; then
+    GPU_DEVICES=$(detect_default_gpu_devices)
+  fi
+  validate_resolved_gpu_devices_and_tp_size "$tp_size_is_set"
   QUANTIZATION=${QUANTIZATION:-$(guess_quantization "$MODEL_DIR")}
   MAX_MODEL_LEN=${MAX_MODEL_LEN:-$(default_context_tokens)}
   GPU_UTIL=${GPU_UTIL:-$(default_gpu_util)}
@@ -3991,7 +4083,12 @@ collect_config_env() {
   local profile_file
   if profile_file=$(resolve_profile_file); then
     apply_profile_overrides "$profile_file"
+  elif [[ -n "${PROFILE_FILE:-}" ]]; then
+    die "Explicit PROFILE_FILE does not exist: $PROFILE_FILE"
+  elif [[ -n "${PROFILE:-}" ]]; then
+    die "Explicit PROFILE was not found: $PROFILE"
   fi
+  validate_compilation_config_json "${profile_file:-}"
   prepare_runtime_defaults || die "Invalid runtime configuration."
 }
 
@@ -4288,12 +4385,34 @@ has_arg() {
 }
 
 run_start_flow() {
+  local host_arg args_text compilation_config_arg index max_model_len_source compilation_config_source
   collect_config_env
   apply_mode
   set_sm75_runtime_env
   START_TIMEOUT=${START_TIMEOUT:-900}
   print_review
   if [[ "${PRINT_CONFIG:-0}" == "1" ]] || has_arg "--print-config" "$@"; then
+    host_arg=127.0.0.1
+    [[ "$SERVICE_SCOPE" == "lan" ]] && host_arg=0.0.0.0
+    build_args "$host_arg"
+    printf -v args_text '%q ' "${VLLM_ARGS[@]}"
+    for ((index = 0; index < ${#VLLM_ARGS[@]}; index++)); do
+      if [[ "${VLLM_ARGS[$index]}" == "--compilation-config" ]]; then
+        compilation_config_arg=${VLLM_ARGS[$((index + 1))]}
+        break
+      fi
+    done
+    max_model_len_source=$(resolved_config_source MAX_MODEL_LEN default)
+    compilation_config_source=$(resolved_config_source COMPILATION_CONFIG_JSON generated)
+    printf 'final_vllm_argv=%s\n' "$args_text"
+    printf 'resolved_max_model_len=%s\n' "$MAX_MODEL_LEN"
+    printf 'resolved_max_model_len_source=%s\n' "$max_model_len_source"
+    printf 'resolved_tp_size=%s\n' "$TP_SIZE"
+    printf 'resolved_tp_size_source=%s\n' "$(resolved_config_source TP_SIZE derived)"
+    printf 'resolved_gpu_devices=%s\n' "$GPU_DEVICES"
+    printf 'resolved_gpu_devices_source=%s\n' "$(resolved_config_source GPU_DEVICES default)"
+    printf 'resolved_compilation_config_json=%s\n' "$compilation_config_arg"
+    printf 'resolved_compilation_config_json_source=%s\n' "$compilation_config_source"
     return 0
   fi
   launch_server
@@ -4327,4 +4446,6 @@ main() {
   fi
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

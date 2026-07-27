@@ -27,6 +27,8 @@ route 验证。
 `--unset KEY` 会清掉继承自 profile 或环境变量的值，然后回落到更低优先级的
 launcher 默认层。如果你需要保留“显式空字符串”而不是回落默认值，使用
 `--set KEY=`。
+例如，`--unset COMPILATION_CONFIG_JSON` 会选择 generated compilation config，而不会把
+已经清掉的值当成非法的显式 JSON 输入。
 
 ## 常见示例
 
@@ -106,3 +108,27 @@ profile 加载后，launcher 仍会对部分字段做规范化：
 
 调整脚本或部署自动化时，优先先跑 `--print-config`。它会打印最终生效的启动摘要，
 并在真正启动 vLLM 前退出，是确认每个覆写项是否真正落到最终配置上的最稳妥方式。
+
+## 机器可读的解析契约
+
+`--print-config` 会为影响最终启动的值输出 `resolved_<key>=<value>` 和
+`resolved_<key>_source=<source>` 字段。source 只会是 `cli`、`env`、`profile`、
+`default`、`generated` 或 `derived`。值仍遵守 `CLI > ENV > PROFILE > default`；
+`generated` 或 `derived` 只会补齐上述层级没有提供的值。
+
+`COMPILATION_CONFIG_JSON` 是边界值，不是可任意拼接的 launcher 文本。它必须是
+JSON object。launcher 会在启动 server 前拒绝 malformed JSON、array、scalar 以及显式
+empty 值。合法 object 会以 canonical JSON 形式输出，因此语义相同的输入有稳定的
+机器可读输出。显式选择却不存在的 missing profile 是错误，绝不会静默回退到 default。
+
+`GPU_DEVICES` 只接受以逗号分隔的 numeric、non-negative GPU ID 列表。numeric 项目两侧
+的空白会被规范化。empty 输入或 empty 项、duplicate ID、UUID 值以及 MIG 值都会被拒绝。
+UUID 和 MIG 设备选择有意不属于这份 numeric CPU contract。
+
+未提供 `TP_SIZE` 时，launcher 会根据已解析 GPU ID 的数量 derived 出 TP。显式提供时，
+`TP_SIZE` 必须是等于该数量的 positive integer。resolved 字段会标明 TP 是显式提供还是
+derived。
+
+`final_vllm_argv` 是经 shell 转义、完成全部规范化后原本将传给 vLLM 的最终 argument
+vector。`--print-config` 会输出它；该命令不启动 service、不发送 network request、不执行
+model download，也不进行 GPU probing。

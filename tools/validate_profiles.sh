@@ -24,6 +24,35 @@ read_profile_value() {
   ' "$file"
 }
 
+profile_has_key() {
+  local file=$1
+  local key=$2
+  sed -nE "/^${key}=/p" "$file" | grep -q .
+}
+
+validate_compilation_config_json() {
+  local file=$1
+  local rel=$2
+  local value
+
+  profile_has_key "$file" COMPILATION_CONFIG_JSON || return 0
+  value=$(read_profile_value "$file" COMPILATION_CONFIG_JSON)
+  if [[ -z "$value" ]]; then
+    echo "ERROR $rel: COMPILATION_CONFIG_JSON must be a non-empty JSON object" >&2
+    return 1
+  fi
+  if ! python3 -c '
+import json
+import sys
+
+if not isinstance(json.loads(sys.argv[1]), dict):
+    raise SystemExit(1)
+' "$value" >/dev/null 2>&1; then
+    echo "ERROR $rel: COMPILATION_CONFIG_JSON must be a JSON object" >&2
+    return 1
+  fi
+}
+
 profile_key_is_global() {
   case "$1" in
     MODEL_DIR|PROFILE_DIR|PROFILE|PORT|SERVICE_SCOPE|GPU_DEVICES|TP_SIZE|\
@@ -45,7 +74,7 @@ QUANTIZATION|KV_CACHE_DTYPE|MAX_MODEL_LEN|KV_CACHE_MEMORY_BYTES|GPU_UTIL|\
 MAX_BATCHED_TOKENS|\
 MAX_NUM_SEQS|MTP_K|MESSAGE_TYPE|MM_LIMIT_JSON|LANGUAGE_MODEL_ONLY|\
 SKIP_MM_PROFILING|HF_OVERRIDES_JSON|ADDITIONAL_CONFIG_JSON|\
-SPECULATIVE_CONFIG|ATTENTION_BACKEND|DISABLE_HYBRID_KV_CACHE_MANAGER|\
+SPECULATIVE_CONFIG|COMPILATION_CONFIG_JSON|ATTENTION_BACKEND|DISABLE_HYBRID_KV_CACHE_MANAGER|\
 DISABLE_CUSTOM_ALL_REDUCE|\
 VLLM_ALLOW_LONG_MAX_MODEL_LEN|VLLM_INT8KV_FA_PREFILL|\
 VLLM_INT8KV_FA_CONTINUATION_DEQUANT|VLLM_INT8KV_FA_CASCADE_DEQUANT|\
@@ -75,6 +104,10 @@ while IFS= read -r -d '' file; do
 
   if [[ -n "$mode" ]]; then
     echo "ERROR $rel: MODE should not be pinned inside a profile; use COMPATIBLE_MODES or launcher MODE" >&2
+    ((errors += 1))
+  fi
+
+  if ! validate_compilation_config_json "$file" "$rel"; then
     ((errors += 1))
   fi
 

@@ -28,6 +28,8 @@ surface, use:
 `--unset KEY` clears inherited profile or environment values and then lets the
 launcher fall back to lower-priority defaults. If you need to keep an explicit
 empty string instead of falling back, use `--set KEY=`.
+For example, `--unset COMPILATION_CONFIG_JSON` selects the generated compilation
+config instead of treating the cleared value as an invalid explicit JSON value.
 
 ## Common Examples
 
@@ -110,3 +112,31 @@ Those defaults only fill missing values. Explicit CLI values keep priority.
 Use `--print-config` first when changing scripts or deployment automation. It
 prints the final launch summary and exits before starting vLLM, which makes it
 the safest way to verify that every override landed on the final config.
+
+## Machine-Readable Resolution Contract
+
+`--print-config` emits `resolved_<key>=<value>` and
+`resolved_<key>_source=<source>` fields for values that affect the final launch.
+The source is one of `cli`, `env`, `profile`, `default`, `generated`, or
+`derived`. The values continue to follow `CLI > ENV > PROFILE > default`; a
+generated or derived value fills a value that was not supplied by those layers.
+
+`COMPILATION_CONFIG_JSON` is a boundary value, not free-form launcher text. It
+must be a JSON object. The launcher rejects malformed JSON, arrays, scalars, and
+an explicit empty value before a server starts. A valid object is emitted in
+canonical JSON form, so semantically identical input has stable machine-readable
+output. An explicitly selected missing profile is an error and never falls back
+silently to defaults.
+
+`GPU_DEVICES` accepts a comma-separated list of numeric, non-negative GPU IDs.
+Whitespace around numeric items is normalized. Empty input or empty items,
+duplicate IDs, UUID values, and MIG values are rejected. UUID and MIG device
+selection is intentionally outside this numeric CPU contract.
+
+When `TP_SIZE` is omitted, it is derived from the number of resolved GPU IDs.
+When supplied, `TP_SIZE` must be a positive integer equal to that count. The
+resolved fields identify whether TP was supplied or derived.
+
+`final_vllm_argv` is the shell-escaped final argument vector that would be sent
+to vLLM after all normalization. It is emitted by `--print-config`; no service,
+network request, model download, or GPU probing is performed by that command.
