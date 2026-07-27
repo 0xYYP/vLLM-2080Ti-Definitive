@@ -45,6 +45,8 @@ if TYPE_CHECKING:
     NO_COLOR: bool = False
     VLLM_LOG_STATS_INTERVAL: float = 10.0
     VLLM_TRACE_FUNCTION: int = 0
+    VLLM_SM75_ATTENTION_TRACE: bool = False
+    VLLM_SM75_ATTENTION_TRACE_MAX_EVENTS: int = 64
     VLLM_USE_FLASHINFER_SAMPLER: bool = True
     VLLM_SM75_SPEC_SYNC_MODE: Literal["auto", "safe", "nosync"] = "auto"
     VLLM_INT8KV_FA_PREFILL: bool = False
@@ -754,6 +756,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # If set to 1, vllm will trace function calls
     # Useful for debugging
     "VLLM_TRACE_FUNCTION": lambda: int(os.getenv("VLLM_TRACE_FUNCTION", "0")),
+    # Bounded route-level tracing for the fork-specific SM75 attention paths.
+    "VLLM_SM75_ATTENTION_TRACE": lambda: bool(
+        int(os.getenv("VLLM_SM75_ATTENTION_TRACE", "0"))
+    ),
+    "VLLM_SM75_ATTENTION_TRACE_MAX_EVENTS": lambda: max(
+        1, int(os.getenv("VLLM_SM75_ATTENTION_TRACE_MAX_EVENTS", "64"))
+    ),
     # Whether to use the FlashInfer top-k / top-p sampler on CUDA. Enabled
     # by default when the hardware supports it — set to 0 to opt out
     # explicitly, which forces the PyTorch-native (Triton for bs>=8) path.
