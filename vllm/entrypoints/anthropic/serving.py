@@ -163,6 +163,36 @@ class AnthropicServingMessages(OpenAIServingChat):
     ) -> None:
         """Convert Anthropic messages to OpenAI format"""
         for msg in messages:
+            if msg.role == "system":
+                # Claude Code sometimes places the system prompt in the
+                # messages array. Promote it before user/assistant turns so
+                # the chat template sees the same ordering as a top-level
+                # Anthropic system field.
+                if isinstance(msg.content, str):
+                    system_content = msg.content
+                else:
+                    system_content = "".join(
+                        block.text
+                        for block in msg.content
+                        if block.type == "text"
+                        and block.text
+                        and not block.text.startswith("x-anthropic-billing-header")
+                    )
+                if system_content:
+                    if openai_messages and openai_messages[0]["role"] == "system":
+                        existing = openai_messages[0].get("content", "")
+                        openai_messages[0]["content"] = (
+                            f"{existing}\n{system_content}"
+                            if existing
+                            else system_content
+                        )
+                    else:
+                        openai_messages.insert(
+                            0,
+                            {"role": "system", "content": system_content},
+                        )
+                continue
+
             openai_msg: dict[str, Any] = {"role": msg.role}  # type: ignore
 
             if isinstance(msg.content, str):
@@ -171,7 +201,52 @@ class AnthropicServingMessages(OpenAIServingChat):
                 cls._convert_message_content(msg, openai_msg, openai_messages)
 
             if not (msg.role == "user" and "content" not in openai_msg):
-                openai_messages.append(openai_msg)
+                cls._append_openai_message(openai_messages, openai_msg)
+
+    @staticmethod
+    def _append_openai_message(
+        openai_messages: list[dict[str, Any]], message: dict[str, Any]
+    ) -> None:
+        """Append a message while normalizing adjacent assistant turns.
+
+        Claude Code can replay or split one tool response into several
+        consecutive Anthropic ``assistant`` messages.  OpenAI chat templates
+        interpret each message as a new generation turn, which can make a
+        replayed tool batch look like fresh model output.  Anthropic permits
+        multiple content blocks in one assistant turn, so fold adjacent
+        assistant messages back into one message before rendering.
+        """
+        if (
+            openai_messages
+            and message.get("role") == "assistant"
+            and openai_messages[-1].get("role") == "assistant"
+        ):
+            previous = openai_messages[-1]
+            for field in ("tool_calls", "reasoning"):
+                value = message.get(field)
+                if not value:
+                    continue
+                if field == "tool_calls":
+                    previous.setdefault(field, []).extend(value)
+                else:
+                    previous[field] = (
+                        f"{previous[field]}{value}" if previous.get(field) else value
+                    )
+
+            content = message.get("content")
+            if content:
+                previous_content = previous.get("content")
+                if not previous_content:
+                    previous["content"] = content
+                elif isinstance(previous_content, list) and isinstance(content, list):
+                    previous_content.extend(content)
+                elif isinstance(previous_content, str) and isinstance(content, str):
+                    previous["content"] = f"{previous_content}\n{content}"
+                else:
+                    previous["content"] = [previous_content, content]
+            return
+
+        openai_messages.append(message)
 
     @classmethod
     def _convert_message_content(
@@ -385,6 +460,9 @@ class AnthropicServingMessages(OpenAIServingChat):
             req.tool_choice = None
             return
 
+        req.parallel_tool_calls = (
+            not anthropic_request.tool_choice.disable_parallel_tool_use
+        )
         tool_choice_type = anthropic_request.tool_choice.type
         if tool_choice_type == "auto":
             req.tool_choice = "auto"
@@ -471,7 +549,13 @@ class AnthropicServingMessages(OpenAIServingChat):
             kv_transfer_params=generator.kv_transfer_params,
         )
         choice = generator.choices[0]
-        if choice.finish_reason == "stop":
+        # OpenAI uses ``stop`` for named function calls, while Anthropic
+        # requires ``tool_use`` whenever the response contains a tool block.
+        # Relying on finish_reason alone makes Claude Code treat a tool turn as
+        # a completed assistant turn and misaligns the next tool_result turn.
+        if choice.message.tool_calls:
+            result.stop_reason = "tool_use"
+        elif choice.finish_reason == "stop":
             result.stop_reason = "end_turn"
         elif choice.finish_reason == "length":
             result.stop_reason = "max_tokens"
@@ -548,9 +632,14 @@ class AnthropicServingMessages(OpenAIServingChat):
 
             first_item = True
             finish_reason = None
+            tool_use_emitted = False
+            message_delta_emitted = False
             state = _ActiveBlockState()
-            # Map from tool call index to tool_use_id
-            tool_index_to_id: dict[int, str] = {}
+            # OpenAI may interleave argument deltas for several tool calls.
+            # Anthropic content blocks cannot be interleaved, so accumulate
+            # each call by index and emit complete, ordered tool_use blocks
+            # when the OpenAI stream reaches its final usage chunk.
+            pending_tool_calls: dict[int, dict[str, str]] = {}
 
             def stop_active_block():
                 events: list[str] = []
@@ -593,10 +682,66 @@ class AnthropicServingMessages(OpenAIServingChat):
                 state.start(block)
                 return event
 
+            def flush_tool_calls():
+                nonlocal tool_use_emitted
+                events: list[str] = []
+                for tool_index in sorted(pending_tool_calls):
+                    tool_call = pending_tool_calls[tool_index]
+                    tool_use_id = tool_call.get("id")
+                    tool_name = tool_call.get("name")
+                    if not tool_use_id or not tool_name:
+                        raise ValueError(
+                            "Incomplete streamed tool call "
+                            f"at index {tool_index}: missing id or name"
+                        )
+                    events.extend(stop_active_block())
+                    events.append(
+                        start_block(
+                            AnthropicContentBlock(
+                                type="tool_use",
+                                id=tool_use_id,
+                                name=tool_name,
+                                input={},
+                            )
+                        )
+                    )
+                    arguments = tool_call.get("arguments", "")
+                    if arguments:
+                        chunk = AnthropicStreamEvent(
+                            index=state.block_index,
+                            type="content_block_delta",
+                            delta=AnthropicDelta(
+                                type="input_json_delta",
+                                partial_json=arguments,
+                            ),
+                        )
+                        data = chunk.model_dump_json(exclude_unset=True)
+                        events.append(wrap_data_with_event(data, "content_block_delta"))
+                    tool_use_emitted = True
+                pending_tool_calls.clear()
+                return events
+
             async for item in generator:
                 if item.startswith("data:"):
                     data_str = item[5:].strip().rstrip("\n")
                     if data_str == "[DONE]":
+                        for event in flush_tool_calls():
+                            yield event
+                        for event in stop_active_block():
+                            yield event
+                        if not message_delta_emitted:
+                            stop_reason = (
+                                "tool_use"
+                                if tool_use_emitted
+                                else self.stop_reason_map.get(finish_reason or "stop")
+                            )
+                            final_delta = AnthropicStreamEvent(
+                                type="message_delta",
+                                delta=AnthropicDelta(stop_reason=stop_reason),
+                            )
+                            data = final_delta.model_dump_json(exclude_unset=True)
+                            yield wrap_data_with_event(data, "message_delta")
+                            message_delta_emitted = True
                         stop_message = AnthropicStreamEvent(
                             type="message_stop",
                         )
@@ -629,14 +774,22 @@ class AnthropicServingMessages(OpenAIServingChat):
                             first_item = False
                             data = chunk.model_dump_json(exclude_unset=True)
                             yield wrap_data_with_event(data, "message_start")
-                            continue
+                            # A streaming OpenAI response may put the first
+                            # tool/text delta in the same chunk as the initial
+                            # usage metadata. Do not discard that delta.
+                            if not origin_chunk.choices:
+                                continue
 
                         # last chunk including usage info
                         if len(origin_chunk.choices) == 0:
+                            for event in flush_tool_calls():
+                                yield event
                             for event in stop_active_block():
                                 yield event
-                            stop_reason = self.stop_reason_map.get(
-                                finish_reason or "stop"
+                            stop_reason = (
+                                "tool_use"
+                                if tool_use_emitted
+                                else self.stop_reason_map.get(finish_reason or "stop")
                             )
                             chunk = AnthropicStreamEvent(
                                 type="message_delta",
@@ -652,6 +805,7 @@ class AnthropicServingMessages(OpenAIServingChat):
                             )
                             data = chunk.model_dump_json(exclude_unset=True)
                             yield wrap_data_with_event(data, "message_delta")
+                            message_delta_emitted = True
                             continue
 
                         if origin_chunk.choices[0].finish_reason is not None:
@@ -664,6 +818,11 @@ class AnthropicServingMessages(OpenAIServingChat):
                             if reasoning_delta == "":
                                 pass
                             else:
+                                # A non-tool delta marks a transition out of the
+                                # buffered tool batch. Flush it first so content
+                                # block order matches the model's stream.
+                                for event in flush_tool_calls():
+                                    yield event
                                 if state.block_type != "thinking":
                                     for event in stop_active_block():
                                         yield event
@@ -692,6 +851,8 @@ class AnthropicServingMessages(OpenAIServingChat):
                             if origin_chunk.choices[0].delta.content == "":
                                 pass
                             else:
+                                for event in flush_tool_calls():
+                                    yield event
                                 if state.block_type != "text":
                                     for event in stop_active_block():
                                         yield event
@@ -714,80 +875,23 @@ class AnthropicServingMessages(OpenAIServingChat):
                                 data = chunk.model_dump_json(exclude_unset=True)
                                 yield wrap_data_with_event(data, "content_block_delta")
 
-                        # tool calls - process all tool calls in the delta
+                        # Tool call argument streams may be interleaved by index.
+                        # Buffer them until they can be serialized as Anthropic
+                        # content blocks without dropping or reopening a block.
                         if len(origin_chunk.choices[0].delta.tool_calls) > 0:
                             for tool_call in origin_chunk.choices[0].delta.tool_calls:
+                                pending = pending_tool_calls.setdefault(
+                                    tool_call.index,
+                                    {"id": "", "name": "", "arguments": ""},
+                                )
                                 if tool_call.id is not None:
-                                    # Update mapping for incremental updates
-                                    tool_index_to_id[tool_call.index] = tool_call.id
-                                    # Only create new block if different tool call
-                                    # AND has a name
-                                    tool_name = (
-                                        tool_call.function.name
-                                        if tool_call.function
-                                        else None
-                                    )
-                                    if (
-                                        state.tool_use_id != tool_call.id
-                                        and tool_name is not None
-                                    ):
-                                        for event in stop_active_block():
-                                            yield event
-                                        start_event = start_block(
-                                            AnthropicContentBlock(
-                                                type="tool_use",
-                                                id=tool_call.id,
-                                                name=tool_name,
-                                                input={},
-                                            )
-                                        )
-                                        yield start_event
-                                    # Handle initial arguments if present
-                                    if (
-                                        tool_call.function
-                                        and tool_call.function.arguments
-                                        and state.tool_use_id == tool_call.id
-                                    ):
-                                        chunk = AnthropicStreamEvent(
-                                            index=(
-                                                state.block_index
-                                                if state.block_index is not None
-                                                else state.content_block_index
-                                            ),
-                                            type="content_block_delta",
-                                            delta=AnthropicDelta(
-                                                type="input_json_delta",
-                                                partial_json=tool_call.function.arguments,
-                                            ),
-                                        )
-                                        data = chunk.model_dump_json(exclude_unset=True)
-                                        yield wrap_data_with_event(
-                                            data, "content_block_delta"
-                                        )
-                                else:
-                                    # Incremental update - use index to find tool_use_id
-                                    tool_use_id = tool_index_to_id.get(tool_call.index)
-                                    if (
-                                        tool_use_id is not None
-                                        and tool_call.function
-                                        and tool_call.function.arguments
-                                        and state.tool_use_id == tool_use_id
-                                    ):
-                                        chunk = AnthropicStreamEvent(
-                                            index=(
-                                                state.block_index
-                                                if state.block_index is not None
-                                                else state.content_block_index
-                                            ),
-                                            type="content_block_delta",
-                                            delta=AnthropicDelta(
-                                                type="input_json_delta",
-                                                partial_json=tool_call.function.arguments,
-                                            ),
-                                        )
-                                        data = chunk.model_dump_json(exclude_unset=True)
-                                        yield wrap_data_with_event(
-                                            data, "content_block_delta"
+                                    pending["id"] = tool_call.id
+                                if tool_call.function:
+                                    if tool_call.function.name is not None:
+                                        pending["name"] = tool_call.function.name
+                                    if tool_call.function.arguments:
+                                        pending["arguments"] += (
+                                            tool_call.function.arguments
                                         )
                             continue
                 else:

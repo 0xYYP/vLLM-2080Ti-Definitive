@@ -65,7 +65,9 @@ class AnthropicContentBlock(BaseModel):
 class AnthropicMessage(BaseModel):
     """Message structure"""
 
-    role: Literal["user", "assistant"]
+    # Claude Code can send its system prompt as an inline message even though
+    # the public Anthropic API normally exposes it as a top-level field.
+    role: Literal["user", "assistant", "system"]
     content: str | list[AnthropicContentBlock]
 
 
@@ -92,6 +94,7 @@ class AnthropicToolChoice(BaseModel):
 
     type: Literal["auto", "any", "tool", "none"]
     name: str | None = None
+    disable_parallel_tool_use: bool = False
 
     @model_validator(mode="after")
     def validate_name_required_for_tool(self) -> "AnthropicToolChoice":
