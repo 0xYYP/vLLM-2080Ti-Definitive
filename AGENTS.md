@@ -32,6 +32,31 @@ come from upstream vLLM:
 - If an upstream `AGENTS.md` or contribution instruction applies in a copied
   upstream subtree, follow it as well.
 
+## Maintenance Language
+
+- Always use `$maintain-vllm-2080ti` when preparing or reviewing commits,
+  branches, issues, pull requests, releases, changelogs, documentation,
+  upstream synchronization, or other publication and maintenance work.
+- Use Chinese as the primary maintenance language while preserving English
+  technical conventions, upstream compatibility, and an accurate English
+  entry point for international users.
+- Do not rewrite existing or imported upstream history solely to translate it.
+
+## Commit Message Discipline
+
+- Use a commit body for every non-trivial local change, including behavioral,
+  protocol, runtime, compatibility, or multi-file fixes, and whenever the root
+  cause, safety boundary, or validation is not obvious from the subject alone.
+- In the body, state why the change is needed, what behavior and boundaries
+  result from it, and which validation was actually run. Keep model, hardware,
+  KV precision, MTP, context, and benchmark details when making support or
+  performance claims.
+- A subject-only commit is acceptable only for a genuinely trivial mechanical
+  change whose intent and effect are fully explained by the subject and diff.
+- Before committing, inspect the complete subject and body with
+  `git show -s --format=fuller <commit>`; do not treat a concise subject as a
+  substitute for a useful maintenance record.
+
 ## Runtime And Profile Rules
 
 This repository is organized around validated runtime routes, not generic
