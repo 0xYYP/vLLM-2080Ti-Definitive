@@ -431,7 +431,7 @@ resolved_config_source() {
   if config_key_has_explicit_value "$key"; then
     printf '%s\n' "${CONFIG_OVERRIDE_SOURCE[$key]}"
   elif [[ -n "${CONFIG_PROFILE_SOURCE[$key]+x}" ]]; then
-    printf 'profile\n'
+    printf '%s\n' "${CONFIG_PROFILE_SOURCE[$key]}"
   else
     printf '%s\n' "$fallback"
   fi
@@ -661,7 +661,7 @@ apply_profile_overrides() {
     value=$(read_profile_value "$file" "$key")
     printf -v "$key" '%s' "$value"
     export "$key"
-    CONFIG_PROFILE_SOURCE["$key"]=1
+    CONFIG_PROFILE_SOURCE["$key"]=profile
   done < <(sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$file" | sort -u)
 }
 
@@ -3053,9 +3053,41 @@ guess_model_family() {
   fi
 }
 
+checkpoint_quantization_method() {
+  local dir=${1:-${MODEL_DIR:-}}
+  local config_file=${dir:+$dir/config.json}
+  local python_bin
+
+  [[ -r "$config_file" ]] || return 0
+  python_bin="${RUNTIME_ROOT:-$MANAGER_ROOT}/.venv/bin/python"
+  [[ -x "$python_bin" ]] || python_bin=$(command -v python3 2>/dev/null || true)
+  [[ -n "$python_bin" ]] || return 0
+
+  "$python_bin" - "$config_file" <<'PY' 2>/dev/null || true
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        config = json.load(handle)
+except (OSError, ValueError, IndexError):
+    raise SystemExit(0)
+
+method = config.get("quantization_config", {}).get("quant_method")
+if isinstance(method, str) and method.strip():
+    print(method.strip())
+PY
+}
+
 guess_quantization() {
-  local dir=${1,,}
-  if [[ "$dir" == *fp8* ]]; then
+  local raw_dir=${1:-}
+  local dir=$raw_dir
+  dir=${dir,,}
+  local checkpoint_method
+  checkpoint_method=$(checkpoint_quantization_method "$raw_dir")
+  if [[ -n "$checkpoint_method" ]]; then
+    echo "$checkpoint_method"
+  elif [[ "$dir" == *fp8* ]]; then
     echo fp8
   elif [[ "$dir" == *gptq* ]]; then
     echo gptq_marlin
@@ -3065,6 +3097,32 @@ guess_quantization() {
     echo quark
   else
     echo ""
+  fi
+}
+
+apply_checkpoint_quantization_compatibility() {
+  local checkpoint_method
+  checkpoint_method=$(checkpoint_quantization_method "${MODEL_DIR:-}")
+  [[ -n "$checkpoint_method" ]] || return 0
+
+  if config_key_has_explicit_value QUANTIZATION; then
+    if [[ "${QUANTIZATION:-}" != "$checkpoint_method" ]]; then
+      die "QUANTIZATION=$QUANTIZATION conflicts with checkpoint config quant_method=$checkpoint_method. Use --set QUANTIZATION=$checkpoint_method or clear the override."
+    fi
+    return 0
+  fi
+
+  if [[ -n "${CONFIG_PROFILE_SOURCE[QUANTIZATION]+x}" ]]; then
+    if [[ "${QUANTIZATION:-}" != "$checkpoint_method" ]]; then
+      die "Profile QUANTIZATION=$QUANTIZATION conflicts with checkpoint config quant_method=$checkpoint_method. Select a compatible profile."
+    fi
+    return 0
+  fi
+
+  if [[ "${QUANTIZATION:-}" != "$checkpoint_method" ]]; then
+    QUANTIZATION="$checkpoint_method"
+    export QUANTIZATION
+    CONFIG_PROFILE_SOURCE[QUANTIZATION]=checkpoint
   fi
 }
 
@@ -4088,6 +4146,7 @@ collect_config_env() {
   elif [[ -n "${PROFILE:-}" ]]; then
     die "Explicit PROFILE was not found: $PROFILE"
   fi
+  apply_checkpoint_quantization_compatibility
   validate_compilation_config_json "${profile_file:-}"
   prepare_runtime_defaults || die "Invalid runtime configuration."
 }
@@ -4403,10 +4462,14 @@ run_start_flow() {
       fi
     done
     max_model_len_source=$(resolved_config_source MAX_MODEL_LEN default)
+    local quantization_source
+    quantization_source=$(resolved_config_source QUANTIZATION guessed)
     compilation_config_source=$(resolved_config_source COMPILATION_CONFIG_JSON generated)
     printf 'final_vllm_argv=%s\n' "$args_text"
     printf 'resolved_max_model_len=%s\n' "$MAX_MODEL_LEN"
     printf 'resolved_max_model_len_source=%s\n' "$max_model_len_source"
+    printf 'resolved_quantization=%s\n' "$QUANTIZATION"
+    printf 'resolved_quantization_source=%s\n' "$quantization_source"
     printf 'resolved_tp_size=%s\n' "$TP_SIZE"
     printf 'resolved_tp_size_source=%s\n' "$(resolved_config_source TP_SIZE derived)"
     printf 'resolved_gpu_devices=%s\n' "$GPU_DEVICES"
