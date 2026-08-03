@@ -188,6 +188,111 @@ def test_no_profile_retains_manual_default_path(
     assert _resolved_field(result.stdout, "resolved_max_model_len_source") == "default"
 
 
+def test_checkpoint_quantization_method_overrides_filename_guess(
+    launcher_environment: dict[str, str], tmp_path: Path
+) -> None:
+    model_dir = tmp_path / "Example-FP8-Checkpoint"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        '{"quantization_config":{"quant_method":"compressed-tensors"}}',
+        encoding="utf-8",
+    )
+    launcher_environment["MODEL_DIR"] = str(model_dir)
+
+    result = _run_launcher(launcher_environment)
+
+    assert result.returncode == 0, result.stderr
+    argv = _final_vllm_argv(result.stdout)
+    assert argv[argv.index("--quantization") + 1] == "compressed-tensors"
+    assert _resolved_field(result.stdout, "resolved_quantization_source") == "checkpoint"
+
+
+def test_missing_checkpoint_quantization_falls_back_to_filename_guess(
+    launcher_environment: dict[str, str], tmp_path: Path
+) -> None:
+    model_dir = tmp_path / "Example-FP8-Checkpoint"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        '{"model_type":"example"}',
+        encoding="utf-8",
+    )
+    launcher_environment["MODEL_DIR"] = str(model_dir)
+
+    result = _run_launcher(launcher_environment)
+
+    assert result.returncode == 0, result.stderr
+    argv = _final_vllm_argv(result.stdout)
+    assert argv[argv.index("--quantization") + 1] == "fp8"
+    assert _resolved_field(result.stdout, "resolved_quantization_source") == "guessed"
+
+
+def test_checkpoint_quantization_conflicting_profile_is_rejected(
+    launcher_environment: dict[str, str], tmp_path: Path
+) -> None:
+    model_dir = tmp_path / "Example-FP8-Checkpoint"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        '{"quantization_config":{"quant_method":"compressed-tensors"}}',
+        encoding="utf-8",
+    )
+    launcher_environment["MODEL_DIR"] = str(model_dir)
+    profile = tmp_path / "generic-fp8.env"
+    profile.write_text(
+        "COMPATIBLE_MODES=normal\n"
+        "MODEL_FAMILY=qwen\n"
+        "QUANTIZATION=fp8\n",
+        encoding="utf-8",
+    )
+
+    result = _run_launcher(launcher_environment, "--profile-file", str(profile))
+
+    assert result.returncode != 0
+    assert "Profile QUANTIZATION=fp8 conflicts with checkpoint config" in result.stderr
+
+
+def test_checkpoint_quantization_matching_profile_is_accepted(
+    launcher_environment: dict[str, str], tmp_path: Path
+) -> None:
+    model_dir = tmp_path / "Example-FP8-Checkpoint"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        '{"quantization_config":{"quant_method":"compressed-tensors"}}',
+        encoding="utf-8",
+    )
+    launcher_environment["MODEL_DIR"] = str(model_dir)
+    profile = tmp_path / "compressed-tensors.env"
+    profile.write_text(
+        "COMPATIBLE_MODES=normal\n"
+        "MODEL_FAMILY=qwen\n"
+        "QUANTIZATION=compressed-tensors\n",
+        encoding="utf-8",
+    )
+
+    result = _run_launcher(launcher_environment, "--profile-file", str(profile))
+
+    assert result.returncode == 0, result.stderr
+    argv = _final_vllm_argv(result.stdout)
+    assert argv[argv.index("--quantization") + 1] == "compressed-tensors"
+    assert _resolved_field(result.stdout, "resolved_quantization_source") == "profile"
+
+
+def test_explicit_quantization_conflict_is_rejected(
+    launcher_environment: dict[str, str], tmp_path: Path
+) -> None:
+    model_dir = tmp_path / "Example-FP8-Checkpoint"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        '{"quantization_config":{"quant_method":"compressed-tensors"}}',
+        encoding="utf-8",
+    )
+    launcher_environment["MODEL_DIR"] = str(model_dir)
+
+    result = _run_launcher(launcher_environment, "--set", "QUANTIZATION=fp8")
+
+    assert result.returncode != 0
+    assert "conflicts with checkpoint config" in result.stderr
+
+
 @pytest.mark.parametrize(
     ("environment_value", "cli_value", "expected_value", "expected_source"),
     [
