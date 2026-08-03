@@ -361,6 +361,35 @@ class StreamingXMLToolCallParser:
         if not buffer:
             return None, start_pos
 
+        # Parameter values are opaque strings from the model's point of view.
+        # Bash commands commonly contain XML-looking fragments (for example
+        # ``grep '<pattern>'`` or heredocs).  Treating every ``<...>`` inside a
+        # parameter as an XML element lets expat parse user data as markup and
+        # can leave the streaming parser in a partially closed state.  While a
+        # parameter is open, the only structural marker we recognize is its
+        # actual closing tag; all other text is escaped by
+        # ``_preprocess_xml_chunk`` before it reaches expat.
+        if self.current_param_name is not None:
+            close_pos = buffer.find(self.parameter_end_token)
+            if close_pos == -1:
+                # Keep a suffix that may be the beginning of a closing tag;
+                # streaming token boundaries are allowed to split that tag.
+                for suffix_len in range(
+                    min(len(buffer), len(self.parameter_end_token) - 1), 0, -1
+                ):
+                    if buffer.endswith(self.parameter_end_token[:suffix_len]):
+                        content_end = len(buffer) - suffix_len
+                        if content_end:
+                            return buffer[:content_end], start_pos + content_end
+                        return None, start_pos
+                return buffer, start_pos + len(buffer)
+            if close_pos > 0:
+                return buffer[:close_pos], start_pos + close_pos
+            return (
+                self.parameter_end_token,
+                start_pos + len(self.parameter_end_token),
+            )
+
         if buffer.startswith("<"):
             # Need to ensure no new < appears,
             # find the nearest one between < and >
