@@ -800,31 +800,51 @@ class TritonAttentionImpl(AttentionImpl):
             raw
         )
 
-        # In the raw bytes, each (block, kv_half, slot, head) occupies
-        # padded_hs * dtype_sz bytes.  The scale float32 sits at byte
-        # offset hs * dtype_sz within that region.
-        kv_half_bytes = block_size * nkv * padded_hs * dtype_sz
-        full_block_f32 = 2 * kv_half_bytes // 4  # stride between blocks
-        slot_f32 = nkv * padded_hs * dtype_sz // 4  # stride between slots
-        head_f32 = padded_hs * dtype_sz // 4  # stride between heads
-        scale_off_f32 = hs * dtype_sz // 4  # offset to scale within head
+        # Build the scale views from the *actual* strides and storage offset
+        # of the kv_cache tensor instead of assuming a contiguous NHD layout.
+        # NHD-contiguous is the common case (identical offsets to the old
+        # hard-coded math), but HND layouts and shared/strided cache views
+        # otherwise produce misaligned scale pointers -> garbled attention.
+        view_base_bytes = kv_cache.storage_offset() * dtype_sz
+        # Strides in float32 elements, converted from the cache tensor's
+        # real strides (in cache-dtype elements).  The byte offsets must be
+        # 4-byte aligned to reinterpret them as float32; real head sizes
+        # (64/80/128/256) and fresh cache allocations satisfy this.  Guard
+        # explicitly so a misconfigured layout fails loudly instead of
+        # silently producing overlapping scale pointers.
+        if (view_base_bytes + hs * dtype_sz) % 4 != 0:
+            raise ValueError(
+                "per-token-head scale storage is not 4-byte aligned "
+                f"(storage_offset={kv_cache.storage_offset()}, "
+                f"head_size={self.head_size}, dtype_sz={dtype_sz}); "
+                "misaligned scale views would corrupt attention"
+            )
+        stride_blk_f32 = kv_cache.stride(0) * dtype_sz // 4
+        stride_kvhalf_f32 = kv_cache.stride(1) * dtype_sz // 4
+        stride_slot_f32 = kv_cache.stride(2) * dtype_sz // 4
+        stride_head_f32 = kv_cache.stride(3) * dtype_sz // 4
+        # The scale float32 sits at byte offset hs * dtype_sz within each
+        # (block, kv_half, slot, head) region.
+        scale_off_bytes = hs * dtype_sz
 
         # K scales: kv_half=0
         self._k_scale_cache = torch.as_strided(
             base_f32,
             size=(num_blocks, block_size, nkv),
-            stride=(full_block_f32, slot_f32, head_f32),
-            storage_offset=scale_off_f32,
+            stride=(stride_blk_f32, stride_slot_f32, stride_head_f32),
+            storage_offset=(view_base_bytes + scale_off_bytes) // 4,
         )
         self._k_scale_cache.fill_(1.0)
 
-        # V scales: kv_half=1, offset by kv_half_bytes
-        v_base_f32 = kv_half_bytes // 4
+        # V scales: kv_half=1, one kv_half stride further in
         self._v_scale_cache = torch.as_strided(
             base_f32,
             size=(num_blocks, block_size, nkv),
-            stride=(full_block_f32, slot_f32, head_f32),
-            storage_offset=v_base_f32 + scale_off_f32,
+            stride=(stride_blk_f32, stride_slot_f32, stride_head_f32),
+            storage_offset=(
+                view_base_bytes + stride_kvhalf_f32 * 4 + scale_off_bytes
+            )
+            // 4,
         )
         self._v_scale_cache.fill_(1.0)
 
