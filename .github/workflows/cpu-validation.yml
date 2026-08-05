@@ -64,7 +64,12 @@ jobs:
         run: |
           if [[ "$EVENT_NAME" == "pull_request" && -n "$PR_BASE_SHA" ]]; then
             validation_base=$PR_BASE_SHA
-          elif [[ -n "$PUSH_BEFORE_SHA" && ! "$PUSH_BEFORE_SHA" =~ ^0+$ ]]; then
+          elif [[ -n "$PUSH_BEFORE_SHA" && ! "$PUSH_BEFORE_SHA" =~ ^0+$ ]] \
+            && git cat-file -e "$PUSH_BEFORE_SHA^{commit}" 2>/dev/null; then
+            # Only use the push "before" SHA when it is still reachable in
+            # this checkout.  After a force push the previous head is
+            # rewritten away, so falling back to HEAD^ keeps the diff base
+            # valid instead of failing the whole run.
             validation_base=$PUSH_BEFORE_SHA
           elif git rev-parse HEAD^ >/dev/null 2>&1; then
             validation_base=$(git rev-parse HEAD^)
