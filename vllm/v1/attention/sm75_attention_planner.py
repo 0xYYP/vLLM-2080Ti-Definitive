@@ -41,14 +41,23 @@ class SM75AttentionPlanner:
     def plan_tq_prefill_capability(
         inputs: TQPrefillCapabilityInput,
     ) -> CapabilityPlan:
-        if inputs.head_size <= 0 or inputs.sm75_min_head_size <= 0:
+        if inputs.head_size <= 0:
             raise PlannerInputError("invalid TurboQuant head size")
+        # ``sm75_min_head_size <= 0`` means "no SM75 head-dim lower bound":
+        # the FlashInfer prefill backend is usable for any head size on SM75
+        # (e.g. ``VLLM_TURBOQUANT_SM75_FLASHINFER_PREFILL_MIN_HEAD_DIM=0``
+        # with flashinfer 0.6.8.x).  Only a positive threshold restricts.
+        sm75_min_head_size = (
+            inputs.sm75_min_head_size if inputs.sm75_min_head_size > 0 else None
+        )
         checks = (
             (not inputs.requested, "disabled"),
             (not inputs.wrapper_available, "wrapper_unavailable"),
             (not inputs.is_cuda, "non_cuda"),
             (
-                inputs.is_sm75 and inputs.head_size < inputs.sm75_min_head_size,
+                sm75_min_head_size is not None
+                and inputs.is_sm75
+                and inputs.head_size < sm75_min_head_size,
                 "head_dim_below_sm75_threshold",
             ),
         )

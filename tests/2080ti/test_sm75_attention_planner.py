@@ -75,11 +75,28 @@ def test_tq_cudagraph_truth_table(source, inputs, expected) -> None:
         (_TQ_CAP, (True, True, True, True, 127, 128),
          (False, "head_dim_below_sm75_threshold")),
         (_TQ_CAP, (True, True, True, True, 128, 128), (True, None)),
+        # sm75_min_head_size<=0 means "no SM75 head-dim lower bound"
+        # (flashinfer 0.6.8.x defaults MIN_HEAD_DIM to 0): any head size
+        # is allowed on SM75, including ones below a positive threshold.
+        (_TQ_CAP, (True, True, True, True, 128, 0), (True, None)),
+        (_TQ_CAP, (True, True, True, True, 1, 0), (True, None)),
+        (_TQ_CAP, (True, True, True, True, 256, -1), (True, None)),
+        (_TQ_CAP, (True, True, True, False, 128, 0), (True, None)),
     ],
 )
 def test_tq_capability_truth_table(source, inputs, expected) -> None:
     plan = P.plan_tq_prefill_capability(planner.TQPrefillCapabilityInput(*inputs))
     assert source and tuple(plan) == expected
+
+
+def test_tq_capability_rejects_invalid_head_size() -> None:
+    """head_size <= 0 stays an invalid input even when the SM75 bound is 0."""
+    with pytest.raises(planner.PlannerInputError):
+        P.plan_tq_prefill_capability(
+            planner.TQPrefillCapabilityInput(
+                True, True, True, True, 0, 0
+            )
+        )
 
 
 @pytest.mark.parametrize(
