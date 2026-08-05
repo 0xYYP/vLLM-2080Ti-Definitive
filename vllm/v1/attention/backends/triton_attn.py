@@ -9,6 +9,7 @@ from typing import ClassVar
 import torch
 import torch.nn.functional as F
 from flashinfer import (
+    BatchDecodeWithPagedKVCacheWrapper,
     BatchPrefillWithPagedKVCacheWrapper,
     BatchPrefillWithRaggedKVCacheWrapper,
     merge_state_in_place,
@@ -83,12 +84,15 @@ _INT8KV_FA_CASCADE_TILE_TOKENS = int(
     os.getenv("VLLM_INT8KV_FA_CASCADE_TILE_TOKENS", "65536")
 )
 _INT8KV_FA_DIRECT_PAGED = os.getenv("VLLM_INT8KV_FA_DIRECT_PAGED", "0") == "1"
+_INT8KV_FA_DECODE = os.getenv("VLLM_INT8KV_FA_DECODE", "0") == "1"
+_INT8KV_FA_DECODE_DEBUG = os.getenv("VLLM_INT8KV_FA_DECODE_DEBUG", "0") == "1"
 _INT8KV_ALIGNED_HEAD_STRIDE = (
     os.getenv("VLLM_INT8KV_ALIGNED_HEAD_STRIDE", "0") == "1"
 )
 _INT8KV_FI_PREFILL_WORKSPACES: dict[tuple[str, str], torch.Tensor] = {}
 _INT8KV_FI_PREFILL_WRAPPERS: dict[tuple[object, ...], BatchPrefillWithRaggedKVCacheWrapper] = {}
 _INT8KV_FI_PAGED_WRAPPERS: dict[tuple[object, ...], BatchPrefillWithRaggedKVCacheWrapper] = {}
+_INT8KV_FI_DECODE_WRAPPERS: dict[tuple[object, ...], BatchDecodeWithPagedKVCacheWrapper] = {}
 _INT8KV_FI_KV_WORKSPACES: dict[
     tuple[str, str, int, int, int], tuple[torch.Tensor, torch.Tensor]
 ] = {}
@@ -122,8 +126,7 @@ _GEMMA4_FI_PREFILL_WRAPPERS: dict[
     tuple[object, ...], BatchPrefillWithRaggedKVCacheWrapper
 ] = {}
 
-def _int8kv_direct_paged_jit_args(head_size: int) -> list[object]:
-    variant_decl = r"""
+_INT8KV_TOKENCALE_VARIANT_DECL = r"""
 #include <flashinfer/attention/variants.cuh>
 namespace flashinfer {
 DEFINE_HAS_MEMBER(maybe_k_scale_cache)
@@ -141,70 +144,73 @@ struct Int8TokenHeadScaleAttention : AttentionVariantBase {
 
   template <typename Params>
   __device__ __host__ Int8TokenHeadScaleAttention(const Params& params, uint32_t batch_idx,
-                                                  uint8_t* smem_ptr) {
-    qo_len = params.get_qo_len(batch_idx);
-    kv_len = params.get_kv_len(batch_idx);
-    window_left = (params.window_left >= 0) ? params.window_left : kv_len;
-    if constexpr (use_logits_soft_cap) {
-      soft_cap_pre_tanh_scale = params.sm_scale * math::ptx_rcp(params.logits_soft_cap);
-      sm_scale_log2 = math::log2e * params.logits_soft_cap;
-    } else {
-      sm_scale_log2 = params.sm_scale * math::log2e;
-    }
+                                              uint8_t* smem_ptr) {
+qo_len = params.get_qo_len(batch_idx);
+kv_len = params.get_kv_len(batch_idx);
+window_left = (params.window_left >= 0) ? params.window_left : kv_len;
+if constexpr (use_logits_soft_cap) {
+  soft_cap_pre_tanh_scale = params.sm_scale * math::ptx_rcp(params.logits_soft_cap);
+  sm_scale_log2 = math::log2e * params.logits_soft_cap;
+} else {
+  sm_scale_log2 = params.sm_scale * math::log2e;
+}
   }
 
   template <typename Params>
   __device__ __forceinline__ uint32_t physical_scale_index(const Params& params,
-                                                           uint32_t batch_idx,
-                                                           uint32_t kv_idx,
-                                                           uint32_t kv_head_idx) const {
-    if constexpr (has_paged_kv_v<Params>) {
-      uint32_t page_in_request;
-      uint32_t slot;
-      params.paged_kv.page_size.divmod(kv_idx, page_in_request, slot);
-      uint32_t page_iter = params.paged_kv.indptr[batch_idx] + page_in_request;
-      uint32_t physical_page = __ldg(params.paged_kv.indices + page_iter);
-      return physical_page * params.scale_stride_page + slot * params.scale_stride_slot +
-             kv_head_idx * params.scale_stride_head;
-    } else {
-      return kv_idx * params.scale_stride_slot + kv_head_idx * params.scale_stride_head;
-    }
+                                                       uint32_t batch_idx,
+                                                       uint32_t kv_idx,
+                                                       uint32_t kv_head_idx) const {
+if constexpr (has_paged_kv_v<Params>) {
+  uint32_t page_in_request;
+  uint32_t slot;
+  params.paged_kv.page_size.divmod(kv_idx, page_in_request, slot);
+  uint32_t page_iter = params.paged_kv.indptr[batch_idx] + page_in_request;
+  uint32_t physical_page = __ldg(params.paged_kv.indices + page_iter);
+  return physical_page * params.scale_stride_page + slot * params.scale_stride_slot +
+         kv_head_idx * params.scale_stride_head;
+} else {
+  return kv_idx * params.scale_stride_slot + kv_head_idx * params.scale_stride_head;
+}
   }
 
   REGISTER_LOGITS_TRANSFORM(params, logits, batch_idx, qo_idx, kv_idx, qo_head_idx, kv_head_idx, {
-    float k_scale = params.maybe_k_scale_cache[physical_scale_index(params, batch_idx, kv_idx, kv_head_idx)];
-    logits = logits * k_scale;
-    if constexpr (use_logits_soft_cap) {
-      logits = float(math::tanh(logits * soft_cap_pre_tanh_scale)) * params.logits_soft_cap;
-    }
-    return logits;
+float k_scale = params.maybe_k_scale_cache[physical_scale_index(params, batch_idx, kv_idx, kv_head_idx)];
+logits = logits * k_scale;
+if constexpr (use_logits_soft_cap) {
+  logits = float(math::tanh(logits * soft_cap_pre_tanh_scale)) * params.logits_soft_cap;
+}
+return logits;
   })
 
   REGISTER_LOGITS_MASK(params, batch_idx, qo_idx, kv_idx, qo_head_idx, kv_head_idx, {
-    bool mask = true;
-    if constexpr (use_sliding_window) {
-      mask &= (kv_idx + 1 + window_left >= kv_len);
-    }
-    return mask;
+bool mask = true;
+if constexpr (use_sliding_window) {
+  mask &= (kv_idx + 1 + window_left >= kv_len);
+}
+return mask;
   })
 
   REGISTER_VALUE_TRANSFORM(params, value, batch_idx, qo_idx, kv_idx, qo_head_idx, kv_head_idx, {
-    float v_scale = params.maybe_v_scale_cache[physical_scale_index(params, batch_idx, kv_idx, kv_head_idx)];
-    return static_cast<T>(static_cast<float>(value) * v_scale);
+float v_scale = params.maybe_v_scale_cache[physical_scale_index(params, batch_idx, kv_idx, kv_head_idx)];
+return static_cast<T>(static_cast<float>(value) * v_scale);
   })
 
   REGISTER_PROBABILITY_TRANSFORM(params, prob, batch_idx, qo_idx, kv_idx, qo_head_idx, kv_head_idx, {
-    float v_scale = params.maybe_v_scale_cache[physical_scale_index(params, batch_idx, kv_idx, kv_head_idx)];
-    return static_cast<T>(static_cast<float>(prob) * v_scale);
+float v_scale = params.maybe_v_scale_cache[physical_scale_index(params, batch_idx, kv_idx, kv_head_idx)];
+return static_cast<T>(static_cast<float>(prob) * v_scale);
   })
 
   REGISTER_OUTPUT_TRANSFORM(params, output, batch_idx, qo_idx, qo_head_idx, m, d, softmax_scale, {
-    float d_rcp = (m != -math::inf) ? math::ptx_rcp(d) : 0.f;
-    return output * d_rcp;
+float d_rcp = (m != -math::inf) ? math::ptx_rcp(d) : 0.f;
+return output * d_rcp;
   })
 };
 }
 """
+
+
+def _int8kv_direct_paged_jit_args(head_size: int) -> list[object]:
     return [
         f"vllm_int8kv_tokenscale_paged_prefill_sm75_d{head_size}_v1",
         torch.float16,
@@ -227,7 +233,43 @@ struct Int8TokenHeadScaleAttention : AttentionVariantBase {
         ],
         ["double", "double", "double", "double", "uint32_t", "uint32_t", "uint32_t", "uint32_t"],
         "Int8TokenHeadScaleAttention<false, false>",
-        variant_decl,
+        _INT8KV_TOKENCALE_VARIANT_DECL,
+    ]
+
+
+
+
+def _int8kv_decode_jit_args(head_size: int) -> list:
+    """JIT args for the paged decode kernel with per-token-head int8 scales.
+
+    The decode kernel reads int8 K/V directly and applies per-(token, head)
+    scales through the same Int8TokenHeadScaleAttention variant; v_scale is
+    applied via the patched ValueTransform hook in flashinfer's
+    update_local_state (see docs/int8kv-fa-decode.md).
+    """
+    return [
+        f"vllm_int8kv_tokenscale_paged_decode_sm75_d{head_size}_v1",
+        torch.float16,
+        torch.int8,
+        torch.float16,
+        torch.int32,
+        head_size,
+        head_size,
+        ["maybe_k_scale_cache", "maybe_v_scale_cache"],
+        ["float", "float"],
+        [
+            "logits_soft_cap",
+            "sm_scale",
+            "rope_rcp_scale",
+            "rope_rcp_theta",
+            "gqa_group_size",
+            "scale_stride_page",
+            "scale_stride_slot",
+            "scale_stride_head",
+        ],
+        ["double", "double", "double", "double", "uint32_t", "uint32_t", "uint32_t", "uint32_t"],
+        "Int8TokenHeadScaleAttention<false, false>",
+        _INT8KV_TOKENCALE_VARIANT_DECL,
     ]
 
 
@@ -264,9 +306,14 @@ def _get_int8kv_flashinfer_kv_workspace(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     device = _int8kv_normalize_cuda_device(device)
     capacity = 1 << (int(min_tokens) - 1).bit_length()
-    key = (str(device), str(dtype), num_kv_heads, head_size, capacity)
+    # Single-slot grow-only cache: decode advances seq_len every step, so a
+    # per-capacity cache would allocate a fresh fp32 workspace pair on every
+    # power-of-two boundary and pin them all forever (OOM at long context).
+    # Keep one workspace pair per (device, dtype, heads, head_dim) and grow it
+    # in place when a larger capacity is requested.
+    key = (str(device), str(dtype), num_kv_heads, head_size)
     workspaces = _INT8KV_FI_KV_WORKSPACES.get(key)
-    if workspaces is None:
+    if workspaces is None or workspaces[0].shape[0] < capacity:
         k_workspace = torch.empty(
             (capacity, num_kv_heads, head_size),
             dtype=dtype,
@@ -1152,8 +1199,8 @@ class TritonAttentionImpl(AttentionImpl):
         v_scale = self._v_scale_cache[blocks].reshape(
             -1, self.num_kv_heads
         )[offset : offset + num_tokens]
-        torch.mul(k_data.to(torch.float32), k_scale.unsqueeze(-1), out=k_target)
-        torch.mul(v_data.to(torch.float32), v_scale.unsqueeze(-1), out=v_target)
+        torch.mul(k_data, k_scale.to(torch.float16).unsqueeze(-1), out=k_target)
+        torch.mul(v_data, v_scale.to(torch.float16).unsqueeze(-1), out=v_target)
         return k_target, v_target
 
     def _run_int8kv_cascade_flashinfer_prefill(
@@ -1229,6 +1276,157 @@ class TritonAttentionImpl(AttentionImpl):
         scaled.clamp_(dtype_info.min, dtype_info.max)
         output.copy_(scaled)
         return True
+
+    def _get_int8kv_flashinfer_decode_wrapper(
+        self,
+        device: torch.device,
+        plan_key: tuple[object, ...],
+    ) -> BatchDecodeWithPagedKVCacheWrapper:
+        norm_device = _int8kv_normalize_cuda_device(device)
+        cache_key = (
+            str(norm_device),
+            _INT8KV_FI_PREFILL_BACKEND,
+            *plan_key,
+        )
+        wrapper = _INT8KV_FI_DECODE_WRAPPERS.get(cache_key)
+        if wrapper is None:
+            workspace = _get_int8kv_flashinfer_prefill_workspace(
+                norm_device, _INT8KV_FI_PREFILL_BACKEND
+            )
+            wrapper = BatchDecodeWithPagedKVCacheWrapper(
+                workspace,
+                "NHD",
+                jit_args=_int8kv_decode_jit_args(self.head_size),
+            )
+            _INT8KV_FI_DECODE_WRAPPERS[cache_key] = wrapper
+        return wrapper
+
+    def _try_int8kv_fa_decode(
+        self,
+        query: torch.Tensor,
+        kv_cache: torch.Tensor,
+        output: torch.Tensor,
+        attn_metadata: TritonAttentionMetadata,
+        num_actual_tokens: int,
+        output_scale: torch.Tensor | None,
+        output_block_scale: torch.Tensor | None,
+    ) -> bool:
+        """Single-token decode via the patched FlashInfer paged decode kernel.
+
+        Requires the flashinfer patches (see docs/int8kv-fa-decode.md):
+        REGISTER_VALUE_TRANSFORM macro, ValueTransform hook in decode.cuh, and
+        vec_t<int8_t> specializations. Falls back to the native path on any
+        failure.
+        """
+        if not _INT8KV_FA_DECODE or not self._is_per_token_head_quant:
+            return False
+        # The JIT variant is compiled with sliding-window and logits-soft-cap
+        # disabled (Int8TokenHeadScaleAttention<false, false>). Refuse models
+        # that need them instead of silently producing wrong outputs, and
+        # refuse head sizes that cannot be vector-loaded 16B-aligned.
+        if self.sliding_window != (-1, -1) or self.logits_soft_cap not in (None, 0.0):
+            return False
+        if self.head_size % 16 != 0:
+            return False
+        if output_scale is not None or output_block_scale is not None:
+            return False
+        if num_actual_tokens != 1:
+            return False
+        if attn_metadata.seq_lens_cpu is None or attn_metadata.block_table is None:
+            return False
+        seq_len = int(attn_metadata.seq_lens_cpu[0].item())
+        if seq_len <= 0:
+            return False
+        try:
+            self._ensure_scale_caches(kv_cache)
+            key_cache, value_cache = kv_cache.unbind(1)
+            if key_cache.dtype != torch.int8 or value_cache.dtype != torch.int8:
+                return False
+            head_dim = self.head_size
+            if _INT8KV_FA_DECODE_DEBUG:
+                logger.info(
+                    "FA decode debug: q=%s kv=%s kc_stride=%s vc_stride=%s "
+                    "ks_shape=%s ks_stride=%s vs_shape=%s vs_stride=%s seq=%s "
+                    "block_table=%s num_qo=%s nkv=%s gqa=%s",
+                    tuple(query.shape), tuple(kv_cache.shape),
+                    tuple(key_cache.stride()), tuple(value_cache.stride()),
+                    tuple(self._k_scale_cache.shape),
+                    tuple(self._k_scale_cache.stride()),
+                    tuple(self._v_scale_cache.shape),
+                    tuple(self._v_scale_cache.stride()),
+                    seq_len,
+                    tuple(attn_metadata.block_table.shape),
+                    self.num_heads, self.num_kv_heads, self.num_queries_per_kv,
+                )
+            # vLLM stores int8 scales in head padding (hs+pad, 16-aligned);
+            # FlashInfer reads strides from the tensors, so slicing to head_dim
+            # keeps the padded strides and addresses the data correctly.
+            k_view = key_cache[..., :head_dim]
+            v_view = value_cache[..., :head_dim]
+            block_size = int(key_cache.shape[1])
+            nblocks = (seq_len + block_size - 1) // block_size
+            indices = attn_metadata.block_table[0, :nblocks].to(
+                dtype=torch.int32, device=query.device
+            )
+            indptr = torch.tensor([0, nblocks], dtype=torch.int32, device=query.device)
+            last_page_len = seq_len - (nblocks - 1) * block_size
+            if last_page_len <= 0:
+                last_page_len = block_size
+            last_page_len_t = torch.tensor(
+                [last_page_len], dtype=torch.int32, device=query.device
+            )
+            plan_key = (
+                self.num_heads,
+                self.num_kv_heads,
+                head_dim,
+                block_size,
+                str(query.dtype),
+                str(key_cache.dtype),
+            )
+            wrapper = self._get_int8kv_flashinfer_decode_wrapper(
+                query.device, plan_key
+            )
+            wrapper.plan(
+                indptr,
+                indices,
+                last_page_len_t,
+                self.num_heads,
+                self.num_kv_heads,
+                head_dim,
+                block_size,
+                window_left=self.sliding_window[0],
+                logits_soft_cap=0.0,  # soft-cap rejected in the guard above
+                q_data_type=query.dtype,
+                kv_data_type=key_cache.dtype,
+                o_data_type=output.dtype,
+                sm_scale=self.scale,
+            )
+            wrapper.run(
+                query[:num_actual_tokens],
+                (k_view, v_view),
+                self._k_scale_cache,
+                self._v_scale_cache,
+                0.0,  # logits_soft_cap
+                self.scale,  # sm_scale
+                1.0,  # rope_rcp_scale
+                1e-4,  # rope_rcp_theta
+                self.num_queries_per_kv,  # gqa_group_size
+                self._k_scale_cache.stride(0),
+                self._k_scale_cache.stride(1),
+                self._k_scale_cache.stride(2),
+                out=output[:num_actual_tokens],
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - fall back to native path
+            skip_reason = f"fa_decode_failed:{type(exc).__name__}"
+            if skip_reason not in _INT8KV_FA_PREFILL_SKIP_LOGGED:
+                _INT8KV_FA_PREFILL_SKIP_LOGGED.add(skip_reason)
+                logger.info(
+                    "INT8 KV FA decode skipped reason=%s err=%s",
+                    skip_reason,
+                    exc,
+                )
+            return False
 
     def _try_int8kv_fa_prefill(
         self,
@@ -1458,7 +1656,11 @@ class TritonAttentionImpl(AttentionImpl):
                 dtype=torch.int32,
                 device=indptr_cpu.device,
             )
-            max_sequence_kv = seq_len
+            # Plan against the power-of-two capacity instead of the per-step
+            # seq_len so the FlashInfer wrapper is reused across decode steps
+            # (seq_len grows by one every step; a per-step plan key would
+            # allocate a new wrapper and plan on every token).
+            max_sequence_kv = 1 << (int(seq_len) - 1).bit_length()
         plan_key = (
             self.num_heads,
             self.num_kv_heads,
@@ -1470,32 +1672,38 @@ class TritonAttentionImpl(AttentionImpl):
             attn_metadata.max_query_len,
             max_sequence_kv,
         )
+        plan_kwargs = {
+            "qo_indptr": self._flashinfer_indptr(
+                indptr_cpu, self.num_heads, self.head_size
+            ),
+            "kv_indptr": self._flashinfer_indptr(
+                kv_indptr_cpu, self.num_kv_heads, self.head_size
+            ),
+            "num_qo_heads": self.num_heads,
+            "num_kv_heads": self.num_kv_heads,
+            "head_dim_qk": self.head_size,
+            "causal": True,
+            "window_left": self.sliding_window[0],
+            "logits_soft_cap": self.logits_soft_cap,
+            "sm_scale": self.scale,
+            "pos_encoding_mode": "NONE",
+            "q_data_type": query.dtype,
+            "kv_data_type": key.dtype,
+            "seq_lens": kv_indptr_cpu[1:] - kv_indptr_cpu[:-1],
+            "seq_lens_q": q_seq_lens,
+            "max_token_per_sequence": attn_metadata.max_query_len,
+            "max_sequence_kv": max_sequence_kv,
+        }
         wrapper = self._get_or_plan_int8kv_flashinfer_prefill_wrapper(
             query.device,
             plan_key,
-            {
-                "qo_indptr": self._flashinfer_indptr(
-                    indptr_cpu, self.num_heads, self.head_size
-                ),
-                "kv_indptr": self._flashinfer_indptr(
-                    kv_indptr_cpu, self.num_kv_heads, self.head_size
-                ),
-                "num_qo_heads": self.num_heads,
-                "num_kv_heads": self.num_kv_heads,
-                "head_dim_qk": self.head_size,
-                "causal": True,
-                "window_left": self.sliding_window[0],
-                "logits_soft_cap": self.logits_soft_cap,
-                "sm_scale": self.scale,
-                "pos_encoding_mode": "NONE",
-                "q_data_type": query.dtype,
-                "kv_data_type": key.dtype,
-                "seq_lens": kv_indptr_cpu[1:] - kv_indptr_cpu[:-1],
-                "seq_lens_q": q_seq_lens,
-                "max_token_per_sequence": attn_metadata.max_query_len,
-                "max_sequence_kv": max_sequence_kv,
-            },
+            plan_kwargs,
         )
+        if use_continuation_bridge:
+            # seq_lens grows every decode step; the wrapper object is reused via
+            # the capacity-based plan key, but the plan itself must track the
+            # current seq_len, so re-plan on every step.
+            wrapper.plan(**plan_kwargs)
         if use_continuation_bridge:
             self._ensure_scale_caches(kv_cache)
             key_cache, value_cache = kv_cache.unbind(1)
@@ -1523,8 +1731,12 @@ class TritonAttentionImpl(AttentionImpl):
             v_scale = self._v_scale_cache[blocks].reshape(
                 -1, self.num_kv_heads
             )[:seq_len]
-            torch.mul(k_data.to(torch.float32), k_scale.unsqueeze(-1), out=k_target)
-            torch.mul(v_data.to(torch.float32), v_scale.unsqueeze(-1), out=v_target)
+            # dequant in fp16: int8 holds only 8 bits of precision, so the fp16
+            # intermediate is lossless for the quantized source and avoids
+            # materializing an fp32 temporary for the whole KV range on every
+            # decode step (OOM at long context).
+            torch.mul(k_data, k_scale.to(torch.float16).unsqueeze(-1), out=k_target)
+            torch.mul(v_data, v_scale.to(torch.float16).unsqueeze(-1), out=v_target)
             k_prefill = k_target
             v_prefill = v_target
         else:
@@ -1849,6 +2061,17 @@ class TritonAttentionImpl(AttentionImpl):
             output_scale,
             output_block_scale,
             num_actual_tokens,
+        ):
+            return output
+
+        if self._try_int8kv_fa_decode(
+            query,
+            kv_cache,
+            output,
+            attn_metadata,
+            num_actual_tokens,
+            output_scale,
+            output_block_scale,
         ):
             return output
 

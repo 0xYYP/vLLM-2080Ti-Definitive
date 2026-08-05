@@ -205,10 +205,13 @@ def test_int8_eligibility_truth_table(source, field, value, reason) -> None:
          ("disabled", "continuation_batch_not_1", False, False)),
         (_I_SMALL, {"computed_tokens": 1, "query_len": 127,
          "has_sequence_len": False},
-         ("disabled", "continuation_q_too_small", False, False)),
+         ("disabled", "continuation_missing_seq_lens_cpu", False, False)),
         (_I_SMALL, {"computed_tokens": 1, "query_len": 127,
          "direct_paged": False},
-         ("disabled", "continuation_q_too_small", False, False)),
+         ("continuation", None, False, False)),
+        (_I_SMALL, {"computed_tokens": 1, "query_len": 1,
+         "sequence_len": 65_536},
+         ("continuation", None, True, False)),
         (_I_SEQ, {"computed_tokens": 1, "has_sequence_len": False},
          ("disabled", "continuation_missing_seq_lens_cpu", False, False)),
         (_I_CASCADE, {"computed_tokens": 1, "sequence_len": 65_537},
@@ -259,3 +262,66 @@ def test_current_surfaces_and_malformed_inputs() -> None:
         planner.TQCUDAGraphInput._make((True, 1))
     with pytest.raises(ValueError):
         planner.SpecSyncMode("unsafe")
+
+
+def _load_triton_attn_for_test():
+    """Load triton_attn lazily; skip where torch/flashinfer are absent."""
+    pytest.importorskip("torch")
+    spec = importlib.util.spec_from_file_location(
+        "triton_attn_for_test",
+        _ATTN / "backends/triton_attn.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["triton_attn_for_test"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sliding_window", (1, 256)),
+        ("logits_soft_cap", 30.0),
+        ("head_size", 80),
+    ],
+)
+def test_int8kv_fa_decode_guard_rejects_unsafe_models(field, value) -> None:
+    """FA decode JIT variant 编译期禁用 sliding-window / logits-soft-cap
+    （Int8TokenHeadScaleAttention<false, false>），且 128-bit vector load
+    要求 head_size 16 对齐。guard 必须拒绝不满足条件的模型，避免静默
+    产出错误输出，而不是回退到原生 O(KV) 扫描。"""
+    import types
+    from unittest import mock
+
+    ta = _load_triton_attn_for_test()
+    method = ta.TritonAttention._try_int8kv_fa_decode
+
+    class FakeMeta:
+        seq_lens_cpu = None
+        block_table = None
+
+    fake_self = types.SimpleNamespace(
+        _is_per_token_head_quant=True,
+        sliding_window=(-1, -1),
+        logits_soft_cap=None,
+        head_size=256,
+        num_heads=12,
+        num_kv_heads=2,
+        num_queries_per_kv=6,
+        scale=0.125,
+    )
+    setattr(fake_self, field, value)
+
+    with mock.patch.object(ta, "_INT8KV_FA_DECODE", True):
+        result = method(
+            fake_self,
+            object(),  # query
+            object(),  # kv_cache
+            object(),  # output
+            FakeMeta(),
+            1,  # num_actual_tokens
+            None,  # output_scale
+            None,  # output_block_scale
+        )
+    assert result is False

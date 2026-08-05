@@ -24,7 +24,12 @@ are not capacity evidence.
 
 - FP16/default KV is the quality route.
 - INT8 KV is the capacity / balance route; currently shipped only as
-  `normal` / piecewise profiles.
+  `normal` / piecewise profiles. With `VLLM_INT8KV_FA_DECODE=1` the decode
+  path uses a patched FlashInfer decode variant (per-token-head scale inside
+  the kernel) instead of the native O(KV) scan; measured 250K-context decode
+  6.3 tok/s vs ~1.5-2 tok/s native. Maximum usable context is 245K
+  (`int8kv-245K-mtp3-text-only.env`); 262144 OOMs on a single 100K write.
+  See `docs/int8kv-fa-decode.md`.
 - TQK8V4 is the TurboQuant compression route; currently shipped only for
   quality-passed `fast` profiles.
 - TQ4NC had capacity experiments, but is not used in the current shipped

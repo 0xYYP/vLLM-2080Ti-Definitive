@@ -20,6 +20,11 @@
 
 - FP16/default KV 是质量路线。
 - INT8 KV 是容量 / 平衡路线；当前只保留 `normal` / piecewise profile。
+  开启 `VLLM_INT8KV_FA_DECODE=1` 后，decode 走补丁版 FlashInfer decode
+  variant（per-token-head scale 在 kernel 内应用），不再回退原生 O(KV)
+  全量扫描；实测 250K 上下文 decode 6.3 tok/s（原生外推 ~1.5-2 tok/s）。
+  极限可用上下文为 245K（`int8kv-245K-mtp3-text-only.env`）；262144 在
+  单次 100K 写入即 OOM。详见 `docs/int8kv-fa-decode.md`。
 - TQK8V4 是 TurboQuant 压缩路线；当前只保留质量通过的 `fast` profile。
 - TQ4NC 有过容量实验，但当前正式 profile 不采用。
 
