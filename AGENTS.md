@@ -105,3 +105,35 @@ real benchmark or smoke result that proves the changed path still works.
   `pyproject.toml` version fallback aligned for releases.
 - Release tags and GitHub Releases are separate. Pushing a tag is not enough to
   update the GitHub Release page.
+
+## Merge And Release Workflow
+
+The default branch `main` is protected: `required_status_checks`
+(`shell-contracts`, `python-policy-tests`), `enforce_admins`, and force pushes
+are disabled. All changes land through pull requests.
+
+Standard flow for each change:
+
+1. Branch from `main`: `git checkout -b fix/<topic>`.
+2. Commit with conventional subjects and a full body per the commit message
+   discipline above.
+3. Push the branch: `git push -u origin fix/<topic>`.
+4. Open a PR against `main` and fill the description following the project
+   template (background/root cause, goals, implementation, validation,
+   test environment, risks).
+5. Wait for CI to go green.
+6. Merge with **Rebase and merge** so each commit stays independent and `main`
+   history remains linear. Do not use squash (it collapses the history) and
+   avoid merge commits (they create a fork topology).
+7. Delete the remote branch after merge.
+
+Rules that prevent history rewrite problems:
+
+- Never amend, rebase, or force push a branch that has already been pushed.
+  Rewriting pushed history breaks the CI diff-base resolution (the push event
+  uses `github.event.before`, which becomes unreachable after a force push)
+  and leaves confusing merge records.
+- If a commit message needs fixing after push, add a follow-up commit or open a
+  new PR instead of rewriting the pushed branch.
+- Do not bypass `main` branch protection to rewrite merged history. If the
+  merged topology is wrong, prefer a corrective PR over a force push.
