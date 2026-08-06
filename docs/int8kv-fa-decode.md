@@ -31,6 +31,15 @@ flash-decoding 分块并行路径。实测 250K 上下文 decode 6.3 tok/s（原
    增加特化（文件无 include guard，需在文件头补 `#pragma once` 避免重复
    定义）。kv_cache head_dim 必须 16 对齐（见下），否则 128-bit vector load
    在 head 偏移处 misaligned address。
+4. `attention/prefill.cuh`（direct_paged 的 V scale，2026-08-07 新增）：
+   `compute_sfm_v` 增加 `Params`/`variant`/`batch_idx`/`kv_idx_base`/
+   `kv_head_idx` 参数，在 int8→f16 的 B fragment（mma B，col-major，
+   `k = 2*(tid/4)+{0,1}`）cast 后应用 per-token-head `v_scale`（`half2`
+   乘法，4 组覆盖 m16n16k16 的两个 m16n8k16 半边）。用自包含
+   `vllm_has_v_scale_member<Params>`（SFINAE 检测 `maybe_v_scale_cache`
+   成员，不依赖 flashinfer 的 `has_*_v` 宏，标准 fa2 JIT 未定义该宏）。
+   三个调用点（single/ragged/paged）同步更新；ragged 桥路径 dequant 后
+   KV 为 fp16、Params 无 scale 成员，走 `if constexpr` 空分支不受影响。
 
 以上补丁为实验性、未随本仓库分发；升级/重装 FlashInfer 后需重新应用。
 
