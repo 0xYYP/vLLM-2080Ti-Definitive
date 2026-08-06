@@ -84,6 +84,9 @@ _INT8KV_FA_CASCADE_TILE_TOKENS = int(
     os.getenv("VLLM_INT8KV_FA_CASCADE_TILE_TOKENS", "65536")
 )
 _INT8KV_FA_DIRECT_PAGED = os.getenv("VLLM_INT8KV_FA_DIRECT_PAGED", "0") == "1"
+_INT8KV_FA_DIRECT_PAGED_NOSPLIT = (
+    os.getenv("VLLM_INT8KV_FA_DIRECT_PAGED_NOSPLIT", "0") == "1"
+)
 _INT8KV_FA_DECODE = os.getenv("VLLM_INT8KV_FA_DECODE", "0") == "1"
 _INT8KV_FA_DECODE_DEBUG = os.getenv("VLLM_INT8KV_FA_DECODE_DEBUG", "0") == "1"
 _INT8KV_ALIGNED_HEAD_STRIDE = (
@@ -1126,6 +1129,7 @@ class TritonAttentionImpl(AttentionImpl):
                 ),
                 seq_lens_q=q_seq_lens.to(dtype=torch.int32, device=query.device),
                 max_token_per_sequence=q_len,
+                disable_split_kv=_INT8KV_FA_DIRECT_PAGED_NOSPLIT,
             )
             wrapper.run(
                 q_prefill,
@@ -1553,7 +1557,6 @@ class TritonAttentionImpl(AttentionImpl):
 
         if (
             plan.direct_paged_attempt
-            and not use_continuation_bridge
             and self._try_int8kv_direct_paged_prefill(
                 q_prefill,
                 kv_cache,

@@ -230,6 +230,12 @@ class SM75AttentionPlanner:
         direct: bool,
         force_first_chunk: bool,
     ) -> Int8KVRoutePlan:
+        # 分路径保护（direct_paged 长上下文研究基线）：cascade（长 KV）与
+        # prefill 续块（query_len>16）强制走桥，防 direct_paged 在 SM75 上
+        # CUDA illegal access；decode/verify（query_len≤4）走 direct_paged
+        # 快速路径。后续修复 kernel 后逐步放宽。
+        if route is Int8KVRoute.CASCADE or inputs.query_len > 16:
+            direct = False
         if route is not Int8KVRoute.CASCADE and not inputs.ragged_enabled:
             return Int8KVRoutePlan(
                 Int8KVRoute.DISABLED,
