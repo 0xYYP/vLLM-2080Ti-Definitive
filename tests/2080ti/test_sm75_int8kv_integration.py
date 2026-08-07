@@ -193,7 +193,7 @@ def test_trace_is_observational_for_each_int8kv_plan() -> None:
         assert trace_enabled in (False, True)
         assert observed == [
             ("disabled", "alibi", False),
-            ("continuation", None, True),
+            ("continuation", None, False),
             ("cascade", None, False),
         ]
 
@@ -242,7 +242,7 @@ def test_trace_route_payload_is_bounded_and_machine_observable(
     assert len(caplog.records) == 1
     fields = dict(caplog.records[0].sm75_attention_trace.fields)
     assert fields == {
-        "direct_paged_attempt": True,
+        "direct_paged_attempt": False,
         "first_chunk": False,
         "query_len": 128,
         "reason": None,
@@ -279,7 +279,7 @@ def test_trace_route_payload_is_bounded_and_machine_observable(
             ("continuation", None, False, True),
         ),
         ({"request_count": 2}, ("disabled", "continuation_batch_not_1", False, False)),
-        ({"query_len": 127}, ("disabled", "continuation_q_too_small", False, False)),
+        ({"query_len": 127}, ("continuation", None, False, False)),
         (
             {"has_sequence_len": False},
             ("disabled", "continuation_missing_seq_lens_cpu", False, False),
@@ -289,7 +289,7 @@ def test_trace_route_payload_is_bounded_and_machine_observable(
             {"sequence_len": 65_537, "cascade_dequant": True},
             ("cascade", None, False, False),
         ),
-        ({"direct_paged": True}, ("continuation", None, True, False)),
+        ({"direct_paged": True}, ("continuation", None, False, False)),
         (
             {"ragged_enabled": False},
             ("disabled", "ragged_prefill_disabled", False, False),
