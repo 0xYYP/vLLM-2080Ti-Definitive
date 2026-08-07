@@ -1396,6 +1396,17 @@ class TritonAttentionImpl(AttentionImpl):
             last_page_len_t = torch.full(
                 (batch,), last_page_len, dtype=torch.int32, device=query.device
             )
+            # Keep plan tensors alive across the async kernel launch: FlashInfer
+            # reads indptr/indices/last_page_len from device memory while the
+            # kernel is queued, and local temporaries can be reclaimed by the
+            # caching allocator before execution (observed as garbage kv_len /
+            # zeroed k/v tiles). Same CUDA stream guarantees the previous
+            # kernel has finished by the next call.
+            self._int8kv_fa_decode_plan_tensors = (
+                indptr,
+                indices,
+                last_page_len_t,
+            )
             plan_key = (
                 self.num_heads,
                 self.num_kv_heads,
