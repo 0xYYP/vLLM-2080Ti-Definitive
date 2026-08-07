@@ -47,7 +47,7 @@ flash-decoding 分块并行路径。实测 250K 上下文 decode 6.3 tok/s（原
    request 0 的 scale 区域（verify batch=4 场景 indices 共享时数据恰好
    相同，但 page 偏移仍会越界读 indices，触发 misaligned/错数据）。
 
-以上补丁为实验性、未随本仓库分发；升级/重装 FlashInfer 后需重新应用。
+以上补丁已随本仓库分发于 `patches/flashinfer-0.6.8.post1/`（修改后的完整文件 + apply.sh）；升级/重装 FlashInfer 后运行 `bash patches/flashinfer-0.6.8.post1/apply.sh <site-packages>` 重新应用（会校验版本并备份原文件）。
 
 ## 启用条件
 

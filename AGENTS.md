@@ -56,6 +56,12 @@ come from upstream vLLM:
 - Before committing, inspect the complete subject and body with
   `git show -s --format=fuller <commit>`; do not treat a concise subject as a
   substitute for a useful maintenance record.
+- Commit message formatting (repository-owner preference, enforced since
+  2026-08-07): subject is a single line; the body is written as continuous
+  paragraphs with NO manual hard line breaks — do not wrap sentences by hand
+  (let the terminal/editor wrap naturally). Separate paragraphs with a single
+  blank line. Verify with `git show -s --format=%B <commit>` that the body
+  contains no hand-wrapped lines (only paragraph separators and list items).
 
 ## Runtime And Profile Rules
 
@@ -129,11 +135,18 @@ Standard flow for each change:
 
 Rules that prevent history rewrite problems:
 
-- Never amend, rebase, or force push a branch that has already been pushed.
-  Rewriting pushed history breaks the CI diff-base resolution (the push event
-  uses `github.event.before`, which becomes unreachable after a force push)
-  and leaves confusing merge records.
-- If a commit message needs fixing after push, add a follow-up commit or open a
-  new PR instead of rewriting the pushed branch.
+- Do not rewrite pushed branch history unless the repository owner explicitly
+  approves it. The original rationale (force push breaks CI diff-base
+  resolution) was fixed by `3b7d503` (cpu-validation falls back to `HEAD^`
+  when `github.event.before` is unreachable), so rewriting is technically
+  safe; the remaining cost is confusing merge records for other clones.
+  Before force pushing: confirm no other clone has dependent work, announce
+  the rewrite, and have other clones `git fetch` + `git reset --hard
+  origin/<branch>` to align.
+- Prefer rewriting only commits that are not yet pushed; for pushed commits,
+  treat rewriting as the exception and get explicit owner approval (as done
+  for the 2026-08-07 commit-message format rewrite).
+- If a commit message needs fixing after push and rewriting is not approved,
+  add a follow-up commit or open a new PR instead.
 - Do not bypass `main` branch protection to rewrite merged history. If the
   merged topology is wrong, prefer a corrective PR over a force push.

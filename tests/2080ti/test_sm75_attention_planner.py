@@ -196,7 +196,7 @@ def test_int8_eligibility_truth_table(source, field, value, reason) -> None:
 @pytest.mark.parametrize(
     ("source", "overrides", "expected"),
     [
-        (_I_FIRST, {}, ("ragged", None, True, False)),
+        (_I_FIRST, {}, ("ragged", None, False, False)),
         (_I_FIRST, {"first_chunk_dequant": True}, ("continuation", None, False, True)),
         (_I_BATCH, {"computed_tokens": 1, "continuation_dequant": False},
          ("disabled", "prefix_or_cached_kv", False, False)),
@@ -217,12 +217,12 @@ def test_int8_eligibility_truth_table(source, field, value, reason) -> None:
         (_I_CASCADE, {"computed_tokens": 1, "sequence_len": 65_537},
          ("disabled", "continuation_too_long", False, False)),
         (_I_CASCADE, {"computed_tokens": 1, "sequence_len": 65_537,
-         "cascade_dequant": True}, ("cascade", None, True, False)),
-        (_I_CASCADE, {"computed_tokens": 1}, ("continuation", None, True, False)),
+         "cascade_dequant": True}, ("cascade", None, False, False)),
+        (_I_CASCADE, {"computed_tokens": 1}, ("continuation", None, False, False)),
         (_I_CASCADE, {"computed_tokens": 1, "cascade_dequant": True},
-         ("continuation", None, True, False)),
+         ("continuation", None, False, False)),
         (_I_RAGGED, {"ragged_enabled": False},
-         ("disabled", "ragged_prefill_disabled", True, False)),
+         ("disabled", "ragged_prefill_disabled", False, False)),
     ],
 )
 def test_int8_route_truth_table(source, overrides, expected) -> None:
@@ -292,10 +292,11 @@ def test_int8kv_fa_decode_guard_rejects_unsafe_models(field, value) -> None:
     要求 head_size 16 对齐。guard 必须拒绝不满足条件的模型，避免静默
     产出错误输出，而不是回退到原生 O(KV) 扫描。"""
     import types
+    import torch
     from unittest import mock
 
     ta = _load_triton_attn_for_test()
-    method = ta.TritonAttention._try_int8kv_fa_decode
+    method = ta.TritonAttentionImpl._try_int8kv_fa_decode
 
     class FakeMeta:
         seq_lens_cpu = None
@@ -317,10 +318,49 @@ def test_int8kv_fa_decode_guard_rejects_unsafe_models(field, value) -> None:
         result = method(
             fake_self,
             object(),  # query
-            object(),  # kv_cache
+            types.SimpleNamespace(dtype=torch.int8),  # kv_cache（穿过 dtype guard）
             object(),  # output
             FakeMeta(),
             1,  # num_actual_tokens
+            None,  # output_scale
+            None,  # output_block_scale
+        )
+    assert result is False
+
+
+def test_int8kv_fa_decode_guard_rejects_batch() -> None:
+    """FA decode 把 query 行建模为共享单 request KV 前缀（MTP verify），
+    batch>1 的独立 decode 必须被拒绝，否则静默复用 request 0 的 KV。"""
+    import types
+    import torch
+    from unittest import mock
+
+    ta = _load_triton_attn_for_test()
+    method = ta.TritonAttentionImpl._try_int8kv_fa_decode
+
+    class FakeMeta:
+        seq_lens_cpu = [10, 20]  # batch=2 独立 decode
+        block_table = object()
+
+    fake_self = types.SimpleNamespace(
+        _is_per_token_head_quant=True,
+        sliding_window=(-1, -1),
+        logits_soft_cap=None,
+        head_size=256,
+        num_heads=12,
+        num_kv_heads=2,
+        num_queries_per_kv=6,
+        scale=0.125,
+    )
+
+    with mock.patch.object(ta, "_INT8KV_FA_DECODE", True):
+        result = method(
+            fake_self,
+            object(),  # query
+            types.SimpleNamespace(dtype=torch.int8),  # kv_cache（穿过 dtype guard）
+            object(),  # output
+            FakeMeta(),
+            2,  # num_actual_tokens == num_seqs == 2
             None,  # output_scale
             None,  # output_block_scale
         )

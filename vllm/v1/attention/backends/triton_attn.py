@@ -1322,6 +1322,10 @@ class TritonAttentionImpl(AttentionImpl):
         """
         if not _INT8KV_FA_DECODE or not self._is_per_token_head_quant:
             return False
+        if getattr(kv_cache, "dtype", None) != torch.int8:
+            # The JIT variant and vector paths are int8-only; fp8-per-token-
+            # head would fail later and just fall back, so refuse up front.
+            return False
         # The JIT variant is compiled with sliding-window and logits-soft-cap
         # disabled (Int8TokenHeadScaleAttention<false, false>). Refuse models
         # that need them instead of silently producing wrong outputs, and
@@ -1337,6 +1341,11 @@ class TritonAttentionImpl(AttentionImpl):
             # the same confirmed KV prefix). Anything larger falls through.
             return False
         if attn_metadata.seq_lens_cpu is None or attn_metadata.block_table is None:
+            return False
+        if len(attn_metadata.seq_lens_cpu) != 1:
+            # This path models all query rows as sharing one request's KV
+            # prefix (MTP verify). A batch of independent decode requests
+            # would silently reuse request 0's KV, so refuse batch>1.
             return False
         seq_len = int(attn_metadata.seq_lens_cpu[0].item())
         if seq_len <= 0:

@@ -91,6 +91,11 @@ with `VLLM_INT8KV_FA_DECODE=1`; 262144 OOMs on a single 100K write. See
 [`docs/int8kv-fa-decode.md`](../docs/int8kv-fa-decode.md) for the decode
 acceleration details and limits.
 
+Note (2026-08-07, kv_cache head stride 16B-aligned to 272): the `int8kv-252K`
+row (MAX_MODEL_LEN=258048) exceeds the verified 250880 limit and may OOM on
+cold starts; the verified INT8 ceiling is `int8kv-245K` (250880). Re-validate
+`int8kv-252K` before promoting it back to a recommended preset.
+
 ### Qwen3.6 35B FP8
 
 Tested checkpoint target: Qwen/Qwen3.6-35B-A3B-FP8, about 36G.
