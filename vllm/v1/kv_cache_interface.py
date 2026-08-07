@@ -164,8 +164,16 @@ class AttentionSpec(KVCacheSpec):
                     assert self.page_size_padded >= real_page_size
                     return self.page_size_padded
                 return real_page_size
+            # Pad the head stride to 16B so FlashInfer's 128-bit KV loads
+            # stay aligned (260 elements = 520B would be misaligned).
+            scale_pad = get_dtype_size(torch.float32) // get_dtype_size(self.dtype)
+            padded_head_size = round_up(self.head_size + scale_pad, 16)
             real_page_size += (
-                2 * self.block_size * self.num_kv_heads * get_dtype_size(torch.float32)
+                2
+                * self.block_size
+                * self.num_kv_heads
+                * (padded_head_size - self.head_size)
+                * get_dtype_size(self.dtype)
             )
         if self.page_size_padded is not None:
             assert self.page_size_padded >= real_page_size

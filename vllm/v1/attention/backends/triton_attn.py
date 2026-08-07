@@ -623,11 +623,9 @@ class TritonAttentionBackend(AttentionBackend):
             cache_dtype = STR_DTYPE_TO_TORCH_DTYPE[cache_dtype_str]
             scale_pad = get_dtype_size(torch.float32) // get_dtype_size(cache_dtype)
             padded_head_size = head_size + scale_pad
-            if (
-                cache_dtype is torch.int8
-                and _INT8KV_ALIGNED_HEAD_STRIDE
-                and padded_head_size % 16 != 0
-            ):
+            if cache_dtype is torch.int8 and padded_head_size % 16 != 0:
+                # Keep the head stride 16B-aligned so FlashInfer's 128-bit
+                # KV loads stay aligned (e.g. 260 elems = 520B would fault).
                 padded_head_size = ((padded_head_size + 15) // 16) * 16
             return (num_blocks, 2, block_size, num_kv_heads, padded_head_size)
         return (num_blocks, 2, block_size, num_kv_heads, head_size)
@@ -1334,7 +1332,9 @@ class TritonAttentionImpl(AttentionImpl):
             return False
         if output_scale is not None or output_block_scale is not None:
             return False
-        if num_actual_tokens != 1:
+        if num_actual_tokens > 4:
+            # Single-token target decode (1) or MTP verify (4 tokens sharing
+            # the same confirmed KV prefix). Anything larger falls through.
             return False
         if attn_metadata.seq_lens_cpu is None or attn_metadata.block_table is None:
             return False
@@ -1368,16 +1368,24 @@ class TritonAttentionImpl(AttentionImpl):
             k_view = key_cache[..., :head_dim]
             v_view = value_cache[..., :head_dim]
             block_size = int(key_cache.shape[1])
+            # MTP verify: num_actual_tokens (1 or 4) query rows all attend the
+            # same confirmed KV prefix; model them as a batch of requests that
+            # share the block table (paged_kv_indptr with repeated offsets).
+            batch = num_actual_tokens
             nblocks = (seq_len + block_size - 1) // block_size
-            indices = attn_metadata.block_table[0, :nblocks].to(
-                dtype=torch.int32, device=query.device
-            )
-            indptr = torch.tensor([0, nblocks], dtype=torch.int32, device=query.device)
+            # Batch of requests sharing the same KV prefix: the block table is
+            # repeated per request so paged_kv_indices covers indptr[-1].
+            indices = attn_metadata.block_table[0, :nblocks].repeat(
+                batch
+            ).to(dtype=torch.int32, device=query.device)
+            indptr = torch.arange(
+                batch + 1, dtype=torch.int32, device=query.device
+            ) * nblocks
             last_page_len = seq_len - (nblocks - 1) * block_size
             if last_page_len <= 0:
                 last_page_len = block_size
-            last_page_len_t = torch.tensor(
-                [last_page_len], dtype=torch.int32, device=query.device
+            last_page_len_t = torch.full(
+                (batch,), last_page_len, dtype=torch.int32, device=query.device
             )
             plan_key = (
                 self.num_heads,
