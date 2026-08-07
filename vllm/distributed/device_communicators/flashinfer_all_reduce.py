@@ -28,7 +28,9 @@ try:
     )
 
     fi_ar_available = hasattr(flashinfer_comm, "allreduce_fusion")
-except ImportError:
+except (ImportError, TypeError):
+    # vllm-2080ti: flashinfer 0.6.16rc4's comm backend may raise TypeError on
+    # import (cuda-python array API mismatch); fall back to NCCL all-reduce.
     pass
 
 # Workspace for standalone allreduce and non-quant ar+rms fusion
