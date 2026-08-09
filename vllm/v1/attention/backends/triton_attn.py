@@ -148,7 +148,12 @@ struct Int8TokenHeadScaleAttention : AttentionVariantBase {
   template <typename Params>
   __device__ __host__ Int8TokenHeadScaleAttention(const Params& params, uint32_t batch_idx,
                                               uint8_t* smem_ptr) {
-qo_len = params.get_qo_len(batch_idx);
+// vllm-2080ti: MTP verify uses QO_LEN=4 (one kernel-internal constant,
+// matching the QO_LEN constexpr in decode.cuh). Do NOT infer qo_len from
+// o_indptr: DecodeSplitKVIndptr expands each query row into its KV-chunk
+// range, so o_indptr[i+1]-o_indptr[i] is the chunk count (e.g. 42 at 125K),
+// not the query-row count. The causal boundary must use the real 4.
+qo_len = 4;
 kv_len = params.get_kv_len(batch_idx);
 window_left = (params.window_left >= 0) ? params.window_left : kv_len;
 if constexpr (use_logits_soft_cap) {
@@ -191,6 +196,14 @@ bool mask = true;
 if constexpr (use_sliding_window) {
   mask &= (kv_idx + 1 + window_left >= kv_len);
 }
+// vllm-2080ti: MTP verify rows share one KV prefix whose length already
+// includes the speculative tokens (seq_lens_cpu is the optimistic length).
+// Query row i sits at position kv_len - qo_len + i and attends
+// kv_idx < kv_len - qo_len + 1 + i (0-based kv_idx, inclusive of its own
+// position). Use signed/clamped arithmetic to avoid uint32 underflow.
+const int64_t causal_bound =
+    std::max<int64_t>(0, int64_t(kv_len) - int64_t(qo_len) + 1 + int64_t(qo_idx));
+mask &= int64_t(kv_idx) < causal_bound;
 return mask;
   })
 
@@ -1350,6 +1363,11 @@ class TritonAttentionImpl(AttentionImpl):
             return False
         seq_len = int(attn_metadata.seq_lens_cpu[0].item())
         if seq_len <= 0:
+            return False
+        if seq_len <= 256:
+            # SingleDecodeWithKVCacheKernel (the seq_len <= 256 fallback) is
+            # single-query: it would only process query row 0 of the MTP
+            # verify block. Fall back to the ragged bridge for short prefixes.
             return False
         try:
             self._ensure_scale_caches(kv_cache)

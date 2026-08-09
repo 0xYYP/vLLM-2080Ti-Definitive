@@ -64,7 +64,8 @@ template <PosEncodingMode pos_encoding_mode, uint32_t vec_size, uint32_t bdx, ui
 __device__ __forceinline__ void compute_qk(
     const Params& params, AttentionVariant variant, const uint32_t batch_idx, const T* smem,
     const vec_t<float, vec_size>& q_vec, const vec_t<float, vec_size>& freq, uint32_t kv_idx_base,
-    uint32_t iter_base, uint32_t iter_bound, uint32_t qo_head_idx, uint32_t kv_head_idx, float* s,
+    uint32_t iter_base, uint32_t iter_bound, uint32_t qo_idx, uint32_t qo_head_idx,
+    uint32_t kv_head_idx, float* s,
     state_t<vec_size>& st, const uint32_t tx, const uint32_t ty, const uint32_t tz) {
   float m_prev = st.m;
 #pragma unroll
@@ -88,13 +89,13 @@ __device__ __forceinline__ void compute_qk(
       s[j] += math::shfl_xor_sync(s[j], offset);
     }
     const uint32_t pos = kv_idx_base + tz * tile_size + j;
-    s[j] = variant.LogitsTransform(params, s[j], batch_idx, /*qo_idx=*/0, /*kv_idx=*/pos,
+    s[j] = variant.LogitsTransform(params, s[j], batch_idx, qo_idx, /*kv_idx=*/pos,
                                    qo_head_idx, kv_head_idx);
     if constexpr (variant.use_softmax) {
       s[j] *= variant.sm_scale_log2;
     }
 
-    bool mask = variant.LogitsMask(params, batch_idx, /*qo_idx=*/0, /*kv_idx=*/pos, qo_head_idx,
+    bool mask = variant.LogitsMask(params, batch_idx, qo_idx, /*kv_idx=*/pos, qo_head_idx,
                                    kv_head_idx);
     s[j] = (iter_base + tz * tile_size + j < iter_bound && mask) ? s[j] : -math::inf;
     st.m = max(st.m, s[j]);
@@ -133,7 +134,7 @@ template <uint32_t vec_size, uint32_t bdx, uint32_t tile_size, typename T,
 __device__ __forceinline__ void update_local_state(
     const T* smem, const float* s, uint32_t compute_stage_idx, state_t<vec_size>& st,
     uint32_t tx, const Params& params, AttentionVariant variant, uint32_t kv_idx_base,
-    uint32_t kv_head_idx, uint32_t qo_head_idx, uint32_t batch_idx = 0u) {
+    uint32_t qo_idx, uint32_t kv_head_idx, uint32_t qo_head_idx, uint32_t batch_idx = 0u) {
 #pragma unroll
   for (uint32_t j = 0; j < tile_size; ++j) {
     vec_t<float, vec_size> v_vec;
@@ -142,8 +143,8 @@ __device__ __forceinline__ void update_local_state(
     const uint32_t kv_idx = kv_idx_base + j;
     for (uint32_t i = 0; i < vec_size; ++i) {
       st.o[i] = st.o[i] +
-                s[j] * variant.ValueTransform(params, v_vec[i], /*batch_idx=*/batch_idx,
-                                              /*qo_idx=*/0u, kv_idx, qo_head_idx, kv_head_idx);
+                s[j] * variant.ValueTransform(params, v_vec[i], /*batch_idx=*/batch_idx, qo_idx,
+                                              kv_idx, qo_head_idx, kv_head_idx);
     }
   }
 }
@@ -317,8 +318,8 @@ __global__ void SingleDecodeWithKVCacheKernel(const __grid_constant__ Params par
     compute_qk<pos_encoding_mode, vec_size, bdx, bdy * tile_size_per_bdx>(
         params, variant, /*batch_idx=*/0,
         k_smem + (stage_idx * bdz + tz) * bdy * tile_size_per_bdx * head_dim, q_vec, freq,
-        consumer_kv_idx_base, iter * bdy * tile_size_per_bdx * bdz, kv_chunk_size, qo_head_idx,
-        kv_head_idx, s, st_local, tx, ty, tz);
+        consumer_kv_idx_base, iter * bdy * tile_size_per_bdx * bdz, kv_chunk_size, /*qo_idx=*/0,
+        qo_head_idx, kv_head_idx, s, st_local, tx, ty, tz);
     block.sync();
     // load k
     for (uint32_t j = 0; j < tile_size_per_bdx; ++j) {
@@ -337,7 +338,8 @@ __global__ void SingleDecodeWithKVCacheKernel(const __grid_constant__ Params par
     update_local_state<vec_size, bdx, bdy * tile_size_per_bdx>(
         v_smem + (stage_idx * bdz + tz) * bdy * tile_size_per_bdx * head_dim, s, stage_idx,
         st_local, tx, params, variant,
-        consumer_kv_idx_base + (tz * bdy + ty) * tile_size_per_bdx, kv_head_idx, qo_head_idx);
+        consumer_kv_idx_base + tz * (bdy * tile_size_per_bdx), /*qo_idx=*/0, kv_head_idx,
+        qo_head_idx);
     block.sync();
 
     // load v
@@ -564,8 +566,8 @@ __device__ __inline__ void BatchDecodeWithPagedKVCacheDevice(const Params& param
           freq,
           (paged_kv.rope_pos_offset == nullptr ? 0 : paged_kv.rope_pos_offset[batch_idx]) +
               chunk_start + iter * tile_size_per_bdx * bdy * bdz,
-          iter * tile_size_per_bdx * bdy * bdz, chunk_size, qo_head_idx, kv_head_idx, s[qo_idx],
-          st[qo_idx], tx, ty, tz);
+          iter * tile_size_per_bdx * bdy * bdz, chunk_size, qo_idx, qo_head_idx, kv_head_idx,
+          s[qo_idx], st[qo_idx], tx, ty, tz);
     }
     block.sync();
 
@@ -597,8 +599,8 @@ __device__ __inline__ void BatchDecodeWithPagedKVCacheDevice(const Params& param
           v_smem + (stage_idx * bdz + tz) * bdy * tile_size_per_bdx * head_dim, s[qo_idx],
           stage_idx, st[qo_idx], tx, params, variant,
           chunk_start + iter * tile_size_per_bdx * bdy * bdz +
-              (tz * bdy + ty) * tile_size_per_bdx,
-          kv_head_idx, qo_head_idx, batch_idx);
+              tz * (bdy * tile_size_per_bdx),
+          qo_idx, kv_head_idx, qo_head_idx, batch_idx);
     }
     block.sync();
 
