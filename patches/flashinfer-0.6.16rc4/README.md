@@ -35,7 +35,8 @@ flashinfer 0.6.16rc4 相比 0.6.8 做了大量重构：
 | `include/flashinfer/utils.cuh` | `DISPATCH_GQA_GROUP_SIZE` 加 `group_size == 6` 分支 |
 | `include/flashinfer/vec_dtypes.cuh` | 移植 0.6.8 的 int8 特化：`vec_t<int8_t, vec_size>` 偏特化 + `vec_cast<float,int8_t>` / `vec_cast<int8_t,float>` / `vec_cast<half,int8_t>` / `vec_cast<int8_t,half>` |
 | `include/flashinfer/attention/variant_helper.cuh` | 加 `REGISTER_VALUE_TRANSFORM` / `REGISTER_PROBABILITY_TRANSFORM` 宏（vLLM variant 需要） |
-| `include/flashinfer/attention/decode.cuh` | ① `update_local_state` 参数化（+params/variant/kv_idx_base/kv_head_idx/qo_head_idx/batch_idx）并在 v 累加处调用 `variant.ValueTransform`（per-token v_scale）；② QO_LEN=4 多 query 内核（q_vec[4]/st[4]/s[4] + qo 循环 + 偏移公式）；③ partition-kv 修复：kernel 输出 `out_pos = partition ? qo_idx*num_chunks_k+bx : bx*QO_LEN+qo_idx`、tmp_lse 偏移 ×QO_LEN、`MergeStates(..., seq_len=QO_LEN)` |
+| `include/flashinfer/attention/decode.cuh` | ① `update_local_state` 参数化（+params/variant/kv_idx_base/kv_head_idx/qo_head_idx/batch_idx）并在 v 累加处调用 `variant.ValueTransform`（per-token v_scale）；② QO_LEN=4 多 query 内核（q_vec[4]/st[4]/s[4] + qo 循环 + 偏移公式，q_vec 循环内加载减 register）；③ partition-kv 修复：kernel 输出 `out_pos = partition ? qo_idx*num_chunks_k+bx : bx*QO_LEN+qo_idx`、tmp_lse 偏移 ×QO_LEN、`MergeStates(..., seq_len=QO_LEN)`；④ `last_indptr = paged_kv.indptr[batch_idx+1]`（batch_size 承载 q_len_per_req 而非真实 batch）；⑤ 不 partition 时 `kv_chunk_size` 回退 `kv_len`（workspace 指针未被写入） |
+| `include/flashinfer/attention/scheduler.cuh` | ① `DecodeSplitKVIndptr` 按 q_len_per_req 展开行（request_indices/o_indptr 每 qo 行）；② `request_indices`/`kv_tile_indices`/`o_indptr` 的 int workspace 按 vector 实际大小分配（`std::max(padded_batch_size, vec.size())`）；③ `real_batch_size` 声明移出 if 块（作用域修复）+ fallback 推断加"indptr 真共享"条件（`indptr_h[batch_size] == indptr_h[1]`） |
 
 ## 应用
 
