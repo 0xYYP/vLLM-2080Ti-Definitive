@@ -205,10 +205,13 @@ def test_int8_eligibility_truth_table(source, field, value, reason) -> None:
          ("disabled", "continuation_batch_not_1", False, False)),
         (_I_SMALL, {"computed_tokens": 1, "query_len": 127,
          "has_sequence_len": False},
-         ("disabled", "continuation_q_too_small", False, False)),
+         ("disabled", "continuation_missing_seq_lens_cpu", False, False)),
         (_I_SMALL, {"computed_tokens": 1, "query_len": 127,
          "direct_paged": False},
-         ("disabled", "continuation_q_too_small", False, False)),
+         ("continuation", None, False, False)),
+        (_I_SMALL, {"computed_tokens": 1, "query_len": 1,
+         "sequence_len": 65_536},
+         ("continuation", None, True, False)),
         (_I_SEQ, {"computed_tokens": 1, "has_sequence_len": False},
          ("disabled", "continuation_missing_seq_lens_cpu", False, False)),
         (_I_CASCADE, {"computed_tokens": 1, "sequence_len": 65_537},
@@ -259,3 +262,5 @@ def test_current_surfaces_and_malformed_inputs() -> None:
         planner.TQCUDAGraphInput._make((True, 1))
     with pytest.raises(ValueError):
         planner.SpecSyncMode("unsafe")
+
+

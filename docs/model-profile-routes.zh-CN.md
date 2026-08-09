@@ -20,6 +20,10 @@
 
 - FP16/default KV 是质量路线。
 - INT8 KV 是容量 / 平衡路线；当前只保留 `normal` / piecewise profile。
+  decode 走与 prefill continuation 共用的 dequant bridge
+  （continuation/cascade）分块路径，不再回退原生 O(KV) 全量扫描
+  （随上下文线性退化）。极限可用上下文为 245K
+  （`int8kv-245K-mtp3-text-only.env`）；262144 在单次 100K 写入即 OOM。
 - TQK8V4 是 TurboQuant 压缩路线；当前只保留质量通过的 `fast` profile。
 - TQ4NC 有过容量实验，但当前正式 profile 不采用。
 

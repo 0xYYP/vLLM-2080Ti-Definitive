@@ -189,7 +189,22 @@ class SM75AttentionPlanner:
         elif inputs.request_count != 1:
             reason = "continuation_batch_not_1"
         elif inputs.query_len < inputs.continuation_min_query:
-            reason = "continuation_q_too_small"
+            # decode 每步 query_len 恒小于 continuation_min_query：若保持
+            # DISABLED 会回退到原生 paged attention 的 O(KV) 全量扫描（长
+            # 上下文 decode 退化为个位数 tok/s）。改为直接走 FA
+            # continuation/cascade（int8 KV dequant bridge + flashinfer
+            # ragged prefill），与 prefill continuation 共用同一快速路径。
+            if not inputs.has_sequence_len:
+                reason = "continuation_missing_seq_lens_cpu"
+            else:
+                route = (
+                    Int8KVRoute.CASCADE
+                    if inputs.sequence_len > inputs.continuation_max_tokens
+                    else Int8KVRoute.CONTINUATION
+                )
+                return SM75AttentionPlanner._finish_int8kv(
+                    inputs, route, inputs.direct_paged, False
+                )
         elif not inputs.has_sequence_len:
             reason = "continuation_missing_seq_lens_cpu"
         elif (
