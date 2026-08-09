@@ -72,9 +72,17 @@ block 对齐后的 prefix-cache 路径已验证设置。
 |---|---|---:|---|---:|---|---:|---:|
 | `qwen27b/normal/fp8/fp16kv-128K-mtp3-text-only.env` | normal | 128K | FP16 | 3 | text-only | 1 | 1619.48 / 84.71 |
 | `qwen27b/normal/fp8/int8kv-252K-mtp3-text-only.env` | normal | 252K | INT8 | 3 | text-only | 1 | 1605.10 / 44.09 |
+| `qwen27b/normal/fp8/int8kv-245K-mtp3-text-only.env` | normal | 245K | INT8 | 3 | text-only | 1 | 710.0 / 6.3 |
 | `qwen27b/fast/fp8/fp16kv-112K-mtp3-text-only.env` | fast | 112K | FP16 | 3 | text-only | 1 | 1615.58 / 83.69 |
 | `qwen27b/fast/fp8/tqk8v4-256K-mtp3-text-only.env` | fast | 256K | TQK8V4 | 3 | text-only | 1 | 1615.81 / 81.06 |
 | `qwen27b/fast/fp8/tqk8v4-240K-mtp3-text-image.env` | fast | 240K | TQK8V4 | 3 | text+image | 1 | 1605.61 / 80.67 |
+
+`int8kv-245K` 行的口径不同：prefill 710.0 tok/s 是 pp100K 首次写入实测
+（138456 tokens，约 195s），decode 6.3 tok/s 是 250K 上下文 FA-decode 实测
+（64 tokens，prefix-cache 命中、无 debug 日志）。它是双 2080 Ti 上开启
+`VLLM_INT8KV_FA_DECODE=1` 后 INT8 可用的极限上下文；262144 在单次 100K
+写入即 OOM。decode 加速细节与限制见
+[`docs/int8kv-fa-decode.md`](../docs/int8kv-fa-decode.md)。
 
 ### Qwen3.6 35B FP8
 

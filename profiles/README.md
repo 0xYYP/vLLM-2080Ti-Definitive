@@ -78,9 +78,18 @@ Tested checkpoint: Jackrong/Qwopus3.6-27B-v2-FP8, about 29G.
 |---|---|---:|---|---:|---|---:|---:|
 | `qwen27b/normal/fp8/fp16kv-128K-mtp3-text-only.env` | normal | 128K | FP16 | 3 | text-only | 1 | 1619.48 / 84.71 |
 | `qwen27b/normal/fp8/int8kv-252K-mtp3-text-only.env` | normal | 252K | INT8 | 3 | text-only | 1 | 1605.10 / 44.09 |
+| `qwen27b/normal/fp8/int8kv-245K-mtp3-text-only.env` | normal | 245K | INT8 | 3 | text-only | 1 | 710.0 / 6.3 |
 | `qwen27b/fast/fp8/fp16kv-112K-mtp3-text-only.env` | fast | 112K | FP16 | 3 | text-only | 1 | 1615.58 / 83.69 |
 | `qwen27b/fast/fp8/tqk8v4-256K-mtp3-text-only.env` | fast | 256K | TQK8V4 | 3 | text-only | 1 | 1615.81 / 81.06 |
 | `qwen27b/fast/fp8/tqk8v4-240K-mtp3-text-image.env` | fast | 240K | TQK8V4 | 3 | text+image | 1 | 1605.61 / 80.67 |
+
+The `int8kv-245K` row uses a different evidence basis: prefill 710.0 tok/s is
+the first-write pp100K measurement (138456 tokens, ~195s) and decode 6.3 tok/s
+is the 250K-context FA-decode measurement (64 tokens, prefix-cache hit, no
+debug logging). It exists as the maximum usable INT8 context on dual 2080 Ti
+with `VLLM_INT8KV_FA_DECODE=1`; 262144 OOMs on a single 100K write. See
+[`docs/int8kv-fa-decode.md`](../docs/int8kv-fa-decode.md) for the decode
+acceleration details and limits.
 
 ### Qwen3.6 35B FP8
 

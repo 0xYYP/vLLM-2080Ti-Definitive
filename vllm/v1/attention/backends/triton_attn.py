@@ -9,6 +9,7 @@ from typing import ClassVar
 import torch
 import torch.nn.functional as F
 from flashinfer import (
+    BatchDecodeWithPagedKVCacheWrapper,
     BatchPrefillWithPagedKVCacheWrapper,
     BatchPrefillWithRaggedKVCacheWrapper,
     merge_state_in_place,
@@ -83,12 +84,15 @@ _INT8KV_FA_CASCADE_TILE_TOKENS = int(
     os.getenv("VLLM_INT8KV_FA_CASCADE_TILE_TOKENS", "65536")
 )
 _INT8KV_FA_DIRECT_PAGED = os.getenv("VLLM_INT8KV_FA_DIRECT_PAGED", "0") == "1"
+_INT8KV_FA_DECODE = os.getenv("VLLM_INT8KV_FA_DECODE", "0") == "1"
+_INT8KV_FA_DECODE_DEBUG = os.getenv("VLLM_INT8KV_FA_DECODE_DEBUG", "0") == "1"
 _INT8KV_ALIGNED_HEAD_STRIDE = (
     os.getenv("VLLM_INT8KV_ALIGNED_HEAD_STRIDE", "0") == "1"
 )
 _INT8KV_FI_PREFILL_WORKSPACES: dict[tuple[str, str], torch.Tensor] = {}
 _INT8KV_FI_PREFILL_WRAPPERS: dict[tuple[object, ...], BatchPrefillWithRaggedKVCacheWrapper] = {}
 _INT8KV_FI_PAGED_WRAPPERS: dict[tuple[object, ...], BatchPrefillWithRaggedKVCacheWrapper] = {}
+_INT8KV_FI_DECODE_WRAPPERS: dict[tuple[object, ...], BatchDecodeWithPagedKVCacheWrapper] = {}
 _INT8KV_FI_KV_WORKSPACES: dict[
     tuple[str, str, int, int, int], tuple[torch.Tensor, torch.Tensor]
 ] = {}
@@ -232,6 +236,41 @@ def _int8kv_direct_paged_jit_args(head_size: int) -> list[object]:
         _INT8KV_TOKENCALE_VARIANT_DECL,
     ]
 
+
+
+
+def _int8kv_decode_jit_args(head_size: int) -> list:
+    """JIT args for the paged decode kernel with per-token-head int8 scales.
+
+    The decode kernel reads int8 K/V directly and applies per-(token, head)
+    scales through the same Int8TokenHeadScaleAttention variant; v_scale is
+    applied via the patched ValueTransform hook in flashinfer's
+    update_local_state (see docs/int8kv-fa-decode.md).
+    """
+    return [
+        f"vllm_int8kv_tokenscale_paged_decode_sm75_d{head_size}_v1",
+        torch.float16,
+        torch.int8,
+        torch.float16,
+        torch.int32,
+        head_size,
+        head_size,
+        ["maybe_k_scale_cache", "maybe_v_scale_cache"],
+        ["float", "float"],
+        [
+            "logits_soft_cap",
+            "sm_scale",
+            "rope_rcp_scale",
+            "rope_rcp_theta",
+            "gqa_group_size",
+            "scale_stride_page",
+            "scale_stride_slot",
+            "scale_stride_head",
+        ],
+        ["double", "double", "double", "double", "uint32_t", "uint32_t", "uint32_t", "uint32_t"],
+        "Int8TokenHeadScaleAttention<false, false>",
+        _INT8KV_TOKENCALE_VARIANT_DECL,
+    ]
 
 
 def _int8kv_normalize_cuda_device(device: torch.device) -> torch.device:
@@ -1238,6 +1277,157 @@ class TritonAttentionImpl(AttentionImpl):
         output.copy_(scaled)
         return True
 
+    def _get_int8kv_flashinfer_decode_wrapper(
+        self,
+        device: torch.device,
+        plan_key: tuple[object, ...],
+    ) -> BatchDecodeWithPagedKVCacheWrapper:
+        norm_device = _int8kv_normalize_cuda_device(device)
+        cache_key = (
+            str(norm_device),
+            _INT8KV_FI_PREFILL_BACKEND,
+            *plan_key,
+        )
+        wrapper = _INT8KV_FI_DECODE_WRAPPERS.get(cache_key)
+        if wrapper is None:
+            workspace = _get_int8kv_flashinfer_prefill_workspace(
+                norm_device, _INT8KV_FI_PREFILL_BACKEND
+            )
+            wrapper = BatchDecodeWithPagedKVCacheWrapper(
+                workspace,
+                "NHD",
+                jit_args=_int8kv_decode_jit_args(self.head_size),
+            )
+            _INT8KV_FI_DECODE_WRAPPERS[cache_key] = wrapper
+        return wrapper
+
+    def _try_int8kv_fa_decode(
+        self,
+        query: torch.Tensor,
+        kv_cache: torch.Tensor,
+        output: torch.Tensor,
+        attn_metadata: TritonAttentionMetadata,
+        num_actual_tokens: int,
+        output_scale: torch.Tensor | None,
+        output_block_scale: torch.Tensor | None,
+    ) -> bool:
+        """Single-token decode via the patched FlashInfer paged decode kernel.
+
+        Requires the flashinfer patches (see docs/int8kv-fa-decode.md):
+        REGISTER_VALUE_TRANSFORM macro, ValueTransform hook in decode.cuh, and
+        vec_t<int8_t> specializations. Falls back to the native path on any
+        failure.
+        """
+        if not _INT8KV_FA_DECODE or not self._is_per_token_head_quant:
+            return False
+        # The JIT variant is compiled with sliding-window and logits-soft-cap
+        # disabled (Int8TokenHeadScaleAttention<false, false>). Refuse models
+        # that need them instead of silently producing wrong outputs, and
+        # refuse head sizes that cannot be vector-loaded 16B-aligned.
+        if self.sliding_window != (-1, -1) or self.logits_soft_cap not in (None, 0.0):
+            return False
+        if self.head_size % 16 != 0:
+            return False
+        if output_scale is not None or output_block_scale is not None:
+            return False
+        if num_actual_tokens != 1:
+            return False
+        if attn_metadata.seq_lens_cpu is None or attn_metadata.block_table is None:
+            return False
+        seq_len = int(attn_metadata.seq_lens_cpu[0].item())
+        if seq_len <= 0:
+            return False
+        try:
+            self._ensure_scale_caches(kv_cache)
+            key_cache, value_cache = kv_cache.unbind(1)
+            if key_cache.dtype != torch.int8 or value_cache.dtype != torch.int8:
+                return False
+            head_dim = self.head_size
+            if _INT8KV_FA_DECODE_DEBUG:
+                logger.info(
+                    "FA decode debug: q=%s kv=%s kc_stride=%s vc_stride=%s "
+                    "ks_shape=%s ks_stride=%s vs_shape=%s vs_stride=%s seq=%s "
+                    "block_table=%s num_qo=%s nkv=%s gqa=%s",
+                    tuple(query.shape), tuple(kv_cache.shape),
+                    tuple(key_cache.stride()), tuple(value_cache.stride()),
+                    tuple(self._k_scale_cache.shape),
+                    tuple(self._k_scale_cache.stride()),
+                    tuple(self._v_scale_cache.shape),
+                    tuple(self._v_scale_cache.stride()),
+                    seq_len,
+                    tuple(attn_metadata.block_table.shape),
+                    self.num_heads, self.num_kv_heads, self.num_queries_per_kv,
+                )
+            # vLLM stores int8 scales in head padding (hs+pad, 16-aligned);
+            # FlashInfer reads strides from the tensors, so slicing to head_dim
+            # keeps the padded strides and addresses the data correctly.
+            k_view = key_cache[..., :head_dim]
+            v_view = value_cache[..., :head_dim]
+            block_size = int(key_cache.shape[1])
+            nblocks = (seq_len + block_size - 1) // block_size
+            indices = attn_metadata.block_table[0, :nblocks].to(
+                dtype=torch.int32, device=query.device
+            )
+            indptr = torch.tensor([0, nblocks], dtype=torch.int32, device=query.device)
+            last_page_len = seq_len - (nblocks - 1) * block_size
+            if last_page_len <= 0:
+                last_page_len = block_size
+            last_page_len_t = torch.tensor(
+                [last_page_len], dtype=torch.int32, device=query.device
+            )
+            plan_key = (
+                self.num_heads,
+                self.num_kv_heads,
+                head_dim,
+                block_size,
+                str(query.dtype),
+                str(key_cache.dtype),
+            )
+            wrapper = self._get_int8kv_flashinfer_decode_wrapper(
+                query.device, plan_key
+            )
+            wrapper.plan(
+                indptr,
+                indices,
+                last_page_len_t,
+                self.num_heads,
+                self.num_kv_heads,
+                head_dim,
+                block_size,
+                window_left=self.sliding_window[0],
+                logits_soft_cap=0.0,  # soft-cap rejected in the guard above
+                q_data_type=query.dtype,
+                kv_data_type=key_cache.dtype,
+                o_data_type=output.dtype,
+                sm_scale=self.scale,
+            )
+            wrapper.run(
+                query[:num_actual_tokens],
+                (k_view, v_view),
+                self._k_scale_cache,
+                self._v_scale_cache,
+                0.0,  # logits_soft_cap
+                self.scale,  # sm_scale
+                1.0,  # rope_rcp_scale
+                1e-4,  # rope_rcp_theta
+                self.num_queries_per_kv,  # gqa_group_size
+                self._k_scale_cache.stride(0),
+                self._k_scale_cache.stride(1),
+                self._k_scale_cache.stride(2),
+                out=output[:num_actual_tokens],
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - fall back to native path
+            skip_reason = f"fa_decode_failed:{type(exc).__name__}"
+            if skip_reason not in _INT8KV_FA_PREFILL_SKIP_LOGGED:
+                _INT8KV_FA_PREFILL_SKIP_LOGGED.add(skip_reason)
+                logger.info(
+                    "INT8 KV FA decode skipped reason=%s err=%s",
+                    skip_reason,
+                    exc,
+                )
+            return False
+
     def _try_int8kv_fa_prefill(
         self,
         query: torch.Tensor,
@@ -1871,6 +2061,17 @@ class TritonAttentionImpl(AttentionImpl):
             output_scale,
             output_block_scale,
             num_actual_tokens,
+        ):
+            return output
+
+        if self._try_int8kv_fa_decode(
+            query,
+            kv_cache,
+            output,
+            attn_metadata,
+            num_actual_tokens,
+            output_scale,
+            output_block_scale,
         ):
             return output
 
