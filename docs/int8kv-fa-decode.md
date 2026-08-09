@@ -66,6 +66,30 @@ flash-decoding 分块并行路径。实测 250K 上下文 decode 6.3 tok/s（原
 - 回退：任何异常（缺补丁、对齐失败、workspace 不足）都回退原生路径并
   记录一次 `fa_decode_failed` 日志，不改变正确性边界。
 
+## 默认路径 vs 实验性 variant（0.6.16rc4 现状）
+
+服务默认（不设 `VLLM_INT8KV_FA_DECODE`）走 **dequant bridge 分块路径**：
+planner 对 decode/verify 返回 CONTINUATION/CASCADE 路由，每步把 int8 KV
+dequant 成 fp16 后走 FlashInfer ragged prefill 分块 kernel。该路径是当前
+推荐配置，长上下文 decode 不随 KV 长度线性退化。
+
+0.6.16rc4 实测（2026-08-10，128K profile，warm、completions、MTP3、TP2
+双 2080 Ti、272 布局）：桥路径 decode 4K（1842 pt）28.95 tok/s、60K
+（27690 pt）20.82、100K（46152 pt）16.12；对比原生 O(KV) 全量扫描
+（4K→65K 44→5 tok/s 线性退化、250K 约 1.5-2 tok/s），长上下文不再退化，
+优化目标达成。注意：0.6.8.post1 时代记录的桥路径更高（4K 70.16 / 60K
+44.23 / 125K 32.09），0.6.16rc4 升级后桥路径实测约减半（flashinfer
+ragged prefill kernel 版本差异，未做同环境 A/B 验证，见下文"显存注意"）。
+
+`VLLM_INT8KV_FA_DECODE=1` 的实验性 decode variant 在 kernel 内应用
+per-token-head scale（免 dequant），kernel 内多 query（QO_LEN=4）实测
+4K 18.15 tok/s（occupancy 瓶颈，约 200+ regs 致 ~1 block/SM），**慢于桥
+路径且默认关闭**；保留为正确性资产（V scale 索引、MTP causal 泄漏修复
+与 `scripts/verify_causal.py`、`scripts/verify_random_scale.py` 验证脚本）
+与后续降 register 调优的起点。两套补丁并存：`patches/flashinfer-0.6.8.post1/`
+（0.6.8 时代 decode variant + prefill V scale）与
+`patches/flashinfer-0.6.16rc4/`（0.6.16rc4 源码可编译 + kernel 内多 query）。
+
 ## MTP verify 多 query 支持（2026-08-07 实验记录）
 
 - **batch=4 拆解（已验证正确，性能不达标）**：`_try_int8kv_fa_decode` 对
@@ -94,3 +118,13 @@ flash-decoding 分块并行路径。实测 250K 上下文 decode 6.3 tok/s（原
 4.71GiB，运行余量约 4.4-4.5GiB：`MAX_MODEL_LEN=262144` 时 pp100K 一次
 写入即 OOM（50MiB），极限可用上下文为 250880（245K，见
 `profiles/qwen27b/normal/fp8/int8kv-245K-mtp3-text-only.env`）。
+
+2026-08-10 实测补充：128K profile（`int8kv-128K-mtp3-text-only.env`，
+未入库）的 `KV_CACHE_MEMORY_BYTES=2800000000` 在 272 对齐下**不足以启动
+131072 上下文**（vLLM KV 校验报 2.67GiB 不够），需 ≥4GB（实测
+`--set KV_CACHE_MEMORY_BYTES=4000000000` 可启动，KV 池 181,973 tokens）。
+245K profile（5.9GB KV 池）启动后 GPU 余量仅 ~0.9GiB/卡，**60K+ 上下文
+首次写入（prefill）即 OOM**——245K 长上下文只能 prefix 命中后做 decode
+（历史 FA_DECODE 时代 250K decode 6.3 tok/s 即此口径），无法现场写入
+长 prompt。桥路径 decode 实测数值亦因此受限：100K（46.2K pt）为本次
+128K profile 能写入的上限。

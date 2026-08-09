@@ -24,10 +24,14 @@ are not capacity evidence.
 
 - FP16/default KV is the quality route.
 - INT8 KV is the capacity / balance route; currently shipped only as
-  `normal` / piecewise profiles. With `VLLM_INT8KV_FA_DECODE=1` the decode
-  path uses a patched FlashInfer decode variant (per-token-head scale inside
-  the kernel) instead of the native O(KV) scan; measured 250K-context decode
-  6.3 tok/s vs ~1.5-2 tok/s native. Maximum usable context is 245K
+  `normal` / piecewise profiles. Decode defaults to the dequant bridge
+  (continuation/cascade chunked path) instead of the native O(KV) full scan,
+  which degraded linearly with context. Measured on 0.6.16rc4 (warm,
+  completions, MTP3, dual 2080 Ti, 272 layout): 4K 28.95 / 60K 20.82 / 100K
+  16.12 tok/s decode (native extrapolation ~1.5-2 tok/s at 250K). The
+  experimental FlashInfer decode variant (`VLLM_INT8KV_FA_DECODE=1`) is
+  slower than the bridge (4K 18.15 tok/s, occupancy-bound) and stays off by
+  default. Maximum usable context is 245K
   (`int8kv-245K-mtp3-text-only.env`); 262144 OOMs on a single 100K write.
   See `docs/int8kv-fa-decode.md`.
 - TQK8V4 is the TurboQuant compression route; currently shipped only for
