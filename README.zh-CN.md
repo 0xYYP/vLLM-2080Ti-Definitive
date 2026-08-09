@@ -223,6 +223,15 @@ MTP 已按当前实测选择了更适合部署的值。KV 先按目标选择：F
 [MTP 任务敏感性](docs/mtp-task-sensitivity.md) 和
 [Qwen3.6 KV 吞吐 Sweep](docs/qwen36-kv-throughput-sweep.zh-CN.md)。
 
+INT8 KV 在 Turing（SM75）上的 decode：项目自带 `int8kv-*` profile 让 decode
+走 FlashInfer dequant bridge（continuation/cascade 分块路径），不再回退原生
+O(KV) 全量扫描（实测 4K→65K 为 44→5 tok/s 线性退化）。0.6.16rc4 验证
+（warm / completions / MTP3 / 双 2080 Ti / 272 布局）：decode 4K 28.95 /
+60K 20.82 / 100K 16.12 tok/s，原生 250K 外推仅 ~1.5-2 tok/s。实验性
+kernel 内 decode variant（`VLLM_INT8KV_FA_DECODE=1`）慢于桥，默认关闭；
+INT8 极限可用上下文 245K（`int8kv-245K-mtp3-text-only.env`）。详见
+[INT8 KV FA decode](docs/int8kv-fa-decode.md)。
+
 ## ❓ 硬件 Q&A
 
 **Q：需要什么样的卡间互联？**

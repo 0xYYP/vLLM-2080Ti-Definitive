@@ -86,8 +86,12 @@ Tested checkpoint: Jackrong/Qwopus3.6-27B-v2-FP8, about 29G.
 The `int8kv-245K` row uses a different evidence basis: prefill 710.0 tok/s is
 the first-write pp100K measurement (138456 tokens, ~195s) and decode 6.3 tok/s
 is the 250K-context FA-decode measurement (64 tokens, prefix-cache hit, no
-debug logging). It exists as the maximum usable INT8 context on dual 2080 Ti
-with `VLLM_INT8KV_FA_DECODE=1`; 262144 OOMs on a single 100K write. See
+debug logging; 0.6.8 era, experimental decode variant). On 0.6.16rc4 the
+default bridge path measured 4K 28.95 tok/s on the 128K profile (warm,
+completions, MTP3). The 245K profile reserves a 5.9GiB KV pool, leaving only
+~0.9GiB/GPU headroom, so long-context first writes OOM and only
+prefix-cache-hit decode is practical there; 262144 OOMs on a single 100K
+write. The verified INT8 ceiling is `int8kv-245K` (250880). See
 [`docs/int8kv-fa-decode.md`](../docs/int8kv-fa-decode.md) for the decode
 acceleration details and limits.
 
