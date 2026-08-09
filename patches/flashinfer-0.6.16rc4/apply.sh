@@ -48,6 +48,7 @@ apply "include/flashinfer/utils.cuh" "flashinfer/data/include/flashinfer/utils.c
 apply "include/flashinfer/vec_dtypes.cuh" "flashinfer/data/include/flashinfer/vec_dtypes.cuh"
 apply "include/flashinfer/attention/variant_helper.cuh" "flashinfer/data/include/flashinfer/attention/variant_helper.cuh"
 apply "include/flashinfer/attention/decode.cuh" "flashinfer/data/include/flashinfer/attention/decode.cuh"
+apply "include/flashinfer/attention/scheduler.cuh" "flashinfer/data/include/flashinfer/attention/scheduler.cuh"
 
 echo "flashinfer 0.6.16rc4 补丁应用完成。"
-echo "验证: grep -n 'vllm-2080ti' $SP/flashinfer/comm/fd_exchange.py; grep -n 'QO_LEN' $SP/flashinfer/data/include/flashinfer/attention/decode.cuh"
+echo "验证: grep -n 'vllm-2080ti' $SP/flashinfer/comm/fd_exchange.py; grep -n 'QO_LEN' $SP/flashinfer/data/include/flashinfer/attention/decode.cuh; grep -n 'vllm-2080ti' $SP/flashinfer/data/include/flashinfer/attention/scheduler.cuh"

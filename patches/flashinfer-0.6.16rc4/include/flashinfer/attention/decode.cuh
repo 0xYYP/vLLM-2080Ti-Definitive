@@ -427,8 +427,10 @@ __device__ __inline__ void BatchDecodeWithPagedKVCacheDevice(const Params& param
   // NOTE(Zihao): when CUDAGraph is enabled, we will launch more blocks than
   // the actual batch size, so we need to check if the current batch is valid
   if (block_valid_mask && !block_valid_mask[bx]) return;
-  const uint32_t kv_chunk_size = *(params.kv_chunk_size_ptr);
   const uint32_t kv_len = paged_kv.get_length(batch_idx);
+  // vllm-2080ti: when not partitioning, kv_chunk_size_ptr may be garbage on
+  // SM75 (plan does not write it for seq_len <= 256); fall back to kv_len.
+  const uint32_t kv_chunk_size = partition_kv ? *(params.kv_chunk_size_ptr) : kv_len;
   const uint32_t num_chunks_k = ceil_div(kv_len, kv_chunk_size);
   const uint32_t max_chunk_size = partition_kv ? kv_chunk_size : kv_len;
   const uint32_t chunk_start = partition_kv ? kv_tile_idx * max_chunk_size : 0;
@@ -446,16 +448,15 @@ __device__ __inline__ void BatchDecodeWithPagedKVCacheDevice(const Params& param
                                        sizeof(DTypeKV));
 
   constexpr uint32_t QO_LEN = 4;  // vllm: MTP verify rows sharing one KV prefix
-  vec_t<float, vec_size> q_vec[QO_LEN];
   vec_t<float, vec_size> freq;
   const uint32_t q_stride_n = params.q_stride_n;
   const uint32_t q_stride_h = params.q_stride_h;
+  const IdType* q_rope_offset = nullptr;
+  if constexpr (has_decode_maybe_q_rope_offset_v<Params>) {
+    q_rope_offset = params.decode_maybe_q_rope_offset;
+  }
+  int32_t q_rope_offset_val = q_rope_offset == nullptr ? (kv_len - 1) : q_rope_offset[batch_idx];
   if constexpr (POS_ENCODING_MODE == PosEncodingMode::kRoPELlama) {
-    const IdType* q_rope_offset = nullptr;
-    if constexpr (has_decode_maybe_q_rope_offset_v<Params>) {
-      q_rope_offset = params.decode_maybe_q_rope_offset;
-    }
-    int32_t q_rope_offset_val = q_rope_offset == nullptr ? (kv_len - 1) : q_rope_offset[batch_idx];
     const float rope_rcp_scale = params.rope_rcp_scale;
     const float rope_rcp_theta = params.rope_rcp_theta;
 
@@ -468,31 +469,19 @@ __device__ __inline__ void BatchDecodeWithPagedKVCacheDevice(const Params& param
 #if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
     asm volatile("griddepcontrol.wait;");
 #endif
-    // apply rotary embedding to q matrix
-#pragma unroll
-    for (uint32_t qo_idx = 0; qo_idx < QO_LEN; ++qo_idx) {
-      q_vec[qo_idx] = vec_apply_llama_rope<vec_size, bdx>(
-          q + batch_idx * q_stride_n + qo_idx * (num_qo_heads * q_stride_h) +
-              qo_head_idx * q_stride_h,
-          freq, q_rope_offset_val);
-    }
   } else {
 // do not apply rotary embedding to q matrix
 #if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
     asm volatile("griddepcontrol.wait;");
 #endif
-#pragma unroll
-    for (uint32_t qo_idx = 0; qo_idx < QO_LEN; ++qo_idx) {
-      q_vec[qo_idx].cast_load(q + batch_idx * q_stride_n +
-                              qo_idx * (num_qo_heads * q_stride_h) +
-                              qo_head_idx * q_stride_h + tx * vec_size);
-    }
   }
 
   // preload k/v tiles
   uint32_t stage_idx = 0;
   constexpr uint32_t vec_bits = sizeof(DTypeKV) * vec_size * 8;
-  const IdType last_indptr = paged_kv.indptr[paged_kv.batch_size];
+  // vllm-2080ti: paged_kv.batch_size carries q_len_per_req (QO_LEN rows); the
+  // kv page bound must use the real request boundary (request_indices[bx]).
+  const IdType last_indptr = paged_kv.indptr[batch_idx + 1];
 
   static_assert(num_stages_smem <= bdx);
   uint32_t packed_page_iter_base = paged_kv.indptr[batch_idx] * paged_kv.page_size + chunk_start;
@@ -556,9 +545,22 @@ __device__ __inline__ void BatchDecodeWithPagedKVCacheDevice(const Params& param
     block.sync();
 #pragma unroll
     for (uint32_t qo_idx = 0; qo_idx < QO_LEN; ++qo_idx) {
+      // vllm-2080ti: load the per-row q vector right before compute_qk to keep
+      // only one live q_vec register set instead of QO_LEN copies.
+      vec_t<float, vec_size> q_vec;
+      if constexpr (POS_ENCODING_MODE == PosEncodingMode::kRoPELlama) {
+        q_vec = vec_apply_llama_rope<vec_size, bdx>(
+            q + batch_idx * q_stride_n + qo_idx * (num_qo_heads * q_stride_h) +
+                qo_head_idx * q_stride_h,
+            freq, q_rope_offset_val);
+      } else {
+        q_vec.cast_load(q + batch_idx * q_stride_n +
+                        qo_idx * (num_qo_heads * q_stride_h) +
+                        qo_head_idx * q_stride_h + tx * vec_size);
+      }
       compute_qk<POS_ENCODING_MODE, vec_size, bdx, bdy * tile_size_per_bdx>(
           params, variant, batch_idx,
-          k_smem + (stage_idx * bdz + tz) * bdy * tile_size_per_bdx * head_dim, q_vec[qo_idx],
+          k_smem + (stage_idx * bdz + tz) * bdy * tile_size_per_bdx * head_dim, q_vec,
           freq,
           (paged_kv.rope_pos_offset == nullptr ? 0 : paged_kv.rope_pos_offset[batch_idx]) +
               chunk_start + iter * tile_size_per_bdx * bdy * bdz,
@@ -972,7 +974,9 @@ __global__ void BatchDecodeWithPagedKVCacheKernelMLA(Params params) {
 
   uint32_t packed_page_iter_base =
       paged_kv.indptr[mapped_batch_idx] * paged_kv.page_size + cur_chunk_start;
-  const IdType last_indptr = paged_kv.indptr[paged_kv.batch_size];
+  // vllm-2080ti: paged_kv.batch_size carries q_len_per_req (QO_LEN rows); the
+  // kv page bound must use the real request boundary (request_indices[bx]).
+  const IdType last_indptr = paged_kv.indptr[batch_idx + 1];
 
   constexpr uint32_t kv_iter_len = bdy * bdz;
   constexpr uint32_t compute_qk_tile = bdy;

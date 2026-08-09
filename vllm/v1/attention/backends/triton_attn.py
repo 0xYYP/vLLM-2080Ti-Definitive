@@ -1435,6 +1435,10 @@ class TritonAttentionImpl(AttentionImpl):
                 sm_scale=self.scale,
                 q_len_per_req=num_actual_tokens,
             )
+            if os.environ.get("VLLM_INT8KV_FA_DECODE_TIMING"):
+                import time as _time
+
+                _int8kv_decode_t0 = _time.monotonic()
             wrapper.run(
                 query[:num_actual_tokens],
                 (k_view, v_view),
@@ -1450,6 +1454,16 @@ class TritonAttentionImpl(AttentionImpl):
                 self._k_scale_cache.stride(2),
                 out=output[:num_actual_tokens],
             )
+            if os.environ.get("VLLM_INT8KV_FA_DECODE_TIMING"):
+                import time as _time
+
+                torch.cuda.synchronize()
+                logger.info(
+                    "[DECODE-TIMING] verify q_len=%d seq=%d elapsed_ms=%.2f",
+                    num_actual_tokens,
+                    seq_len,
+                    (_time.monotonic() - _int8kv_decode_t0) * 1000,
+                )
             return True
         except Exception as exc:  # noqa: BLE001 - fall back to native path
             skip_reason = f"fa_decode_failed:{type(exc).__name__}"
