@@ -82,8 +82,9 @@ dequant 成 fp16 后走 FlashInfer ragged prefill 分块 kernel。该路径是�
 6426afb，唯一变量 flashinfer）：0.6.8.post1 与 0.6.16rc4 桥路径 decode
 无性能差异（4K 29.80 vs 29.56、60K 21.20 vs 21.46、100K 16.24 vs 16.08，
 均 <1.5% 在测量波动内）；2026-08-07 记录的更高数值（4K 70.16 / 60K
-44.23 / 125K 32.09）在当前固定代码下不可复现，归因于当时的测量条件
-（c805572 时代的 vLLM 代码与口径）而非 flashinfer 版本。
+44.23 / 125K 32.09）在当前固定代码下不可复现，已确认与 flashinfer
+版本无关；历史差异与 c805572 时代的代码/测量口径差异相符，但具体因素
+未进一步拆解。
 
 `VLLM_INT8KV_FA_DECODE=1` 的实验性 decode variant 在 kernel 内应用
 per-token-head scale（免 dequant），kernel 内多 query（QO_LEN=4）实测
