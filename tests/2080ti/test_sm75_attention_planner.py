@@ -291,6 +291,7 @@ def test_int8kv_fa_decode_guard_rejects_unsafe_models(field, value) -> None:
     （Int8TokenHeadScaleAttention<false, false>），且 128-bit vector load
     要求 head_size 16 对齐。guard 必须拒绝不满足条件的模型，避免静默
     产出错误输出，而不是回退到原生 O(KV) 扫描。"""
+    pytest.importorskip("torch", reason="guard 测试需要 torch（JIT 编译目标）")
     import types
     import torch
     from unittest import mock
@@ -331,6 +332,7 @@ def test_int8kv_fa_decode_guard_rejects_unsafe_models(field, value) -> None:
 def test_int8kv_fa_decode_guard_rejects_batch() -> None:
     """FA decode 把 query 行建模为共享单 request KV 前缀（MTP verify），
     batch>1 的独立 decode 必须被拒绝，否则静默复用 request 0 的 KV。"""
+    pytest.importorskip("torch", reason="guard 测试需要 torch（JIT 编译目标）")
     import types
     import torch
     from unittest import mock
