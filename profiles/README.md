@@ -91,8 +91,10 @@ default bridge path measured 4K 29.56 tok/s on the 128K profile (warm,
 completions, MTP3); a same-environment A/B (same vLLM 6426afb, only
 flashinfer switched) showed 0.6.8.post1 and 0.6.16rc4 within 1.5% (4K 29.80
 vs 29.56), so the earlier 2026-08-07 bridge records (4K 70.16) are not
-reproducible and trace to that session's conditions, not the flashinfer
-version. The 245K profile reserves a 5.9GiB KV pool, leaving only
+reproducible under the current fixed code — confirmed unrelated to the
+flashinfer version; the historical gap is consistent with the c805572-era
+conditions, though not further isolated. The 245K profile reserves a 5.9GiB
+KV pool, leaving only
 ~0.9GiB/GPU headroom, so long-context first writes OOM and only
 prefix-cache-hit decode is practical there; 262144 OOMs on a single 100K
 write. The 245K preset is a configuration ceiling verified for

@@ -26,7 +26,8 @@
   100K 16.08 tok/s（原生 250K 外推 ~1.5-2 tok/s）。同环境 A/B（2026-08-10，
   vLLM 固定 6426afb，仅切换 flashinfer）：0.6.8.post1 与 0.6.16rc4 桥路径
   无性能差异（4K 29.80 vs 29.56）；2026-08-07 的更高记录（4K 70.16）在
-  固定代码下不可复现，归因当时测量条件而非 flashinfer 版本。实验性 FlashInfer
+  固定代码下不可复现，已确认与 flashinfer 版本无关；历史差异与
+  c805572 时代的代码/测量口径差异相符，但具体因素未进一步拆解。实验性 FlashInfer
   decode variant（`VLLM_INT8KV_FA_DECODE=1`）慢于桥（4K 18.15 tok/s，
   occupancy 瓶颈），默认关闭。245K（`int8kv-245K-mtp3-text-only.env`）
   是配置上限，仅 prefix-cache 命中后 decode 验证过；冷启动 60K+ prefill
