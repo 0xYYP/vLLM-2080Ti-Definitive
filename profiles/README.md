@@ -92,9 +92,11 @@ completions, MTP3); a same-environment A/B (same vLLM 6426afb, only
 flashinfer switched) showed 0.6.8.post1 and 0.6.16rc4 within 1.5% (4K 29.80
 vs 29.56), so the earlier 2026-08-07 bridge records (4K 70.16) are not
 reproducible under the current fixed code — confirmed unrelated to the
-flashinfer version; the historical gap is consistent with the c805572-era
-conditions, though not further isolated. The 245K profile reserves a 5.9GiB
-KV pool, leaving only
+flashinfer version. A replay on the historical code (c805572 + 0.6.8.post1 +
+260 layout) measured 4K 30.05 / 60K 20.07 / 100K 20.06, permanently marking
+the 2026-08-07 records as non-reproducible historical measurements (the true
+cause was that session's measurement method). The 245K profile reserves a
+5.9GiB KV pool, leaving only
 ~0.9GiB/GPU headroom, so long-context first writes OOM and only
 prefix-cache-hit decode is practical there; 262144 OOMs on a single 100K
 write. The 245K preset is a configuration ceiling verified for
