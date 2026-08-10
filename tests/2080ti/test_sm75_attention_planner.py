@@ -293,8 +293,9 @@ def test_int8kv_fa_decode_guard_rejects_unsafe_models(field, value) -> None:
     产出错误输出，而不是回退到原生 O(KV) 扫描。"""
     pytest.importorskip("torch", reason="guard 测试需要 torch（JIT 编译目标）")
     import types
-    import torch
     from unittest import mock
+
+    import torch
 
     ta = _load_triton_attn_for_test()
     method = ta.TritonAttentionImpl._try_int8kv_fa_decode
@@ -334,8 +335,9 @@ def test_int8kv_fa_decode_guard_rejects_batch() -> None:
     batch>1 的独立 decode 必须被拒绝，否则静默复用 request 0 的 KV。"""
     pytest.importorskip("torch", reason="guard 测试需要 torch（JIT 编译目标）")
     import types
-    import torch
     from unittest import mock
+
+    import torch
 
     ta = _load_triton_attn_for_test()
     method = ta.TritonAttentionImpl._try_int8kv_fa_decode
