@@ -74,14 +74,16 @@ dequant 成 fp16 后走 FlashInfer ragged prefill 分块 kernel。该路径是�
 推荐配置，长上下文 decode 不随 KV 长度线性退化。
 
 0.6.16rc4 实测（2026-08-10，128K profile，warm、completions、MTP3、TP2
-双 2080 Ti、272 布局）：桥路径 decode 4K（1842 pt）28.95 tok/s、60K
-（27690 pt）20.82、100K（46152 pt）16.12；对比原生 O(KV) 全量扫描
+双 2080 Ti、272 布局）：桥路径 decode 4K（1842 pt）29.56 tok/s、60K
+（27690 pt）21.46、100K（46152 pt）16.08；对比原生 O(KV) 全量扫描
 （4K→65K 44→5 tok/s 近似线性退化、250K 约 1.5-2 tok/s），桥路径不再呈
-原生 O(KV) 的近似线性退化（4K→100K 由 28.95 降至 16.12，曲线明显改善，
-但绝对吞吐仍低于旧 native 与 0.6.8 记录）。注意：0.6.8.post1 时代记录的
-桥路径更高（4K 70.16 / 60K 44.23 / 125K 32.09），0.6.16rc4 升级后桥路径
-实测约减半（flashinfer ragged prefill kernel 版本差异，未做同环境 A/B
-验证，见下文"显存注意"）。
+原生 O(KV) 的近似线性退化（4K→100K 由 29.56 降至 16.08，曲线明显改善，
+但绝对吞吐仍低于旧 native 记录）。同环境 A/B（2026-08-10，vLLM 固定
+6426afb，唯一变量 flashinfer）：0.6.8.post1 与 0.6.16rc4 桥路径 decode
+无性能差异（4K 29.80 vs 29.56、60K 21.20 vs 21.46、100K 16.24 vs 16.08，
+均 <1.5% 在测量波动内）；2026-08-07 记录的更高数值（4K 70.16 / 60K
+44.23 / 125K 32.09）在当前固定代码下不可复现，归因于当时的测量条件
+（c805572 时代的 vLLM 代码与口径）而非 flashinfer 版本。
 
 `VLLM_INT8KV_FA_DECODE=1` 的实验性 decode variant 在 kernel 内应用
 per-token-head scale（免 dequant），kernel 内多 query（QO_LEN=4）实测

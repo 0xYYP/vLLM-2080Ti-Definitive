@@ -87,8 +87,12 @@ The `int8kv-245K` row uses a different evidence basis: prefill 710.0 tok/s is
 the first-write pp100K measurement (138456 tokens, ~195s) and decode 6.3 tok/s
 is the 250K-context FA-decode measurement (64 tokens, prefix-cache hit, no
 debug logging; 0.6.8 era, experimental decode variant). On 0.6.16rc4 the
-default bridge path measured 4K 28.95 tok/s on the 128K profile (warm,
-completions, MTP3). The 245K profile reserves a 5.9GiB KV pool, leaving only
+default bridge path measured 4K 29.56 tok/s on the 128K profile (warm,
+completions, MTP3); a same-environment A/B (same vLLM 6426afb, only
+flashinfer switched) showed 0.6.8.post1 and 0.6.16rc4 within 1.5% (4K 29.80
+vs 29.56), so the earlier 2026-08-07 bridge records (4K 70.16) are not
+reproducible and trace to that session's conditions, not the flashinfer
+version. The 245K profile reserves a 5.9GiB KV pool, leaving only
 ~0.9GiB/GPU headroom, so long-context first writes OOM and only
 prefix-cache-hit decode is practical there; 262144 OOMs on a single 100K
 write. The 245K preset is a configuration ceiling verified for
