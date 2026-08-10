@@ -57,6 +57,7 @@ include = ["vllm*"]
 "vllm/third_party/**" = ["ALL"]
 "vllm/version.py" = ["F401"]
 "vllm/_version.py" = ["ALL"]
+"patches/**" = ["ALL"]
 
 [tool.ruff.lint]
 select = [

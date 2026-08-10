@@ -1,7 +1,11 @@
-import sys, torch
+import sys
+
+import torch
+
 sys.path.insert(0, "/opt/vllm-2080ti-definitive")
-from vllm.v1.attention.backends.triton_attn import _int8kv_decode_jit_args
 from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper
+
+from vllm.v1.attention.backends.triton_attn import _int8kv_decode_jit_args
 
 head_dim, num_heads, num_kv_heads, page_size, gqa = 256, 12, 2, 1504, 6
 sm_scale = 0.0625
@@ -29,7 +33,6 @@ def run_kernel(q, kv, k_scale, v_scale, seq_len):
 
 def ref_impl(q, kv, k_scale, v_scale, seq_len):
     """per-token-head scale attention 参考实现（无 causal，全部 attend）。"""
-    nblocks = (seq_len + page_size - 1) // page_size
     kvh = torch.arange(num_heads) // gqa  # (12,)
     k_flat = kv[:, 0][..., :head_dim].float().reshape(-1, num_kv_heads, head_dim)[:seq_len]  # (seq,2,256)
     v_flat = kv[:, 1][..., :head_dim].float().reshape(-1, num_kv_heads, head_dim)[:seq_len]

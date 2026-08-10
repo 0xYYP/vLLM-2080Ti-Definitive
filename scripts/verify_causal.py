@@ -3,10 +3,14 @@
 seq_len_cpu 含 4 个 speculative token；query 行 i（0..3）位置 = kv_len-4+i，
 attend 边界 kv_idx < kv_len-4+1+i。随机 K/V scale + 随机 page table + 尾页。
 """
-import sys, torch
+import sys
+
+import torch
+
 sys.path.insert(0, "/opt/vllm-2080ti-definitive")
-from vllm.v1.attention.backends.triton_attn import _int8kv_decode_jit_args
 from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper
+
+from vllm.v1.attention.backends.triton_attn import _int8kv_decode_jit_args
 
 head_dim, num_heads, num_kv_heads, page_size, gqa = 256, 12, 2, 1504, 6
 sm_scale = 0.0625
