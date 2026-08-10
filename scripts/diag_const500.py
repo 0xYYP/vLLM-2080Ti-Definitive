@@ -1,7 +1,11 @@
-import sys, torch
+import sys
+
+import torch
+
 sys.path.insert(0, "/opt/vllm-2080ti-definitive")
-from vllm.v1.attention.backends.triton_attn import _int8kv_decode_jit_args
 from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper
+
+from vllm.v1.attention.backends.triton_attn import _int8kv_decode_jit_args
 
 head_dim, num_heads, num_kv_heads, page_size, gqa = 256, 12, 2, 1504, 6
 sm_scale = 0.0625
