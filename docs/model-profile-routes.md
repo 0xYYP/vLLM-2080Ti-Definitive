@@ -32,9 +32,12 @@ are not capacity evidence.
   (2026-08-10, same vLLM 6426afb, only flashinfer switched): 0.6.8.post1 vs
   0.6.16rc4 show no bridge-path difference (4K 29.80 vs 29.56); the 2026-08-07
   records (4K 70.16) are not reproducible under the current fixed code —
-  confirmed unrelated to the flashinfer version; the historical gap is
-  consistent with the c805572-era code/measurement conditions, though the
-  specific factors were not further isolated. The
+  confirmed unrelated to the flashinfer version. A replay on the historical
+  code (c805572 + 0.6.8.post1 + 260 layout) measured 4K 30.05 / 60K 20.07 /
+  100K 20.06, so the 2026-08-07 records stay **permanently marked as
+  non-reproducible historical measurements** (unrelated to flashinfer
+  version, code, or the 260/272 layout; the true cause was the measurement
+  method of that session). The
   experimental FlashInfer decode variant (`VLLM_INT8KV_FA_DECODE=1`) is
   slower than the bridge (4K 18.15 tok/s, occupancy-bound) and stays off by
   default. The 245K preset (`int8kv-245K-mtp3-text-only.env`) is a
