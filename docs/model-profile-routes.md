@@ -27,8 +27,12 @@ are not capacity evidence.
   `normal` / piecewise profiles. Decode defaults to the dequant bridge
   (continuation/cascade chunked path) instead of the native O(KV) full scan,
   which degraded linearly with context. Measured on 0.6.16rc4 (warm,
-  completions, MTP3, dual 2080 Ti, 272 layout): 4K 28.95 / 60K 20.82 / 100K
-  16.12 tok/s decode (native extrapolation ~1.5-2 tok/s at 250K). The
+  completions, MTP3, dual 2080 Ti, 272 layout): 4K 29.56 / 60K 21.46 / 100K
+  16.08 tok/s decode (native extrapolation ~1.5-2 tok/s at 250K). A/B
+  (2026-08-10, same vLLM 6426afb, only flashinfer switched): 0.6.8.post1 vs
+  0.6.16rc4 show no bridge-path difference (4K 29.80 vs 29.56); the 2026-08-07
+  records (4K 70.16) are not reproducible and trace to that session's
+  conditions, not the flashinfer version. The
   experimental FlashInfer decode variant (`VLLM_INT8KV_FA_DECODE=1`) is
   slower than the bridge (4K 18.15 tok/s, occupancy-bound) and stays off by
   default. The 245K preset (`int8kv-245K-mtp3-text-only.env`) is a

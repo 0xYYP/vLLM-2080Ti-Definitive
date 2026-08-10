@@ -238,8 +238,10 @@ INT8 KV decode on Turing (SM75): the shipped `int8kv-*` profiles route decode
 through the FlashInfer dequant bridge (chunked continuation/cascade path)
 instead of the native O(KV) full scan, which degraded linearly with context
 (measured 44→5 tok/s from 4K to 65K). Verified on 0.6.16rc4 (warm,
-completions, MTP3, dual 2080 Ti, 272 layout): decode 4K 28.95 / 60K 20.82 /
-100K 16.12 tok/s, vs ~1.5-2 tok/s native at 250K. The experimental
+completions, MTP3, dual 2080 Ti, 272 layout): decode 4K 29.56 / 60K 21.46 /
+100K 16.08 tok/s, vs ~1.5-2 tok/s native at 250K. A/B with the same vLLM
+(6426afb) switching only flashinfer showed no bridge-path difference between
+0.6.8.post1 and 0.6.16rc4 (4K 29.80 vs 29.56). The experimental
 kernel-internal decode variant (`VLLM_INT8KV_FA_DECODE=1`) is slower than
 the bridge and stays off by default. The 245K preset
 (`int8kv-245K-mtp3-text-only.env`) is a configuration ceiling verified for

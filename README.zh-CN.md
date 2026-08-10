@@ -226,8 +226,10 @@ MTP 已按当前实测选择了更适合部署的值。KV 先按目标选择：F
 INT8 KV 在 Turing（SM75）上的 decode：项目自带 `int8kv-*` profile 让 decode
 走 FlashInfer dequant bridge（continuation/cascade 分块路径），不再回退原生
 O(KV) 全量扫描（实测 4K→65K 为 44→5 tok/s 线性退化）。0.6.16rc4 验证
-（warm / completions / MTP3 / 双 2080 Ti / 272 布局）：decode 4K 28.95 /
-60K 20.82 / 100K 16.12 tok/s，原生 250K 外推仅 ~1.5-2 tok/s。实验性
+（warm / completions / MTP3 / 双 2080 Ti / 272 布局）：decode 4K 29.56 /
+60K 21.46 / 100K 16.08 tok/s，原生 250K 外推仅 ~1.5-2 tok/s。同环境 A/B
+（vLLM 固定 6426afb，仅切换 flashinfer）确认 0.6.8.post1 与 0.6.16rc4
+桥路径无性能差异（4K 29.80 vs 29.56）。实验性
 kernel 内 decode variant（`VLLM_INT8KV_FA_DECODE=1`）慢于桥，默认关闭；
 245K（`int8kv-245K-mtp3-text-only.env`）是配置上限，仅在 prefix-cache
 命中后 decode 验证过；冷启动 60K+ prefill 在双 2080 Ti 上已观测 OOM，

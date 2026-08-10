@@ -80,8 +80,11 @@ block 对齐后的 prefix-cache 路径已验证设置。
 `int8kv-245K` 行的口径不同：prefill 710.0 tok/s 是 pp100K 首次写入实测
 （138456 tokens，约 195s），decode 6.3 tok/s 是 250K 上下文 FA-decode 实测
 （64 tokens，prefix-cache 命中、无 debug 日志；0.6.8 时代、实验性 decode
-variant）。0.6.16rc4 下默认桥路径在 128K profile 实测 4K 28.95 tok/s
-（warm / completions / MTP3）。245K profile 预留 5.9GiB KV 池，每卡仅剩
+variant）。0.6.16rc4 下默认桥路径在 128K profile 实测 4K 29.56 tok/s
+（warm / completions / MTP3）。同环境 A/B（vLLM 固定 6426afb，仅切换
+flashinfer）确认 0.6.8.post1 与 0.6.16rc4 差异 <1.5%（4K 29.80 vs 29.56），
+2026-08-07 的更高桥记录（4K 70.16）不可复现，归因当时测量条件而非
+flashinfer 版本。245K profile 预留 5.9GiB KV 池，每卡仅剩
 ~0.9GiB 余量，长上下文首次写入（prefill）即 OOM，只能 prefix 命中后做
 decode；262144 在单次 100K 写入即 OOM。245K 为配置上限，仅
 prefix-cache 命中后 decode 验证过（冷启动 60K+ prefill 未验证且已观测
