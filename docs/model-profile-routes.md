@@ -31,9 +31,10 @@ are not capacity evidence.
   16.12 tok/s decode (native extrapolation ~1.5-2 tok/s at 250K). The
   experimental FlashInfer decode variant (`VLLM_INT8KV_FA_DECODE=1`) is
   slower than the bridge (4K 18.15 tok/s, occupancy-bound) and stays off by
-  default. Maximum usable context is 245K
-  (`int8kv-245K-mtp3-text-only.env`); 262144 OOMs on a single 100K write.
-  See `docs/int8kv-fa-decode.md`.
+  default. The 245K preset (`int8kv-245K-mtp3-text-only.env`) is a
+  configuration ceiling verified for prefix-cache-hit decode only; cold-start
+  prefill above ~60K OOMs (262144 OOMs on a single 100K write). See
+  `docs/int8kv-fa-decode.md`.
 - TQK8V4 is the TurboQuant compression route; currently shipped only for
   quality-passed `fast` profiles.
 - TQ4NC had capacity experiments, but is not used in the current shipped

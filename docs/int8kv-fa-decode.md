@@ -76,10 +76,12 @@ dequant 成 fp16 后走 FlashInfer ragged prefill 分块 kernel。该路径是�
 0.6.16rc4 实测（2026-08-10，128K profile，warm、completions、MTP3、TP2
 双 2080 Ti、272 布局）：桥路径 decode 4K（1842 pt）28.95 tok/s、60K
 （27690 pt）20.82、100K（46152 pt）16.12；对比原生 O(KV) 全量扫描
-（4K→65K 44→5 tok/s 线性退化、250K 约 1.5-2 tok/s），长上下文不再退化，
-优化目标达成。注意：0.6.8.post1 时代记录的桥路径更高（4K 70.16 / 60K
-44.23 / 125K 32.09），0.6.16rc4 升级后桥路径实测约减半（flashinfer
-ragged prefill kernel 版本差异，未做同环境 A/B 验证，见下文"显存注意"）。
+（4K→65K 44→5 tok/s 近似线性退化、250K 约 1.5-2 tok/s），桥路径不再呈
+原生 O(KV) 的近似线性退化（4K→100K 由 28.95 降至 16.12，曲线明显改善，
+但绝对吞吐仍低于旧 native 与 0.6.8 记录）。注意：0.6.8.post1 时代记录的
+桥路径更高（4K 70.16 / 60K 44.23 / 125K 32.09），0.6.16rc4 升级后桥路径
+实测约减半（flashinfer ragged prefill kernel 版本差异，未做同环境 A/B
+验证，见下文"显存注意"）。
 
 `VLLM_INT8KV_FA_DECODE=1` 的实验性 decode variant 在 kernel 内应用
 per-token-head scale（免 dequant），kernel 内多 query（QO_LEN=4）实测
@@ -116,7 +118,7 @@ per-token-head scale（免 dequant），kernel 内多 query（QO_LEN=4）实测
 
 双 2080 Ti（21.49GiB）下，272 对齐使 245K 上下文的 KV pool 需求约
 4.71GiB，运行余量约 4.4-4.5GiB：`MAX_MODEL_LEN=262144` 时 pp100K 一次
-写入即 OOM（50MiB），极限可用上下文为 250880（245K，见
+写入即 OOM（50MiB），配置上限为 250880（245K，见
 `profiles/qwen27b/normal/fp8/int8kv-245K-mtp3-text-only.env`）。
 
 2026-08-10 实测补充：128K profile（`int8kv-128K-mtp3-text-only.env`，

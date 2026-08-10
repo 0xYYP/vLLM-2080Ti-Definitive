@@ -25,9 +25,10 @@
   completions / MTP3 / 双 2080 Ti / 272 布局）：4K 28.95 / 60K 20.82 /
   100K 16.12 tok/s（原生 250K 外推 ~1.5-2 tok/s）。实验性 FlashInfer
   decode variant（`VLLM_INT8KV_FA_DECODE=1`）慢于桥（4K 18.15 tok/s，
-  occupancy 瓶颈），默认关闭。极限可用上下文为 245K
-  （`int8kv-245K-mtp3-text-only.env`）；262144 在单次 100K 写入即 OOM。
-  详见 `docs/int8kv-fa-decode.md`。
+  occupancy 瓶颈），默认关闭。245K（`int8kv-245K-mtp3-text-only.env`）
+  是配置上限，仅 prefix-cache 命中后 decode 验证过；冷启动 60K+ prefill
+  已观测 OOM（262144 在单次 100K 写入即 OOM）。详见
+  `docs/int8kv-fa-decode.md`。
 - TQK8V4 是 TurboQuant 压缩路线；当前只保留质量通过的 `fast` profile。
 - TQ4NC 有过容量实验，但当前正式 profile 不采用。
 
