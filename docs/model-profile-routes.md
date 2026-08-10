@@ -34,10 +34,13 @@ are not capacity evidence.
   records (4K 70.16) are not reproducible under the current fixed code —
   confirmed unrelated to the flashinfer version. A replay on the historical
   code (c805572 + 0.6.8.post1 + 260 layout) measured 4K 30.05 / 60K 20.07 /
-  100K 20.06, so the 2026-08-07 records stay **permanently marked as
-  non-reproducible historical measurements** (unrelated to flashinfer
-  version, code, or the 260/272 layout; the true cause was the measurement
-  method of that session). The
+  100K 20.06 / 125K 16.19, so all three 2026-08-07 records (70.16 / 44.23 /
+  32.09) stay **permanently marked as non-reproducible historical
+  measurements** (unrelated to the flashinfer version; the true cause was
+  that session's measurement method). Note: absolute throughput differs
+  between the 260-layout replay and the current 272 layout (100K 20.06 vs
+  16.08, ~+25%); the layout's effect on absolute throughput was not isolated.
+  The
   experimental FlashInfer decode variant (`VLLM_INT8KV_FA_DECODE=1`) is
   slower than the bridge (4K 18.15 tok/s, occupancy-bound) and stays off by
   default. The 245K preset (`int8kv-245K-mtp3-text-only.env`) is a
