@@ -241,8 +241,10 @@ instead of the native O(KV) full scan, which degraded linearly with context
 completions, MTP3, dual 2080 Ti, 272 layout): decode 4K 28.95 / 60K 20.82 /
 100K 16.12 tok/s, vs ~1.5-2 tok/s native at 250K. The experimental
 kernel-internal decode variant (`VLLM_INT8KV_FA_DECODE=1`) is slower than
-the bridge and stays off by default; maximum usable INT8 context is 245K
-(`int8kv-245K-mtp3-text-only.env`). See
+the bridge and stays off by default. The 245K preset
+(`int8kv-245K-mtp3-text-only.env`) is a configuration ceiling verified for
+prefix-cache-hit decode only; cold-start prefill above ~60K OOMs on dual
+2080 Ti and is unverified. See
 [INT8 KV FA decode](docs/int8kv-fa-decode.md).
 
 ## ❓ Hardware Q&A

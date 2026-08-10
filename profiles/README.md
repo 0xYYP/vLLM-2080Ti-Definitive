@@ -91,13 +91,16 @@ default bridge path measured 4K 28.95 tok/s on the 128K profile (warm,
 completions, MTP3). The 245K profile reserves a 5.9GiB KV pool, leaving only
 ~0.9GiB/GPU headroom, so long-context first writes OOM and only
 prefix-cache-hit decode is practical there; 262144 OOMs on a single 100K
-write. The verified INT8 ceiling is `int8kv-245K` (250880). See
+write. The 245K preset is a configuration ceiling verified for
+prefix-cache-hit decode only (cold-start prefill above ~60K OOMs and is
+unverified). See
 [`docs/int8kv-fa-decode.md`](../docs/int8kv-fa-decode.md) for the decode
 acceleration details and limits.
 
 Note (2026-08-07, kv_cache head stride 16B-aligned to 272): the `int8kv-252K`
-row (MAX_MODEL_LEN=258048) exceeds the verified 250880 limit and may OOM on
-cold starts; the verified INT8 ceiling is `int8kv-245K` (250880). Re-validate
+row (MAX_MODEL_LEN=258048) exceeds the verified 250880 context-length limit
+and may OOM on cold starts; the verified INT8 context-length ceiling is
+`int8kv-245K` (250880). Re-validate
 `int8kv-252K` before promoting it back to a recommended preset.
 
 ### Qwen3.6 35B FP8

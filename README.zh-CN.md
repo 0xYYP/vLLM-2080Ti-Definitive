@@ -229,7 +229,9 @@ O(KV) 全量扫描（实测 4K→65K 为 44→5 tok/s 线性退化）。0.6.16rc
 （warm / completions / MTP3 / 双 2080 Ti / 272 布局）：decode 4K 28.95 /
 60K 20.82 / 100K 16.12 tok/s，原生 250K 外推仅 ~1.5-2 tok/s。实验性
 kernel 内 decode variant（`VLLM_INT8KV_FA_DECODE=1`）慢于桥，默认关闭；
-INT8 极限可用上下文 245K（`int8kv-245K-mtp3-text-only.env`）。详见
+245K（`int8kv-245K-mtp3-text-only.env`）是配置上限，仅在 prefix-cache
+命中后 decode 验证过；冷启动 60K+ prefill 在双 2080 Ti 上已观测 OOM，
+未验证。详见
 [INT8 KV FA decode](docs/int8kv-fa-decode.md)。
 
 ## ❓ 硬件 Q&A

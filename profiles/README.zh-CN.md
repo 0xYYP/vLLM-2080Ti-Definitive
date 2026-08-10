@@ -83,8 +83,9 @@ block 对齐后的 prefix-cache 路径已验证设置。
 variant）。0.6.16rc4 下默认桥路径在 128K profile 实测 4K 28.95 tok/s
 （warm / completions / MTP3）。245K profile 预留 5.9GiB KV 池，每卡仅剩
 ~0.9GiB 余量，长上下文首次写入（prefill）即 OOM，只能 prefix 命中后做
-decode；262144 在单次 100K 写入即 OOM。已验证 INT8 极限为
-`int8kv-245K`（250880）。decode 加速细节与限制见
+decode；262144 在单次 100K 写入即 OOM。245K 为配置上限，仅
+prefix-cache 命中后 decode 验证过（冷启动 60K+ prefill 未验证且已观测
+OOM）。decode 加速细节与限制见
 [`docs/int8kv-fa-decode.md`](../docs/int8kv-fa-decode.md)。
 
 ### Qwen3.6 35B FP8
