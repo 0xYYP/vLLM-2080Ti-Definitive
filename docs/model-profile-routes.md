@@ -71,6 +71,20 @@ are not capacity evidence.
 - FP8 + FP16KV text+image is validated at 136K in both `normal` and
   `aggressive`. Both passed `138240/128`; `139008/64` also passed at the edge,
   while `139136/32` exceeds the configured `139264` limit.
+- Text+image profiles no longer cap the image count (validated 2026-08-23 on
+  cybros, 2x RTX 2080 Ti 22GB, Qwen3.8-27B W4A16 + `max-model-len 262144`):
+  1–100 images at 512² (~256 vision tokens each) and 20–100 images at
+  max_pixels 1280² (~980 vision tokens each, ~98K vision tokens total) all
+  succeeded with 0 OOM and 0 ERROR. Peak vision-encoding memory increment
+  locked at ~362–388 MiB per GPU (21,356–21,384 MiB, within the 22,528 MiB
+  budget with ~1.1 GiB headroom) because chunked prefill (2,048 tokens/chunk)
+  reuses encoder buffers instead of retaining all features. `image:999` is
+  now the explicit per-prompt cap; requests exceeding it or pushing total
+  context past `max-model-len` are rejected with HTTP 400 before any memory
+  pressure. The remaining operational note: with `max-num-seqs 1`, one huge
+  image batch holds the single slot for its whole prefill (e.g. ~256K vision
+  tokens ≈ 2–3 min), so massive multi-image prompts cost latency, not
+  stability. `video`/`audio` stay disabled (0) for these routes.
 - FP8 + FP16KV `fast` is currently validated at 178K and passes a long-prompt
   smoke at `182144/128`.
 - FP8 + TQK8V4 is validated at 256K for text-only and 240K for text-image.
