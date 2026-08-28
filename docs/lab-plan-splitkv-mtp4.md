@@ -8,6 +8,7 @@
 - 已知事实：SM75 decode kernel occupancy 锁死（ncu 实证 12.5%、2 blocks/SM）；125K decode 93ms/步 vs 理论带宽 10ms（~9 倍差距）；项目已有 int8kv split-KV（direct_paged / NOSPLIT 开关）机制。
 - 目标 A：MTP k=2 → k=4 叠加（低成本，草稿变便宜后 k=4 几乎免费）。
 - 目标 B：方向③ split-KV verify——长上下文（60K-125K）下把 verify attention 的并行度拉起来。**先测量占比，占比不足则关闭**。
+- **基线配置（用户确认的本设备好配置，2026-08-28）**：int4 权重 + fp16kv KV + 262144 上下文 + MTP2 + safe 同步模式（对应 profile `qwen38-27b/normal/int4/fp16kv-256K-mtp2-uncensored-text-image.env`）。**TQK8V4 与 nosync 经实测存在质量风险，不用于本计划任何基线或验证**。
 
 ## 1. 前置资产（均已就位）
 
@@ -25,8 +26,8 @@
 
 ### 阶段 0：定稿配置基线 + verify 占比测量（~40 分钟）
 
-- 0.1 确认定稿配置开关：TQK8V4 启用方式（查 `launcher.sh`/profile/env；若文档不明，从 `profiles/qwen38-27b` 现存 env 推导），与用户核对后用于服务启动。
-- 0.2 起**定稿配置**基线服务（feat/draft-vocab 代码 + 表资产 + MTP k=2），跑 4K/64K/120K 三档上下文 A/B 数据（warm + 3 中位）——存档为后续对照。
+- 0.1 定稿配置已确认（int4 + fp16kv + 262144 + MTP2 + safe）；以 profile `fp16kv-256K-mtp2-uncensored-text-image.env` 为基准，直接按其参数启动（不引入 TQK8V4/nosync）。
+- 0.2 起**定稿配置（fp16kv+262K）**基线服务（feat/draft-vocab 代码 + 表资产 + MTP k=2），跑 4K/64K/120K 三档上下文 A/B 数据（warm + 3 中位）——存档为后续对照。
 - 0.3 verify attention 占比测量（三选一，按可用性）：
   a. `sudo -n ncu` profile 一个 120K 上下文 decode 步（cybros 有 sudo ncu 先例），读 kernel 时间表；
   b. torch profiler（vLLM `--collect-detailed-traces` 或临时 kernel 计时）；
@@ -69,7 +70,7 @@
 
 ### 阶段 4：长上下文 A/B 与收尾（~1 小时）
 
-- 4.1 定稿配置全档 A/B：4K/16K/64K/120K ×（基线 k=2 ↔ draft-vocab k=2 ↔ 最优组合），每点 warm+3 中位。
+- 4.1 定稿配置（fp16kv+262K）全档 A/B：4K/16K/64K/120K ×（基线 k=2 ↔ draft-vocab k=2 ↔ 最优组合），每点 warm+3 中位。
 - 4.2 综合指标：char/s、TTFT、接受率（metrics 日志）、稳定性（连续 20 请求无错）。
 - 4.3 正确性终检：greedy 逐字一致性 + 复述任务。
 - 4.4 结果入档：更新 `docs/lab-validation-sampler-draftvocab-20260828.md`（或新文档）记录全部分档数据；分支提交（feat/draft-vocab 或新分支 feat/split-kv-verify）。
@@ -101,7 +102,7 @@
 | 新 kernel 被 SM75 寄存器/occupancy 否决 | ③ 关闭（沿用既往 QO_LEN 先例） |
 | split-kv 正确性 bug（per-seq causal 等） | 先正确性后性能；失败即回滚提交 |
 | 网络/ssh 中断 | 任务在远端 nohup，本地重连继续查询 |
-| 定稿配置开关（TQK8V4）不明 | 阶段 0.1 暂停向用户确认，不猜测 |
+| 误用 TQK8V4/nosync | 基线一律用 fp16kv+262K+safe（用户确认），TQK8V4/nosync 不启用 |
 
 ## 6. 输出物清单
 
