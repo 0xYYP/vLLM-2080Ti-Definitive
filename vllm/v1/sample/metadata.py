@@ -20,6 +20,10 @@ class SamplingMetadata:
     top_p: torch.Tensor | None
     top_k: torch.Tensor | None
 
+    # Host-side max of top_k over the batch (vocab_size when a request has no
+    # top-k). Lets the sampler take a sort-free path.
+    top_k_max: int | None = None
+
     generators: dict[int, torch.Generator]
 
     # None means no logprobs, 0 means sampled token logprobs only
@@ -53,3 +57,6 @@ class SamplingMetadata:
     # When non-None, use ``holder.has_tracked_requests()`` to see if this batch applies
     # thinking-token-budget logits (holder may exist with an empty tracking set).
     thinking_budget_state_holder: ThinkingBudgetStateHolder | None = None
+    # Host-side max of top_k over the batch (vocab_size when a request has no
+    # top-k). Lets the sampler take a sort-free path.
+    top_k_max: int | None = None

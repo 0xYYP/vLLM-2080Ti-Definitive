@@ -17,6 +17,7 @@ from vllm.v1.sample.logits_processor.builtin import MinTokensLogitsProcessor
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.ops.bad_words import apply_bad_words_with_drafts
 from vllm.v1.sample.ops.penalties import apply_all_penalties
+from vllm.v1.sample.ops.row_softmax import softmax_fp32
 from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p
 from vllm.v1.sample.sampler import Sampler
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
@@ -466,7 +467,7 @@ def rejection_sample(
             return output_token_ids
 
     # Compute probability distribution from target logits.
-    target_probs = target_logits.softmax(dim=-1, dtype=torch.float32)
+    target_probs = softmax_fp32(target_logits)
     assert target_probs.is_contiguous()
 
     # Sample recovered tokens for each position.
@@ -558,7 +559,7 @@ def apply_sampling_constraints(
 
     # NOTE(woosuk): `apply_top_k_top_p` uses sorting to calculate the mask,
     # which is slow for large vocab sizes. This may cause performance issues.
-    return apply_top_k_top_p(logits, top_k, top_p)
+    return apply_top_k_top_p(logits, top_k, top_p, k_max=sampling_metadata.top_k_max)
 
 
 def expand_batch_to_tokens(

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import os
 from importlib.util import find_spec
 from typing import Any, cast
 
@@ -1599,6 +1600,10 @@ class SpecDecodeBaseProposer:
 # Refer to https://github.com/vllm-project/vllm/pull/16899 for the details.
 # FIXME(woosuk): The logic here is duplicated with the main sampling code.
 # We should refactor this to reuse the same sampling implementation.
+_DRAFT_TOPK_TOPP = os.environ.get("VLLM_DRAFT_TOPK_TOPP", "1") == "1"
+_DRAFT_TEMP_SCALE = float(os.environ.get("VLLM_DRAFT_TEMP_SCALE", "1.0"))
+
+
 def compute_probs_and_sample_next_token(
     logits: torch.Tensor,
     sampling_metadata: SamplingMetadata,
@@ -1620,7 +1625,33 @@ def compute_probs_and_sample_next_token(
         is_greedy = temperature < _SAMPLING_EPS
         temperature = torch.where(is_greedy, 1.0, temperature)
     logits.div_(temperature.view(-1, 1))
-    probs = logits.softmax(dim=-1, dtype=torch.float32)
+    # Optionally sharpen the draft distribution (rejection sampling stays
+    # exact for any draft distribution; a sharper draft can raise acceptance
+    # when the target is truncated by top-k/top-p). VLLM_DRAFT_TEMP_SCALE < 1
+    # sharpens.
+    if _DRAFT_TEMP_SCALE != 1.0:
+        logits.div_(_DRAFT_TEMP_SCALE)
+    # Draft from the same top-k/top-p-truncated support as the target
+    # (rejection sampling stays exact for any draft distribution; matching
+    # the target's truncation raises acceptance). Only when cheap (small
+    # top-k known on the host).
+    if (
+        _DRAFT_TOPK_TOPP
+        and sampling_metadata.top_k is not None
+        and sampling_metadata.top_k_max is not None
+        and sampling_metadata.top_k_max <= 64
+    ):
+        from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p
+
+        logits = apply_top_k_top_p(
+            logits,
+            sampling_metadata.top_k,
+            sampling_metadata.top_p,
+            k_max=sampling_metadata.top_k_max,
+        )
+    from vllm.v1.sample.ops.row_softmax import softmax_fp32
+
+    probs = softmax_fp32(logits)
 
     # NOTE(woosuk): Currently, we ignore most of the sampling parameters in
     # generating the draft tokens. We only use the temperature. While this
