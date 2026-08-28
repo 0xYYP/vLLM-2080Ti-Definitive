@@ -110,7 +110,10 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
             self.draft_lm_head = ParallelLMHead(
                 int(_ids.numel()),
                 config.hidden_size,
-                quant_config=vllm_config.quant_config,
+                # 权重为从（密集 bf16）lm_head 的行切片，不携带量化格式；
+                # 若传入 vllm_config.quant_config（compressed-tensors），
+                # 量化层会按量化协议错误地 dequant 这份密集权重。
+                quant_config=None,
                 prefix=maybe_prefix(prefix, "draft_lm_head"),
             )
             # 权重直接从附加 shard 读取（行切片），按 TP rank 切分，
