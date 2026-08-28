@@ -1,6 +1,6 @@
 # 执行计划：长上下文优化（方向③ split-KV verify + MTP k=4 叠加）
 
-状态：**待用户审批**。审批通过后按阶段在 cybros 后台执行，全程日志 + 自动止损。
+状态：**复验结论：有条件批准**。可执行阶段 0；阶段 1 需先通过 MTP4 冒烟。阶段 2 完成 backend/query-length/资源核对后，才决定是否进入阶段 3；全程日志 + 自动止损。
 
 ## 0. 背景与目标
 
@@ -19,7 +19,7 @@
 | 模型资产（切片权重） | `/data/models/.../model_extra_tensors.safetensors` + `mtp_draft_vocab_ids.pt`（已保留） |
 | 采样/统计/切片脚本 | `prepare/sample_model_outputs.py`、`build_draft_vocab.py`、`build_draft_head.py` |
 | A/B 基准脚本 | `/tmp/ab_bench_sampler.py`（warm 1 + 3 取中位，char/s + TTFT） |
-| 服务可执行参数 | 见验证文档 §2（定稿需换成 TQK8V4 + nosync + 256K） |
+| 服务可执行参数 | 见验证文档 §2；本计划统一使用 int4 + fp16kv + 262K + safe，禁止切换到 TQK8V4/nosync |
 | 已知坑 | 验证文档 §6（shm、别名、worktree 软链、warm） |
 
 ## 2. 阶段划分与验收标准
@@ -28,12 +28,13 @@
 
 - 0.1 定稿配置已确认（int4 + fp16kv + 262144 + MTP2 + safe）；以 profile `fp16kv-256K-mtp2-uncensored-text-image.env` 为基准，直接按其参数启动（不引入 TQK8V4/nosync）。
 - 0.2 起**定稿配置（fp16kv+262K）**基线服务（feat/draft-vocab 代码 + 表资产 + MTP k=2），跑 4K/64K/120K 三档上下文 A/B 数据（warm + 3 中位）——存档为后续对照。
-- 0.3 verify attention 占比测量（三选一，按可用性）：
+- 0.3 verify attention 占比测量（优先 a，其次 b）：
   a. `sudo -n ncu` profile 一个 120K 上下文 decode 步（cybros 有 sudo ncu 先例），读 kernel 时间表；
   b. torch profiler（vLLM `--collect-detailed-traces` 或临时 kernel 计时）；
-  c. 服务日志/SpecDecoding metrics（若统计可用）。
-- **决策点 A**：verify attention（含 target 主 attention）步骤占比 ≥20%（步耗时贡献）→ 继续 B；<20% → ③ 关闭，投入 k=4 叠加与最终报告。
-- 验收：产出占比数据表（kernel 名 + 耗时 + 占比），写入日志。
+  c. 服务日志/SpecDecoding metrics 仅用于记录接受率和吞吐，**不能替代 kernel 时间占比**；若 a/b 均不可用，不作占比决策并关闭方向 ③。
+- 占比口径固定为：同一条 120K 请求、同一 warm 状态下，一次 speculative verify 迭代中 verify attention（含 target 主 attention）GPU kernel 时间 ÷ 该迭代 GPU kernel 总时间；排除服务排队、网络和 CPU 时间。
+- **决策点 A**：上述占比 ≥20%（至少 3 次取中位）→ 继续 B；<20% 或无法取得该口径 → ③ 关闭，投入 k=4 叠加与最终报告。
+- 验收：产出占比数据表（kernel 名 + 次数/耗时 + 总时间 + 占比 + 采集方式），写入日志。
 
 ### 阶段 1：MTP k=4 叠加实验（~1 小时）
 
@@ -41,17 +42,18 @@
 - 1.2 冒烟：一次请求正常 + SpecDecoding metrics 读取（注意启动参数需去掉 `--disable-log-stats` 才能看接受率）。
 - 1.3 四档 A/B：4K/16K/64K/120K，对照阶段 0.2 的 k=2 数据。
 - 1.4 验收：
-  - 接受率（mean acceptance length）≥ k=2 基线或仅小幅下降；
-  - char/s 相比 k=2 **+5% 以上**；
+  - 同时记录 mean acceptance length、每 draft position 接受率、accepted tokens / drafted tokens；k=4 与 k=2 的比较以 accepted/drafted 和分位置接受率为主，不能只比较 mean acceptance length（两者最大接受长度不同）；
+  - char/s 取 warm 后 3 次中位数，相比同档 k=2 **+5% 以上且超过重复测量噪声**；同时保留 char/s 与 tok/s 的定义和原始样本；
   - greedy 抽查与 k=2 输出前缀一致（正确性）；
   - 稳定运行（无崩溃、无 illegal access）。
 - 止损：k=4 崩溃（记忆：某些后端 k=4 有 illegal access 前科）→ 回退 k=3 复测，接受率/速度如仍过线则交付 k=3。
 
 ### 阶段 2：方向③ 探索与可行性（1-2 小时，纯调查不写内核）
 
-- 2.1 阅读现有 split-KV 资产：`vllm/v1/attention/backends/triton_attn.py` 的 int8kv decode kernel 与 planner（`sm75_attention_planner.py`）、`VLLM_INT8KV_FA_DIRECT_PAGED_NOSPLIT` 开关语义——确认已实现的 split-kv 能否服务 verify（query_len=2）场景。
-- 2.2 定位 FlashQLA legacy 的 verify 路径：spec-decode 的 attention 调用点（`vllm/v1/spec_decode/` 与 models/qwen3_5.py 的 verify 前向）当前走哪个后端/哪个 kernel，多 query 时是否 split。
-- 2.3 FlashInfer 0.6.16 的 decode/verify kernel（含 flash-decoding / split-kv 变体）在 SM75 可用性盘点（.so 内是否有、plan 支持、per-seq causal）。
+- 2.1 先确认当前 fp16 KV verify 的真实入口：`vllm/v1/attention/backends/triton_attn.py` 的 `TritonAttentionImpl` 以及 `vllm/v1/attention/ops/triton_unified_attention.py` 的 2D/3D 选择条件；现有 `VLLM_INT8KV_FA_DIRECT_PAGED_NOSPLIT`、int8kv decode kernel 和 planner（`vllm/v1/attention/sm75_attention_planner.py`）是 int8 专用证据，不能直接外推到 fp16 KV。
+- 2.2 从实际 `CommonAttentionMetadata.query_start_loc`、`max_query_len`、`num_actual_tokens` 和日志确认 verify query length。名义上通常是 `1 + num_speculative_tokens`，但拒绝/填充路径可能改变实际行数；不得预先按 `query_len=2` 设计边界。
+- 2.3 定位 FlashQLA legacy 的 verify 路径：spec-decode 的 attention 调用点（`vllm/v1/spec_decode/` 与 models/qwen3_5.py 的 verify 前向）当前走哪个后端/哪个 kernel，多 query 时是否 split。
+- 2.4 FlashInfer 0.6.16 的 decode/verify kernel（含 flash-decoding / split-kv 变体）在 SM75 可用性盘点（.so 内是否有、plan 支持、per-seq causal）。
 - **决策点 B**：
   - B1（现有 split-kv 可复用）→ 阶段 3.1 接入验证；
   - B2（需要新 Triton kernel）→ 用 SM75 资源约束评估（寄存器/occupancy/smem，参照既往 QO_LEN 否决先例）；可行 → 阶段 3.2；否决 → ③ 关闭，交付调查结论。
@@ -64,14 +66,14 @@
   - per-seq causal（不同序列不同 query/context 长度）——上游 3 个 patch 的教训（causal-only assert、per-seq-causal 缺失、padded-page）；
   - last_page_len / padding（int8kv 既有坑）；
   - TP=2 语义（每 rank 数据切片）。
-- 3.3 正确性验证（**必须品**）：4K/64K/120K 上下文各 3 次 greedy 长输出，与基线逐 token/text 前缀对比（text_prefixes=1 惯例）；中文长文复述（25k 文档）逐字比对；多轮会话无 garble；compute-sanitizer 若可用则跑最小复现。
+- 3.3 正确性验证（**必须品**）：split-KV 与未拆分 reference 使用同一 Q、KV/page table、scale、query metadata 和随机种子，逐元素比较输出；若实现暴露 LSE/softmax 中间态，同时比较该状态，以覆盖 causal mask、padding、page boundary、GQA 和 reduction。再做 4K/64K/120K 各 3 次 greedy 长输出，与基线逐 token/text 前缀对比（text_prefixes=1 惯例）；中文长文复述（25k 文档）逐字比对；多轮会话无 garble；compute-sanitizer 若可用则跑最小复现。
 - 3.4 性能预检：120K 上下文 decode 步耗时 vs 基线（kernel 计时）。
 - 验收：正确性全部通过 + 性能预检有正收益（>0）才进入阶段 4；任一正确性失败 → 回滚该提交并记录。
 
 ### 阶段 4：长上下文 A/B 与收尾（~1 小时）
 
 - 4.1 定稿配置（fp16kv+262K）全档 A/B：4K/16K/64K/120K ×（基线 k=2 ↔ draft-vocab k=2 ↔ 最优组合），每点 warm+3 中位。
-- 4.2 综合指标：char/s、TTFT、接受率（metrics 日志）、稳定性（连续 20 请求无错）。
+- 4.2 综合指标：char/s（明确字符计数口径）、tok/s、TTFT、接受率（metrics 日志）、稳定性（连续 20 请求无错）。
 - 4.3 正确性终检：greedy 逐字一致性 + 复述任务。
 - 4.4 结果入档：更新 `docs/lab-validation-sampler-draftvocab-20260828.md`（或新文档）记录全部分档数据；分支提交（feat/draft-vocab 或新分支 feat/split-kv-verify）。
 - 4.5 最终汇报：收益表 + 建议（是否 PR 合入用户主流程、配置建议）。
