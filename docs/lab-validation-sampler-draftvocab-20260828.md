@@ -222,3 +222,5 @@ scp -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/id_rsa -P 23193 \
 | greedy 输出 | 与基线逐字一致 | 与基线逐字一致 |
 
 **结论**：自建词频表完整解决接受率问题（超出全量水平），draft GEMM 从 248k 行缩至 16k 行（每 rank 8k），采样模式下 4K +7.2%、16K +2.5%（char/s 口径；换算 tok/s 约 +2~7%）。正式启用需在定稿配置（TQK8V4 + nosync）下复测一次，并走 PR 合入主流程。
+
+**复验确认（外部 AI 二轮，2026-08-28 深夜）**：自建 16384 表在 cybros（feat/draft-vocab a0a43f1，32768/safe）独立复测，链路全部通过：入库表与重算表 SHA-256 一致；draft head TP=2 加载成功（两 worker 均识别 16384-token head）；候选项 acceptance 46.4%–51.7%（关闭字典对照 45.3%–56.2%——草稿质量恢复，与无表相当）；4K 98.59–98.75 vs 基线 85.04 char/s（+15.9%）、16K 94.80–95.18 vs 87.93（+7.8%）；greedy 前缀逐字一致、无 EngineDeadError。结论：**表恢复草稿质量并呈正向收益成立**；本轮绝对收益高于原记录，单流 char/s 波动明显，不建议作为生产承诺，原 +7.2%/+2.5% 可作保守参考。**生产基线随后按用户确认为 int4+fp16kv+262144+safe**（非 TQK8V4/nosync——该组合实测有质量风险，不纳入验证）。
