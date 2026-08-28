@@ -201,3 +201,24 @@ scp -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/id_rsa -P 23193 \
 
 **备注**：此前的“bit 级等价、零副作用”表述过强——正确表述为：随机 logits（真实 lm_head 分布）等价；并列截断场景经回退保护后同样等价；其余冒烟/A/B 结论不受影响。
 
+
+## 8. 字典重做（自建词频表）最终结果（2026-08-28 晚）
+
+外部复验后按计划以模型自身输出重建词频表，全链路成功：
+
+**采样**：干净基线服务（main 98a91dc，32768 上下文，greedy）对 113 条多样中文 prompt（科普/新闻/闲聊/代码/工具/写作/英文）续写，累计 479,118 字符 ≈ 268,432 token，语料存 `~/ab-assets/corpus_qwen38_cn.jsonl`（scripts：`prepare/sample_model_outputs.py`，prompt 集 `~/ab-assets/prompts_qwen38_cn.jsonl`）。
+
+**建表**：`prepare/build_draft_vocab.py` 统计 → **held-out coverage 98.27%**（N=8192 已 95.67%，分布高度集中）；distinct token 仅 20,457。**TP=2 要求表大小可被 2 整除**（20457 奇数导致 ParallelLMHead 分片 10240 vs 切片 10228 崩溃），取 **16384**（÷2=8192 精确对齐），覆盖率 96.32%。表入库 `prepare/draft_vocab_qwen38_cn_16384.json`。
+
+**权重**：`prepare/build_draft_head.py` 切片生成 `model_extra_tensors.safetensors [16384, 5120]` + `mtp_draft_vocab_ids.pt`（round-trip 通过）。
+
+**验证（同 32768 配置 A/B，采样模式）**：
+
+| 指标 | 官方 40k 表 | 自建 16384 表 |
+|---|---|---|
+| Avg Draft acceptance | 2.8% | **45.5%**（per-position 0.589/0.321，mean 1.91） |
+| 4K char/s（中位） | 52.3 | **97.4**（基线 90.9，**+7.2%**） |
+| 16K char/s（中位） | 53.5 | **94.1**（基线 91.8，**+2.5%**） |
+| greedy 输出 | 与基线逐字一致 | 与基线逐字一致 |
+
+**结论**：自建词频表完整解决接受率问题（超出全量水平），draft GEMM 从 248k 行缩至 16k 行（每 rank 8k），采样模式下 4K +7.2%、16K +2.5%（char/s 口径；换算 tok/s 约 +2~7%）。正式启用需在定稿配置（TQK8V4 + nosync）下复测一次，并走 PR 合入主流程。
