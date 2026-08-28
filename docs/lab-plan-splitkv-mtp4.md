@@ -14,7 +14,7 @@
 
 | 资产 | 位置 |
 |---|---|
-| draft-vocab 分支（引擎 + quant_config 修正） | `feat/draft-vocab` HEAD `a0a43f1` |
+| draft-vocab 分支（引擎 + quant_config 修正 + 本次审批边界） | `feat/draft-vocab` HEAD `f6a754c` |
 | 16384 词频表 | `prepare/draft_vocab_qwen38_cn_16384.json` |
 | 模型资产（切片权重） | `/data/models/.../model_extra_tensors.safetensors` + `mtp_draft_vocab_ids.pt`（已保留） |
 | 采样/统计/切片脚本 | `prepare/sample_model_outputs.py`、`build_draft_vocab.py`、`build_draft_head.py` |
