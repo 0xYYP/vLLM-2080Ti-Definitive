@@ -11,7 +11,11 @@ from torch import nn
 
 from vllm.compilation.decorators import ignore_torch_compile, support_torch_compile
 from vllm.config import VllmConfig
-from vllm.distributed.parallel_state import get_pp_group
+from vllm.distributed.parallel_state import (
+    get_pp_group,
+    get_tensor_model_parallel_rank,
+    get_tensor_model_parallel_world_size,
+)
 from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe import (
     fused_moe_make_expert_params_mapping,
@@ -84,6 +88,48 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
             self.vocab_size,
             config.hidden_size,
         )
+
+        # vocab-truncated draft head（移植自 syv-ai/qwen38-27b-rtx3090）：
+        # 模型目录含 mtp_draft_vocab_ids.pt 与 model_extra_tensors.safetensors
+        # 且 env MTP_DRAFT_VOCAB != 0 时，drafter 只对受限词表行打分
+        # （draft_lm_head，行切片自原 lm_head），其余 id logits 为 -inf。
+        # 拒绝采样仍基于 target 模型，投机解码保持精确，只影响接受率。
+        self.draft_lm_head = None
+        self.draft_vocab_ids = None
+        _ids_path = os.path.join(model_config.model, "mtp_draft_vocab_ids.pt")
+        _extra_path = os.path.join(
+            model_config.model, "model_extra_tensors.safetensors"
+        )
+        if (
+            os.path.exists(_ids_path)
+            and os.path.exists(_extra_path)
+            and os.environ.get("MTP_DRAFT_VOCAB", "1") != "0"
+        ):
+            _ids = torch.load(_ids_path, map_location="cpu")
+            self.draft_vocab_ids = _ids
+            self.draft_lm_head = ParallelLMHead(
+                int(_ids.numel()),
+                config.hidden_size,
+                quant_config=vllm_config.quant_config,
+                prefix=maybe_prefix(prefix, "draft_lm_head"),
+            )
+            # 权重直接从附加 shard 读取（行切片），按 TP rank 切分，
+            # 不进入主 checkpoint 的 load_weights 流程。
+            from safetensors import safe_open
+
+            with safe_open(_extra_path, framework="pt") as _f:
+                _w = _f.get_tensor("mtp.draft_lm_head.weight")
+            _tp_world = get_tensor_model_parallel_world_size()
+            if _tp_world > 1:
+                _per = _w.shape[0] // _tp_world
+                _rank = get_tensor_model_parallel_rank()
+                _w = _w[_rank * _per : (_rank + 1) * _per]
+            self.draft_lm_head.weight.data.copy_(
+                _w.to(self.draft_lm_head.weight.dtype)
+            )
+            logger.info(
+                "MTP drafter uses a %d-token draft head", int(_ids.numel())
+            )
 
         # Workaround: mtp.fc is stored as BF16 in NVFP4 checkpoints but is
         # missing from hf_quant_config.json exclude_modules. Force unquantized.
@@ -416,6 +462,11 @@ class Qwen3_5MTP(nn.Module, SupportsMultiModal):
             self.lm_head = PPMissingLayer()
 
         self.logits_processor = LogitsProcessor(config.vocab_size)
+        self.draft_logits_processor = (
+            LogitsProcessor(int(self.model.draft_vocab_ids.numel()))
+            if getattr(self.model, "draft_lm_head", None) is not None
+            else None
+        )
 
     def embed_input_ids(
         self,
@@ -462,6 +513,21 @@ class Qwen3_5MTP(nn.Module, SupportsMultiModal):
         hidden_states: torch.Tensor,
         spec_step_idx: int = 0,
     ) -> torch.Tensor | None:
+        if self.draft_logits_processor is not None:
+            sub = self.draft_logits_processor(
+                self.model.draft_lm_head, hidden_states
+            )
+            if sub is None:
+                return None
+            ids = self.model.draft_vocab_ids
+            if ids.device != sub.device:
+                ids = ids.to(sub.device)
+                self.model.draft_vocab_ids = ids
+            full = sub.new_full(
+                (sub.shape[0], self.config.vocab_size), float("-inf")
+            )
+            full.index_copy_(1, ids, sub)
+            return full
         return self.logits_processor(self.lm_head, hidden_states)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
