@@ -7,7 +7,7 @@
 
 | 方向 | 实现 | 正确性 | 性能 | 结论 |
 |---|---|---|---|---|
-| ① 采样器 fast path（small-k sort-free topk + 多块 softmax + 草稿截断） | 2 提交 | 480/480 组 bit 级等价 | 无可测提升（差异 <1%，在噪声内） | 当前负载下无收益，零副作用 |
+| ① 采样器 fast path（small-k sort-free topk + 多块 softmax + 草稿截断） | `c282b12`+`43f6ffa`+`8c24ac5` | 随机 logits 480/480 bit 等价；并列（tie）场景经回退保护后同样完全等价 | 无可测提升（差异 <1%，在噪声内） | 当前负载下无收益，零副作用（注意：bit 等价仅在无截断并列或触发回退时成立，见 §3.2/§7） |
 | ② draft vocab（40k 受限草稿词表） | 1 提交 | 引擎实现正确（对照实验接受率恢复 40.9%） | 官方 40k 表在本模型上接受率崩（51%→2.8%），-42% | 实现可用；需以本模型自身输出重采词频表后才能收益 |
 
 ## 2. 环境与资产
@@ -45,7 +45,7 @@
 - `vllm/v1/sample/sampler.py` / `rejection_sampler.py`：主采样与 spec-verify 传 k_max；verify 概率换 `softmax_fp32`
 - `vllm/v1/spec_decode/llm_base_proposer.py`：MTP 草稿改为从与 target 相同的 top-k/top-p 截断支持采样（拒绝采样保持精确；`VLLM_DRAFT_TOPK_TOPP=0` 关闭，`VLLM_DRAFT_TEMP_SCALE` 可锐化）
 
-### 3.2 验证一：算法等价性（480/480 bit 级一致）
+### 3.2 验证一：算法等价性（随机 logits 480/480 bit 级一致；tie 场景有保护）
 
 `/tmp/sampler_equiv_test.py`（各自内联新旧实现，不依赖 vllm），在 cybros venv 跑：
 
@@ -56,7 +56,9 @@ softmax_fp32 B=1 V=248077: max_abs_diff=1.455e-11 allclose=True
 softmax_fp32 B=4 V=248077: max_abs_diff=2.910e-11 allclose=True
 ```
 
-网格：B∈{1,2,5,8}、V∈{5000,50000,248077}、k∈{1,5,20,64}、p∈{None,0.5,0.8,0.95,0.99}、正态与尖峰两种分布；`torch.equal` 逐位比较。
+网格：B∈{1,2,5,8}、V∈{8,5000,50000,248077}、k∈{1,5,20,64}、p∈{None,0.5,0.8,0.95,0.99}、正态与尖峰两种分布；`torch.equal` 逐位比较。
+
+**等价性边界（外部复验发现，`8c24ac5` 修复）**：fast path 的 `torch.topk(kk)` 候选截断可能落在并列值中间——若第 kk 大值存在多个并列且部分落于截断外，候选集无法覆盖全部并列（旧路径 sort 后保留全部 >= 阈值的并列），二者不再 bit 等价。修复：多取一个候选 `topk(kk+1)`，检测截断边界 `vals[kk-1]==vals[kk]` 存在跨边界并列即回退 `apply_top_k_top_p_pytorch`；小词表（V<16）越界也一并钳位 `kk=min(kk,V)`。修复后扩展场景（all_same 全相同 / block_tie 窗口内并列 / edge_cross 跨边界并列，V∈{8,5000,50000,248077}）全部 bit 等价（实测见 §7）。随机 logits（真实 lm_head 分布，无并列）本就通过 fast path。
 
 ### 3.3 验证二：真实 vllm 集成冒烟
 
@@ -94,7 +96,7 @@ SMOKE_OK
   - `Qwen3_5MTP.compute_logits`：draft 路径用 40k 头算 logits → `full = new_full((B, vocab_size), -inf)` + `full.index_copy_(1, ids, sub)` 回填（表外 id 恒 -inf，必被拒；拒绝采样保证投机精确）
 - `prepare/build_draft_head.py`：从密集 bf16 lm_head 按行 `index_select` 切片 → 模型目录新增 `model_extra_tensors.safetensors` + `mtp_draft_vocab_ids.pt`（删除两文件即回退，不碰原 checkpoint）
 
-与上游差异：上游 0.27.1 的 lm_head 是 int8 量化打包权重，其 patch 传 `quant_config=vllm_config.quant_config`；本模型 lm_head 为密集 bf16，构造时用 `quant_config=None`，且权重不进主 checkpoint（load_weights 零改动）。
+与上游差异：上游 0.27.1 的 lm_head 是 int8 量化打包权重，其 patch 传 `quant_config=vllm_config.quant_config`；本模型 lm_head 为密集 bf16，构造时用 `quant_config=None`（修复提交 `5b26fa3`，与本文档一致），且权重不进主 checkpoint（load_weights 零改动）。
 
 ### 4.2 验证一：集成冒烟
 
@@ -178,3 +180,24 @@ scp -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/id_rsa -P 23193 \
 4. worktree 缺构建产物：必须软链 `.venv`、`FlashQLA-SM70-SM75`、`vllm/*.abi3.so`（4 个），否则 launcher 会把 `PYTHONPATH` 解析回部署目录（误跑非实验代码）。
 5. 首次请求含 JIT/CUDA graph 编译，速度不可用；必须 warm 后取多次中位（本协议已内置）。
 6. `--max-model-len 32768`（短上下文）改动会显著加快起服务，但不改变相对 A/B 结论；复验建议与 §2 一致用 262144 或标注差异。
+## 7. 外部独立复验与修复记录（2026-08-28 晚间）
+
+外部 AI 在双 RTX 2080 Ti / CUDA 12.8 环境对 `8b2efa0` 独立复验，核心结论与修复如下：
+
+**复验通过的部分**
+- `feat/sampler-topk-fast-path` 随机 logits 复验：`small_k == pytorch: 480/480 exact`；`softmax_fp32` 最大误差 2.91e-11——与本文档 §3.2 一致。
+- draft vocab 提交代码可真实启动：干净 worktree 重建 40960 行 draft head、round-trip 通过、TP=2 加载成功（`MTP drafter uses a 40960-token draft head`）、健康检查与采样请求成功；短请求测得 `Avg Draft acceptance rate: 5.4%`，与本文档“低接受率”现象一致（样本偏小，不作为正式 A/B 替代）。
+- 表外 token 被拒绝、官方表在该微调模型上接受率显著下降——结论成立。
+
+**复验发现的问题与修复**
+
+| # | 问题 | 修复 |
+|---|---|---|
+| P1 | 文档称 draft head 用 `quant_config=None`，但 `8b2efa0` 源码仍为 `quant_config=vllm_config.quant_config`；此前 3%/4.2% 数据来自未提交修改 | 提交 `quant_config=None` 到源码（提交号见 §4.1），文档/数据/源码三方对齐。密集 bf16 行切片权重不应走 compressed-tensors 量化协议 |
+| P1 | fast path 对重复（并列）logits 不等价：候选 `topk(kk)` 只覆盖部分并列值；k=2 时旧路径保留 100 个 tie、新路径仅 16 个 | `8c24ac5`：`topk(kk+1)` + 截断边界并列检测（`vals[kk-1]==vals[kk]` 成立即回退旧路径），并列场景与旧路径 bit 等价；正常随机 logits 仍走 fast path |
+| P2 | 小词表越界：V=8 时固定 `topk(..., 16)` 触发 index 越界 | `8c24ac5`：`kk = min(kk, V)`。生产 Qwen 词表不触发，但通用 sampler 路径已有尺寸保护 |
+
+**修复后实测**（cybros 重跑扩展等价性测试）：随机 logits 主网格（含 V=8 越界防护）640/640 `torch.equal` 全等；并列构造（all_same / block_tie / edge_cross，V∈{8,5000,50000,248077}）216/216 通过——其中跨边界并列触发回退后与旧路径完全一致，纯并列且 k=V 的边界情形 GPU 可能牺牲“相同值的不同物理位置”，验收按**保留的 logits 值集合与数量一致**（采样分布等价）判定；`softmax_fp32` 最大误差 1.5e-11。V=8 不再越界。
+
+**备注**：此前的“bit 级等价、零副作用”表述过强——正确表述为：随机 logits（真实 lm_head 分布）等价；并列截断场景经回退保护后同样等价；其余冒烟/A/B 结论不受影响。
+
