@@ -336,8 +336,18 @@ def apply_top_k_top_p_small_k(
     outside the top-k_max candidates is masked by top-k anyway, so working on
     the candidate set is exact. ~10x cheaper for a 248k vocab.
     """
-    kk = SMALL_K_MAX if k_max > 32 else (32 if k_max > 16 else 16)
-    vals, idx = torch.topk(logits, kk, dim=-1)  # descending [B, kk]
+    kk = min(SMALL_K_MAX if k_max > 32 else (32 if k_max > 16 else 16),
+             logits.shape[-1])
+    take = min(kk + 1, logits.shape[-1])
+    vals, idx = torch.topk(logits, take, dim=-1)  # descending [B, take]
+    if take > kk and (vals[:, kk - 1] == vals[:, kk]).any():
+        # The top-kk cut falls inside a run of tied values: the candidate set
+        # cannot cover every tied entry, which differs from the sort-based path
+        # (it keeps all entries >= the k-th largest). Fall back to the exact
+        # path so both stay bit-identical in tied-logits scenarios too.
+        return apply_top_k_top_p_pytorch(logits, k, p)
+    vals = vals[:, :kk]
+    idx = idx[:, :kk]
     kth = vals.gather(1, (k.to(torch.long).clamp(1, kk) - 1).unsqueeze(1))
     keep = vals >= kth
     if p is not None:
