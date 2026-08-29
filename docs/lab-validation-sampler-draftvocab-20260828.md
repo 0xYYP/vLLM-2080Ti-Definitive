@@ -250,3 +250,19 @@ scp -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/id_rsa -P 23193 \
 | 120K | 91.6 | **99.0** | **+8.1%** |
 
 **最终结论**：draft-vocab（16384 自建表）在定稿配置 262K 下收益 +3%~+9%（char/s），greedy 抽样逐字一致（在已测模型/硬件/配置/greedy 样本范围内未见回归）；方向③ 与 k>2 均经数据否决；建议保留 MTP2 + 表配置，PR 合入待用户确认。
+
+## 10. int8 KV 独立诊断（2026-08-29，复验方案执行）
+
+用户提出应复测 int8 KV 长上下文劣化问题；按复验方案作为独立质量/回归诊断执行（不重开生产选择）。环境：cybros 2×2080 Ti TP=2，Qwen3.8 INT4 uncensored checkpoint，greedy、无 MTP（隔离 KV dtype 变量），4K/64K/120K ×（cold prefill + prefix-cache-hit decode）+ needle 3 深度；int8 用 `--kv-cache-dtype int8_per_token_head`（默认 dequant bridge，未开 VLLM_INT8KV_FA_DECODE）。
+
+| 场景 | fp16 (float16) KV | int8_per_token_head KV | 劣化 |
+|---|---|---|---|
+| 4K prefix-hit char/s | 82.0 | 48.2 | -41% |
+| 64K prefix-hit char/s | 80.3 | 7.2 | -91% |
+| 120K prefix-hit char/s | 71.9 | 4.1 | -94% |
+| 64K prefix-hit TTFT | 0.70s | 10.01s | 14.3× |
+| 120K prefix-hit TTFT | 0.27s | 8.32s | 30.8× |
+| needle 检索（3 场景×3 深度） | 9/9 hit | 9/9 hit | 质量正常 |
+| greedy 输出 hash | 3 次一致 | 3 次一致 | 确定 |
+
+结论：int8_per_token_head 在 64K+ 上下文单流下 decode 与 TTFT 均劣化 10-30 倍（性能路径缺陷，与 int8kv decode kernel occupancy 12.5%/2 blocks-per-SM 锁死的既有 ncu 根因一致）；**needle 检索与输出确定性正常（质量层面无回归）**。按复验判定：int8 正确但单流更慢 → 仅作容量路线、不适合单流生产；**生产推荐维持 int8 之外的 fp16 KV + MTP2 + draft-vocab**。数据仓：/tmp/kvab_result_{fp16,int8}.json、/tmp/kvab-launch-fp16.log、/tmp/kvab-run-int8.log；脚本 /tmp/kvab_bench.py、/tmp/kvab_needle.py。
