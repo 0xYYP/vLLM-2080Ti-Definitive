@@ -1,6 +1,6 @@
 # 执行计划：int8 KV 长上下文劣化修复（split-KV 立项）
 
-状态：**待用户复审**。复审通过后按阶段在 cybros 后台执行，全程日志 + 自动止损。
+状态：**复审结论：有条件批准阶段 0**（技术侦察）。阶段 1 需在阶段 0 产出 4 项证据后进入；暂不按 A1 直接开启 3D，也不允许未经路径闭环就进入 kernel 实现。
 目标不是让 int8 超过 fp16，而是**让 int8 单流长上下文恢复到接近 fp16 水平**，从而解锁 int8 的容量路线（KV 池约 2 倍、并发多流/更大上下文池）。
 
 ## 0. 背景与目标
@@ -28,36 +28,34 @@
 
 ## 2. 阶段划分与验收标准
 
-### 阶段 0：技术侦察（1-2 小时，纯代码/小实验，不写生产内核）
+### 阶段 0：技术侦察（1-2 小时，纯代码/小实验，不写生产内核）——已批准执行
 
-目标：确认 int8 verify attention（multi-query，q=2）当前走 unified_attention 的哪个变体，以及 split-KV/3D 路径的可开启性。
+目标：产出 4 项证据（复审要求），确认 int8 verify attention 的真实路由与 split-KV/3D 可用性。**未证明前不按 A1 直接开启 3D**。
 
-- 0.1 读 `triton_unified_attention.py`：2D/3D 选择条件、3D 是否=split-KV、解码路径（q=1 vs q=2 verify）各自走哪个变体；`sm75_attention_planner.py` 对 int8 decode 的路由。
-- 0.2 确认 int8 per-token-head 的 dequant 位置：kernel 内（v_scale hook 类型）还是 bridge 层（kernel 外）；`VLLM_INT8KV_FA_DECODE` 与默认 bridge 的差异在统一 attention 时代的落点。
-- 0.3 查 FlashQLA legacy / flashinfer 对「int8_per_token_head + split-KV + q=2 + SM75」的支持面（.so/plan/per-seq causal）。
-- 0.4 **决策点 A**（数据说话）：
-  - A1（3D 可经配置/planner 开启）→ 阶段 1；
-  - A2（需新 kernel）→ 用 SM75 资源约束评估（寄存器/occupancy/smem；参照 QO_LEN 否决先例），可行 → 阶段 2 实现，不可行 → 关闭交付调查结论。
-- 验收：产出路径结论 + 证据（代码位置/plan 支持面），写入日志。
+- 0.1 **证据 1：真实路由矩阵**。分别以 (a) q=1 no-MTP 与 (b) MTP 启用（verify 实际 query 行数）两种服务配置，各发 120K 请求；记录 `query_start_loc`、`max_query_len`、`num_actual_tokens`、实际 draft token 数（**不预设 q=2**），产出「q × attention 变体」路由矩阵。
+- 0.2 **证据 2：三条路径 provenance**。forward() 顺序：实验性 FA decode → FA prefill/bridge → unified attention（`triton_attn.py:2132`）。为 default bridge、direct-paged（`VLLM_INT8KV_FA_DECODE=1`）、unified attention 三条路线分别保存：完整 `--print-config`、全部 `VLLM_INT8KV_*` 环境变量、`INT8 KV FlashInfer ... used`/`fa_decode_failed`/native fallback 日志、原始 profiler 文件。**282.7ms unified_attention 必须与同次实验的上述路由日志绑定**（不能仅凭 kernel 名推断）。
+- 0.3 **证据 3：3D 可用性，源码 + 运行时双重证据**。核实 `triton_unified_attention.py` 中 3D 的全部关闭条件（含 max_seqlen_q>1 强制关 3D、INT8_PER_TOKEN_HEAD 无条件关 3D）；确认 `VLLM_INT8KV_FA_DIRECT_PAGED_NOSPLIT` 仅系 FlashInfer wrapper 的 `disable_split_kv` 参数（`triton_attn.py:1121`），不是 unified-attention 3D 开关。运行时：实测 q=1/q=MTP 下 3D 是否可达。**若 3D 对 per-token-head int8 不可用 → 直接关闭 A1**（不把 planner 改动误当 split-KV 实现）。
+- 0.4 **证据 4：SM75 资源评估**（若 3D 不可行需新 kernel）：寄存器/occupancy/smem 约束（参照 QO_LEN 否决先例），重估时间预算。
+- 验收：全部 4 项证据写入日志后才进入阶段 1。
 
 ### 阶段 1：最小验证（1-2 小时；仅当 A1）
 
 - 1.1 在 int8 服务开启 3D/split-KV 路径（配置/planner 最小改动），冒烟：单请求正常 + KV 路由日志（确认 split 生效的 kernel 名/参数变化）。
-- 1.2 **attention 占比复测（3 次 decode step 取中位**，120K）：目标 attention 时间占比相对 24.7% 明显下降（≤15% 视为方向有效）。
-- 1.3 单流三档 A/B（4K/64K/120K，prefix-hit，warm 后 3 次中位 char/s）：目标 int8+split 相对 int8 基线（48.2/7.2/4.1）显著提升，向 fp16（82.0/80.3/71.9）靠拢。
-- 1.4 正确性初检：needle 3 场景×3 深度命中、greedy 输出与 int8 基线 hash 一致（同一 prompt）。
-- 止损：占比较未降或 char/s 无提升 → 关闭并交付数据（不进入实现）。
+- 1.2 **attention 占比复测（3 次 decode step 取中位**，120K，与路由日志/profiler 文件绑定）：目标 attention 占比相对 24.7% 明显下降。**注意：占比下降不是充分成功标准**——若 bridge/dequant/synchronization 成本同时上升，不判成功；成功需同时满足端到端提升。
+- 1.3 单流三档 A/B（4K/64K/120K，**cold prefill + prefix-cache-hit decode 分别记录**，warm 后 3 次中位 char/s + 离散度）：成功标准 = 相对 int8 基线（48.2/7.2/4.1）有**预定义的最低提升**，且相对 fp16（82.0/80.3/71.9）有明确的边界预期（如 ≥80% 水平）；**OOM/workspace 扩容边界一并记录**（现有 245K 证据限定 prefix-hit，cold prefill >60K 有 OOM 未验边界）。
+- 1.4 正确性初检：needle 3 场景×3 深度命中、greedy 输出与 int8 基线一致（同一 prompt）。
+- 止损：占比未降或 char/s 无提升或冷 prefill OOM → 关闭并交付数据（不进入实现）。
 
 ### 阶段 2：实现与正确性强化（2-4 小时；仅当 A2 或 1.2/1.3 通过后需要补强）
 
 - 2.1（A2 时）实现 split-KV verify kernel（Triton/FlashQLA 适配），重点边界：per-seq causal、per-token-head scale、page 边界/last_page_len、TP=2 语义——先正确性后性能。
-- 2.2 正确性验收（必须品）：**split-KV 输出与未拆分 reference 使用同一 Q/KV/page table/scale/metadata 逐元素对比**（可及则含 LSE/softmax 中间态）；4K/64K/120K 各 3 次 greedy 与基线 prefix 一致；25k 复述逐字；compute-sanitizer 若可用跑最小复现。
+- 2.2 正确性验收（必须品）：**split-KV 与未拆分 reference 使用同一 Q/KV/page table/scale/causal metadata 逐元素对比**（覆盖 partial/last page、per-seq causal、GQA、TP=2；可及则含 LSE/softmax 中间态），**明确定义误差标准（atol/rtol）**，hash 一致仅作补充不作充分证明；4K/64K/120K 各 3 次 greedy 与基线 prefix 一致；25k 复述逐字；compute-sanitizer 若可用跑最小复现。
 - 2.3 性能复测同 1.2/1.3。
 - 止损：任一正确性失败 → 回滚该提交并记录；不超阶段预算。
 
 ### 阶段 3：容量收益量化（0.5-1 小时）
 
-- 3.1 int8 vs fp16 的 KV 池容量对比（启动日志 KV 池 tokens ×2 确认）。
+- 3.1 int8 vs fp16 的 KV 池容量对比：记录启动日志**实际 KV pool tokens/bytes**（计入 per-token-head scale、对齐、page rounding、GDN 状态、workspace、剩余显存），区分 cold context 容量与 prefix-hit 容量（不只看理论字节 2×）。
 - 3.2 并发多流示范：MAX_NUM_SEQS=2-4 同长上下文（64K）的吞吐 vs fp16——验证"容量路线"成立条件。
 - 3.3 判定：容量收益可量化且单流不再劣化 → int8+split 作为「容量优先」可选 profile 记录（不并入 fp16 性能结论）。
 
