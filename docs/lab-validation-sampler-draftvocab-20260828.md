@@ -221,11 +221,11 @@ scp -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/id_rsa -P 23193 \
 | 16K char/s（中位） | 53.5 | **94.1**（基线 91.8，**+2.5%**） |
 | greedy 输出 | 与基线逐字一致 | 与基线逐字一致 |
 
-**结论**：自建词频表完整解决接受率问题（超出全量水平），draft GEMM 从 248k 行缩至 16k 行（每 rank 8k），采样模式下 4K +7.2%、16K +2.5%（char/s 口径；换算 tok/s 约 +2~7%）。正式启用需在定稿配置（TQK8V4 + nosync）下复测一次，并走 PR 合入主流程。
+**结论**：自建词频表完整解决接受率问题（超出全量水平），draft GEMM 从 248k 行缩至 16k 行（每 rank 8k），采样模式下 4K +7.2%、16K +2.5%（char/s 口径；换算 tok/s 约 +2~7%）。生产基线按用户确认为 int4 + fp16kv + 262144 + MTP2 + safe（见 §9，TQK8V4/nosync 不纳入验证）；正式启用建议在定稿配置复测确认后走 PR 合入主流程。
 
 **复验确认（外部 AI 二轮，2026-08-28 深夜）**：自建 16384 表在 cybros（feat/draft-vocab a0a43f1，32768/safe）独立复测，链路全部通过：入库表与重算表 SHA-256 一致；draft head TP=2 加载成功（两 worker 均识别 16384-token head）；候选项 acceptance 46.4%–51.7%（关闭字典对照 45.3%–56.2%——草稿质量恢复，与无表相当）；4K 98.59–98.75 vs 基线 85.04 char/s（+15.9%）、16K 94.80–95.18 vs 87.93（+7.8%）；greedy 前缀逐字一致、无 EngineDeadError。结论：**表恢复草稿质量并呈正向收益成立**；本轮绝对收益高于原记录，单流 char/s 波动明显，不建议作为生产承诺，原 +7.2%/+2.5% 可作保守参考。**生产基线随后按用户确认为 int4+fp16kv+262144+safe**（非 TQK8V4/nosync——该组合实测有质量风险，不纳入验证）。
 
-## 9. 长上下文优化计划执行记录（阶段 0/1，2026-08-28 深夜）
+## 9. 长上下文优化计划执行记录（阶段 0/1/4，2026-08-28 深夜）
 
 按 `docs/lab-plan-splitkv-mtp4.md`（有条件批准版）在定稿配置 **int4 + fp16kv + 262144 + MTP2 + safe** 下执行。
 
@@ -233,7 +233,7 @@ scp -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/id_rsa -P 23193 \
 
 - 基线 A/B（draft-vocab 表 on，MTP2，warm+3 中位，char/s）：4K **95.1** / 64K **92.0** / 120K **99.0**（长上下文无线性退化，与混合架构 3/4 GDN 层的既有结论一致）。
 - kernel 占比（torch.profiler 包单个 decode step，120K 上下文；ncu 需 sudo 授权已获但 attach 模型不适配长驻服务，用 profiler 方案 b）：Marlin int4 GEMM **73.2%**（512 次）、gdn_forward 11.6%、NCCL 6.6%、**flashinfer attention（verify+target，120K KV）1.1%**、其余 ~7%。
-- **决策点 A：attention 占比 ≈1.1%（计入 GDN 约 13%）< 20% → 方向③ split-KV verify 关闭**（每步收益上限 ~1%；瓶颈为带宽主导的 Marlin GEMM，非 kernel 结构）。
+- **决策点 A（单步暂定结论）**：attention 占比 ≈1.1%（计入 GDN 约 13%）< 20% → 方向③ split-KV verify 关闭。此占比为**单个 decode step 的 profiler 测量**，未完全满足计划要求的三次取中位口径；因与 20% 门槛差距过大，判定方向不受影响（如需正式三次口径可补测）。瓶颈主要为 Marlin int4 GEMM（占 kernel 时间大头；未直接测显存带宽利用率，"带宽主导"为推断表述）。
 
 **阶段 1（MTP k=4 叠加）**
 
@@ -249,4 +249,4 @@ scp -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/id_rsa -P 23193 \
 | 64K | 89.3 | **92.0** | **+3.0%** |
 | 120K | 91.6 | **99.0** | **+8.1%** |
 
-**最终结论**：draft-vocab（16384 自建表）在定稿配置 262K 下收益 +3%~+9%（char/s），正确性逐字一致；方向③ 与 k>2 均经数据否决；建议保留 MTP2 + 表配置，PR 合入待用户确认。
+**最终结论**：draft-vocab（16384 自建表）在定稿配置 262K 下收益 +3%~+9%（char/s），greedy 抽样逐字一致（在已测模型/硬件/配置/greedy 样本范围内未见回归）；方向③ 与 k>2 均经数据否决；建议保留 MTP2 + 表配置，PR 合入待用户确认。
