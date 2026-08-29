@@ -100,3 +100,16 @@
 4. 容量收益量化表
 5. 分支 `feat/int8kv-splitkv` + 文档更新
 6. 最终汇报（收益 + 容量路线建议）
+## 7. 阶段 0 执行记录与裁决（2026-08-29）
+
+按复审要求执行技术侦察，4 项证据全部产出（源码 + 运行时双重）：
+
+**证据 1 — 真实路由矩阵**：q=1（no-MTP）与 q=MTP 的 120K decode 均落 `kernel_unified_attention`（2D）。两者耗时几乎相同（q=1: 283.1ms / 24.8%；q=MTP: 282.7ms / 24.7%，16 次 × 17.7ms/层）——该 kernel 单次处理整步 query 行，**verify 额外 query 行几乎不增加 attention 成本（target 主导）**；因此修复对象是 283ms 总 attention，不区分 verify/target。
+
+**证据 2 — 路径 provenance（默认 int8 走 unified 2D）**：`triton_attn.py` forward 顺序 = `_try_gemma4_...` → `_try_int8kv_fa_decode`（门控 `VLLM_INT8KV_FA_DECODE`）→ `_try_int8kv_fa_prefill`（门控 `VLLM_INT8KV_FA_PREFILL`，即 bridge）→ unified attention。默认 env（两个变量未设）下前三条全部跳过 → **int8 默认实际 = unified attention 2D**（此前 282.7ms 归因闭环：与默认 env 的 profiler 绑定成立）。`VLLM_INT8KV_FA_DIRECT_PAGED_NOSPLIT` 仅为 FlashInfer wrapper 的 `disable_split_kv` 参数，与 unified 3D 无关。
+
+**证据 3 — 3D 不可用（A1 关闭）**：`triton_unified_attention.py` `use_3d` 被 `max_seqlen_q > 1` 与 `use_per_token_head_scales` 双重强制关闭；per-token-head 在 SM75 Qwen hybrid 走 2D 为**项目有意的 known-good 决策**（源码注释）。两次运行时（q=1/q=MTP）均确认 2D。**按复审边界直接关闭 A1**（不把 planner 改动误当 split-KV 实现）。
+
+**证据 4 — A2 资源评估（不建议实施）**：实现 3D 需（a）放开 unified kernel 两处 constexpr 分支（per-token-head、多 query），（b）分配/管理 3D partial-softmax segment buffers（`num_par_softmax_segments` 等），（c）全面正确性重验证（per-seq causal、per-token-head scale caches 与 3D 中间态交互、page 边界、TP=2）。SM75 occupancy 天花板（12.5%、2 blocks/SM 前科）限制 split 的实际收益；收益上限为 283ms attention 中可并行的部分，风险/预算与收益不匹配 → **不实施**。
+
+**裁决**：int8 劣化的 3D/split-KV 修复路线**关闭**；f16 生产维持。若未来需容量路线，正确路径是**修 int8 decode kernel 自身 occupancy**（非 split-KV）。
