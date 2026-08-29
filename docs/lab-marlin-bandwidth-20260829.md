@@ -37,7 +37,7 @@
 | gate_proj N=17408 | 4 | 108.5 µs | 44.6 MB | 410.6 GB/s |
 
 - 结论 A：**M=1/2/4/8 时间基本不变**（权重读取主导，batch 行数非敏感）。
-- 结论 B：单次调用实测带宽 **374–415 GB/s ≈ 616 GB/s 理论的 61–67%**（kernel 本身健康，无显著低效水分）。
+- 结论 B：单次调用实测带宽 **374–416 GB/s ≈ 616 GB/s 理论的 61–68%**（kernel 本身健康，**未见数量级级别的低效**；仍保有约三成峰值差距，未深挖其来源）。
 
 ### 4.2 kernel 身份（torch.profiler key）
 
@@ -56,11 +56,11 @@ void marlin::Marlin<1125899906910725l, 1125899906843648l,
 - 生产实测（fp16kv + MTP2 + 采样，4K）：95.1 char/s ≈ 45 tok/s ≈ **~22 ms/token**（含 attention/RNN/sampler 全部路径）。
 - 结论 C：整 step 时间与"光读一遍权重"的理论下界处于同一数量级（≈70% 饱和量级）⇒ **decode 步成本本质是权重带宽硬墙**。
 
-### 4.4 对 w8a8 / w4a8 的判定
+### 4.4 对 w8a8 / w4a8 的判定（**带宽模型推断，未做同 checkpoint 直接 A/B**）
 
-- 带宽已 ~60–85% 饱和：单流 decode 无量化格式能显著提速。
-- w8a8：权重字节 2× ⇒ 每步读取翻倍 ⇒ 只会更慢（-30~40% 量级）；int8 算力优势仅适用 compute-bound（prefill/大 batch），decode 用不上。
-- w4a8：权重仍 4bit（带宽不变）+ int8 MMA 算力——**对单流 decode 无帮助**（带宽瓶颈未变）；其价值面仅在"投机解码多行 verify 的 compute 侧"，且 SM75 Marlin int8 变体可用性仍需另验（未测）。**不作为当前提速手段建议。**
+- 带宽已 ~61–68% 饱和（单层）；整步亦在权重流量下限量级。单流 decode 无量化格式能突破此墙——此为本轮可支持的方向判断，**精确收益/损失需专门 A/B 实测**。
+- w8a8：权重字节 2× ⇒ 每步读取翻倍 ⇒ 只会更慢（带宽方向判断，折算约 -30~40% 量级为**推断**）；int8 算力仅适用 compute-bound（prefill/大 batch），decode 用不上。
+- w4a8：权重仍 4bit（带宽不变）+ int8 MMA——对单流 decode 无帮助（带宽未变，推断）；且**通用 W4A8 支持 ≠ 当前 AWQ asymmetric checkpoint 已验证**：Cutlass W4A8（w4a8_int scheme）要求 SM90，Marlin int8-activation 路径受 uint4b8/zero-point 类型边界限制，SM75 上当前 checkpoint 的实测可用性仍是未知。**不作为当前提速手段建议。**
 
 ## 5. 结论（含修正声明）
 
@@ -87,6 +87,10 @@ PYTHONPATH=/tmp/dv /opt/vllm-2080ti-definitive/.venv/bin/python /tmp/marlin_repr
 #   "b_type must be u4 or u8 when has_zp=True" 或 "Invalid thread config"（这两报错本身也是
 #   SM75 Marlin 配置矩阵的复验点）
 # - 脚本在 TP=1（CUDA_VISIBLE_DEVICES=0）下运行；生产 TP=2 分片后权重减半、时间约减半
+# - marlin_repro.py 已移除旧的 full-step 估算行（口径错误），现仅打印带宽下界说明
+# - 本轮复验（2026-08-29 二次）确认：M=1/2/4/8 为 81.8/82.3/83.1/84.1us（384.6/382.2/378.7/373.9 GB/s），
+#   gate 107.1us/416.2GB/s；错误矩阵（int4→b_type must be u4/u8；uint4b8→同类）复现；checkpoint 总 19.5476GB
+#   ≈ TP2 9.77GB/卡/步 ≈ 15.9ms 理论下限。生产服务 95.1 char/s 与 profiler 沿用既有记录（本轮未独立重跑服务）。
 ```
 
 ## 7. 数据/脚本存档
