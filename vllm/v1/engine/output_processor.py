@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import asyncio
+import atexit
 from collections import defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -31,7 +32,17 @@ from vllm.tracing import (
 )
 from vllm.utils import length_from_prompt_token_ids_or_embeds
 from vllm.v1.engine import EngineCoreOutput, EngineCoreRequest, FinishReason
+from vllm.v1.engine.draft_vocab_trace import (
+    flush_draft_vocab_trace,
+    init_draft_vocab_trace,
+    record_draft_vocab_trace,
+)
 from vllm.v1.engine.detokenizer import IncrementalDetokenizer
+
+# 服务进程内初始化一次 draft-vocab trace（无 DRAFT_VOCAB_TRACE env 时零开销）。
+# 退出时兜底 flush，避免定期 flush 未覆盖的尾部计数丢失。
+init_draft_vocab_trace()
+atexit.register(flush_draft_vocab_trace)
 from vllm.v1.engine.logprobs import LogprobsProcessor
 from vllm.v1.engine.parallel_sampling import ParentRequest
 from vllm.v1.metrics.stats import (
@@ -653,7 +664,10 @@ class OutputProcessor:
             if pooling_output is None:
                 assert req_state.detokenizer is not None
                 assert req_state.logprobs_processor is not None
-                # 2) Detokenize the token ids into text and perform stop checks.
+                # 2a) Draft-vocab trace: record final sampled target token ids
+                #     (MTP-verified output; draft head rejects do not count).
+                record_draft_vocab_trace(new_token_ids)
+                # 2b) Detokenize the token ids into text and perform stop checks.
                 stop_string = req_state.detokenizer.update(
                     new_token_ids, finish_reason == FinishReason.STOP
                 )
