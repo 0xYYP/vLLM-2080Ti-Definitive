@@ -6,7 +6,10 @@ plus special tokens, writes the ascending id list to
 ``<model_dir>/draft_vocab_ids.json``. Every 10th sample is held out for a
 coverage estimate (>= 90% is the target). Ported from
 syv-ai/qwen38-27b-rtx3090 (Apache-2.0), adapted to read the JSONL emitted by
-prepare/sample_model_outputs.py.
+prepare/sample_model_outputs.py (removed 2026-08-30: superseded by real
+workload statistics — see docs/lab-remove-draft-vocab-20260830.md).
+Any corpus JSONL (``prompt``/``response``/``output``/``text``/``messages``
+fields) works as input.
 
 Usage:
     venv/bin/python prepare/build_draft_vocab.py --model DIR --n 40960 \

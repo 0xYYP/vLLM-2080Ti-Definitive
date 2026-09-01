@@ -3,10 +3,16 @@
 
 Slices the (dense) lm_head rows listed in draft_vocab_ids.json into
 ``mtp.draft_lm_head.weight`` inside a new ``model_extra_tensors.safetensors``
-shard, plus the id map as ``mtp_draft_vocab_ids.pt``. The engine patch in
-vllm/model_executor/models/qwen3_5_mtp.py picks both up at model load when
-``MTP_DRAFT_VOCAB != 0``. Nothing in the original checkpoint is modified;
-delete the two outputs to revert.
+shard, plus the id map as ``mtp_draft_vocab_ids.pt``. The engine picks both
+up at model load when ``MTP_DRAFT_VOCAB != 0``. Nothing in the original
+checkpoint is modified; delete the two outputs to revert.
+
+NOTE (2026-08-30): the engine-side draft head patch in
+vllm/model_executor/models/qwen3_5_mtp.py was removed together with the
+small 16384 dictionary (it slowed serving); real-workload statistics are
+being collected via DRAFT_VOCAB_TRACE for about a week, then the dictionary
+is rebuilt from the trace and this script is used again. See
+docs/lab-remove-draft-vocab-20260830.md.
 
 Usage:
     venv/bin/python prepare/build_draft_head.py --model DIR [--ids JSON]
