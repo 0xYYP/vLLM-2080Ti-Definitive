@@ -1,0 +1,25 @@
+[Unit]
+Description=qwen38-production: Qwen3.8-27B-Uncensored-Aggressive 常驻 vLLM 服务（:8000，0.2 栈）
+Documentation=file:///opt/vllm-2080ti-definitive/bin/start_qwen38_production.sh
+# 不要依赖 network-online.target：本机 systemd-networkd-wait-online 永久挂起
+# （实际用 networking.service/ifupdown），加了会让启动 job 无限等待。
+After=network.target
+# 连续启动失败就停下等人看，别无限重启刷日志
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+User=yyp
+Group=yyp
+WorkingDirectory=/opt/vllm-2080ti-definitive
+# 可选覆盖文件：改路由参数不必动 unit（文件不存在也能正常启动）
+EnvironmentFile=-/opt/vllm-2080ti-definitive/bin/qwen38-production.env
+ExecStart=/bin/bash /opt/vllm-2080ti-definitive/bin/start_qwen38_production.sh --foreground
+# TP=2 的 worker 退出需要时间，别被默认 90s 掐断
+TimeoutStopSec=180
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
