@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""Build the vocab-truncated MTP draft head assets for Qwen3.5/3.8.
+"""Build the draft-vocab small head assets for Qwen3.8 MTP (v2, 2026-09-16).
 
-Slices the (dense) lm_head rows listed in draft_vocab_ids.json into
-``mtp.draft_lm_head.weight`` inside a new ``model_extra_tensors.safetensors``
-shard, plus the id map as ``mtp_draft_vocab_ids.pt``. The engine picks both
-up at model load when ``MTP_DRAFT_VOCAB != 0``. Nothing in the original
-checkpoint is modified; delete the two outputs to revert.
+Slices the (bf16) lm_head rows listed in draft_vocab_ids.json into
+``draft_lm_head.weight`` inside ``draft_vocab_head.safetensors`` (the engine
+loads it as the Qwen3_5MTP root module ``draft_lm_head`` via
+AutoWeightsLoader; the ``draft_id_to_target_id`` offset is rebuilt by the
+engine at init from draft_vocab_ids.json, not from the checkpoint). The
+engine picks both up when ``MTP_DRAFT_VOCAB=1`` is exported in the launch
+script; the proposer must run with ``use_local_argmax_reduction: true``.
 
-NOTE (2026-08-30): the engine-side draft head patch in
-vllm/model_executor/models/qwen3_5_mtp.py was removed together with the
-small 16384 dictionary (it slowed serving); real-workload statistics are
-being collected via DRAFT_VOCAB_TRACE for about a week, then the dictionary
-is rebuilt from the trace and this script is used again. See
-docs/lab-remove-draft-vocab-20260830.md.
+The OLD 2026-08-30 design (write-back into model_extra_tensors.safetensors as
+``mtp.draft_lm_head`` + mtp_draft_vocab_ids.pt) is superseded: the 0.1-stack
+engine patch is gone in the 0.2 stack, so the stored 16k table there is
+stale. Nothing in the original checkpoints is modified; delete
+draft_vocab_head.safetensors (and keep the ids json) to revert.
 
 Usage:
     venv/bin/python prepare/build_draft_head.py --model DIR [--ids JSON]
 
-Prereqs: ``dir`` contains config.json and model.safetensors(.index.json);
-``ids`` defaults to ``dir/mtp_draft_vocab_ids.json`` (the 40k list shipped
-by syv-ai/qwen38-27b-rtx3090, Apache-2.0).
+Prereqs: ``dir`` contains config.json and a shard physically holding
+``lm_head.weight`` (bf16).
 """
 import argparse
 import json
@@ -38,30 +38,29 @@ def main() -> None:
     args = ap.parse_args()
 
     d = os.path.abspath(args.model)
-    ids_json = args.ids or os.path.join(d, "mtp_draft_vocab_ids.json")
+    ids_json = args.ids or os.path.join(d, "draft_vocab_ids.json")
     cfg = json.load(open(os.path.join(d, "config.json"), encoding="utf-8"))
     vocab_size = cfg.get("vocab_size")
     if vocab_size is None:
         vocab_size = cfg.get("text_config", {}).get("vocab_size")
     if vocab_size is None:
-        raise SystemExit("config.json has no vocab_size at top level or text_config")
+        raise SystemExit("config.json has no vocab_size")
 
-    # locate lm_head shard
     index_path = os.path.join(d, "model.safetensors.index.json")
     if os.path.exists(index_path):
         wm = json.load(open(index_path, encoding="utf-8"))["weight_map"]
-        head_file = wm["lm_head.weight"]
+        head_file = wm.get("lm_head.weight", "model.safetensors")
     else:
         head_file = "model.safetensors"
     if not os.path.isabs(head_file):
         head_file = os.path.join(d, head_file)
 
-    ids = torch.tensor(
-        json.load(open(ids_json, encoding="utf-8")), dtype=torch.long
-    )[: args.max_rows]
+    ids = json.load(open(ids_json, encoding="utf-8"))
+    assert ids == sorted(ids), "draft_vocab_ids.json must be sorted ascending"
+    ids = torch.tensor(ids, dtype=torch.long)[: args.max_rows]
     if int(ids.max()) >= int(vocab_size):
         raise SystemExit(f"id {int(ids.max())} out of range for vocab_size {vocab_size}")
-    print(f"vocab_size={vocab_size} ids={ids.numel()} max_id={int(ids.max())}", flush=True)
+    print(f"vocab_size={vocab_size} ids={ids.numel()}", flush=True)
 
     with safe_open(head_file, framework="pt") as f:
         lm = f.get_tensor("lm_head.weight")
@@ -69,13 +68,11 @@ def main() -> None:
     sub = lm.index_select(0, ids).contiguous()
     del lm
 
-    extra = os.path.join(d, "model_extra_tensors.safetensors")
-    save_file({"mtp.draft_lm_head.weight": sub}, extra)
-    torch.save(ids, os.path.join(d, "mtp_draft_vocab_ids.pt"))
-    print(f"wrote {extra} [{tuple(sub.shape)}] and mtp_draft_vocab_ids.pt", flush=True)
-    # round-trip check
+    extra = os.path.join(d, "draft_vocab_head.safetensors")
+    save_file({"draft_lm_head.weight": sub}, extra)
+    print(f"wrote {extra} [{tuple(sub.shape)}]", flush=True)
     with safe_open(extra, framework="pt") as f:
-        back = f.get_tensor("mtp.draft_lm_head.weight")
+        back = f.get_tensor("draft_lm_head.weight")
     assert back.shape == sub.shape and torch.equal(back, sub)
     print("round-trip check OK", flush=True)
 

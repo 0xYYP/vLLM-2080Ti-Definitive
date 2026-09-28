@@ -14,8 +14,15 @@ fields) works as input.
 Usage:
     venv/bin/python prepare/build_draft_vocab.py --model DIR --n 40960 \
         --corpus corpus.jsonl corpus2.jsonl
+    # or rebuild from real-workload statistics (DRAFT_VOCAB_TRACE output):
+    venv/bin/python prepare/build_draft_vocab.py --model DIR \
+        --freq-json <model_dir>/draft_vocab_freq.json
     # or reuse a shipped id list (skips counting):
     venv/bin/python prepare/build_draft_vocab.py --model DIR --ids ids.json
+
+``--freq-json`` reads the ``token_id -> count`` map that ``DRAFT_VOCAB_TRACE``
+writes; a 10% holdout is taken from those counts for the coverage estimate,
+and the remaining counts pick the top N.
 """
 import argparse
 import collections
@@ -61,6 +68,8 @@ def main():
     ap.add_argument("--model", required=True, help="model directory (tokenizer)")
     ap.add_argument("--n", type=int, default=40960)
     ap.add_argument("--corpus", nargs="*", default=[])
+    ap.add_argument("--freq-json", default=None,
+                    help="freq dict (token_id -> count) e.g. from DRAFT_VOCAB_TRACE")
     ap.add_argument("--ids", default=None, help="reuse a shipped id list")
     ap.add_argument("--out", default=None, help="output json path (default: model dir)")
     args = ap.parse_args()
@@ -73,6 +82,15 @@ def main():
     if args.ids:
         ids = sorted(set(json.load(open(args.ids))))
         print(f"using {len(ids)} ids from {args.ids}")
+    elif args.freq_json:
+        freq = {int(k): v for k, v in
+                json.load(open(args.freq_json)).items()}
+        total = sum(freq.values())
+        held = {t: c // 10 for t, c in freq.items() if c >= 10}
+        counts = collections.Counter({t: c - held.get(t, 0)
+                                      for t, c in freq.items()})
+        print(f"freq json: {len(freq)} unique ids, {total} tokens from "
+              f"{args.freq_json}")
     else:
         for i, path in enumerate(args.corpus):
             for j, t in enumerate(texts_from(path)):
